@@ -2,6 +2,7 @@
 
 #include <net/fetch.hpp>
 #include <cef/cef_backend.hpp>
+#include <render/images.hpp>
 
 #ifdef LUXIUM_CEF
 #include <SDL_syswm.h>
@@ -17,6 +18,8 @@
 #include <utility>
 
 namespace luxium::shell {
+
+using luxium::render::ImageBitmap;
 
 using render::ShapeCmd;
 
@@ -1374,7 +1377,8 @@ void Shell::relayout() {
 
     page_.clear_dirty();
     layout_ = render::layout(*page_.page_root(), *font_,
-                             static_cast<float>(win_w_), page_.css());
+                             static_cast<float>(win_w_), page_.css(),
+                             page_.base_dir());
     content_h_ = layout_.content_height;
     scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_h_ - page_h()));
     if (std::getenv("LUXIUM_DEBUG_LAYOUT"))
@@ -1569,6 +1573,40 @@ void Shell::repaint() {
     // shapes first (button boxes, pills, bars), then words over them.
     for (const auto& s : layout_.shapes) {
         if (s.y - scroll_ > page_h() + kUrlH || s.y + s.h - scroll_ < kUrlH) continue;
+        if (s.kind == ShapeCmd::Kind::Image) {
+            // bitmap bilinear del rect fuente al rect destino
+            const ImageBitmap* bm = s.img.get();
+            if (!bm || s.w <= 0 || s.h <= 0 || s.sw <= 0 || s.sh <= 0) continue;
+            const int x0 = std::max(0, int(s.x));
+            const int y0 = std::max(0, int(s.y - scroll_) + page_top);
+            const int x1 = std::min(win_w_, int(s.x + s.w) + 1);
+            const int y1 = std::min(win_h_, int(s.y - scroll_ + s.h) + 1 + page_top);
+            for (int y = std::max(y0, page_top); y < std::min(y1, page_bottom); ++y) {
+                uint32_t* row = fb_.data() + size_t(y) * win_w_;
+                const float v = (float(y) + 0.5f - page_top - (s.y - scroll_)) / s.h;
+                for (int x = x0; x < x1; ++x) {
+                    const float u = (float(x) + 0.5f - s.x) / s.w;
+                    if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+                    const float fx = std::clamp(s.sx + u * s.sw, 0.f, float(bm->w) - 1.f);
+                    const float fy = std::clamp(s.sy + v * s.sh, 0.f, float(bm->h) - 1.f);
+                    const int ix = int(fx), iy = int(fy);
+                    const int ix1 = std::min(ix + 1, bm->w - 1);
+                    const int iy1 = std::min(iy + 1, bm->h - 1);
+                    const float tx = fx - ix, ty = fy - iy;
+                    for (int chn = 0; chn < 3; ++chn) {
+                        const float p00 = bm->rgb[(size_t(iy) * bm->w + ix) * 3 + chn];
+                        const float p10 = bm->rgb[(size_t(iy) * bm->w + ix1) * 3 + chn];
+                        const float p01 = bm->rgb[(size_t(iy1) * bm->w + ix) * 3 + chn];
+                        const float p11 = bm->rgb[(size_t(iy1) * bm->w + ix1) * 3 + chn];
+                        const float top = p00 + (p10 - p00) * tx;
+                        const float bot = p01 + (p11 - p01) * tx;
+                        row[x] &= ~(0xFFu << (16 - chn * 8));
+                        row[x] |= uint32_t(top + (bot - top) * ty) << (16 - chn * 8);
+                    }
+                }
+            }
+            continue;
+        }
         fill_shape(fb_, win_w_, win_h_, s, scroll_, page_top, 1.f);
     }
     if (hover) {   // the hovered button lightens: an overlay over the box,

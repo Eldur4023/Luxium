@@ -9,6 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(PkgConfig REQUIRED)
+find_package(ZLIB REQUIRED)
 pkg_check_modules(FREETYPE REQUIRED freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 pkg_check_modules(SDL2 REQUIRED sdl2)
@@ -56,6 +57,7 @@ add_executable(luxium
     src/net/fetch.cpp
     src/script/engine.cpp
     src/render/text.cpp
+    src/render/images.cpp
     src/render/layout.cpp
     src/shell/shell.cpp
     src/page/page.cpp
@@ -70,7 +72,7 @@ target_sources(luxium PRIVATE ${LUXIUM_SRCS})
 target_include_directories(luxium PRIVATE src)
 target_compile_options(luxium PRIVATE -Wall -Wextra)
 target_link_libraries(luxium PRIVATE lux_script ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES}
-                                    ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES})
+                                    ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES} ZLIB::ZLIB)
 target_include_directories(luxium PRIVATE ${SDL2_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS}
                                     ${HARFBUZZ_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS})
 

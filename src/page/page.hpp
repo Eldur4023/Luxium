@@ -41,6 +41,12 @@ public:
     bool used_javascript() const { return saw_js_; }
     const std::string& name() const { return name_; }
 
+    // El directorio del documento cargado (para resolver <img>/<link> relativos)
+    std::string base_dir() const {
+        const size_t slash = name_.find_last_of('/');
+        return slash == std::string::npos ? std::string() : name_.substr(0, slash + 1);
+    }
+
     // PageHost ────────────────────────────────────────────────────────────
     void        console(int level, const std::string& msg) override;
     std::string page_title() const override { return title_; }

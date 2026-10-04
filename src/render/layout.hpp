@@ -27,8 +27,10 @@ struct GradStop {
     float    t = 0;     // 0..1 a lo largo del eje del degradado
 };
 
+struct ImageBitmap;   // decodificada en render/images (compartida, cacheada)
+
 struct ShapeCmd {
-    enum class Kind { Rect, RRect, Circle } kind = Kind::Rect;
+    enum class Kind { Rect, RRect, Circle, Image } kind = Kind::Rect;
     float    x = 0, y = 0, w = 0, h = 0, r = 0;
     uint32_t argb = 0;
     // degradado: si stops no esta vacio, argb se ignora y el color se
@@ -38,6 +40,9 @@ struct ShapeCmd {
     std::vector<GradStop> stops;
     float    gdx = 0, gdy = 0, glen = 1;          // lineal: direccion + largo
     float    gcx = 0, gcy = 0, grx = 1, gry = 1;  // radial: centro y radios (doc)
+    // imagen: rect destino (x,y,w,h) y rect fuente en pixeles de bitmap
+    std::shared_ptr<const ImageBitmap> img;
+    float    sx = 0, sy = 0, sw = 0, sh = 0;
 };
 
 struct WordCmd {
@@ -61,7 +66,8 @@ struct LayoutResult {
 };
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
-                    const std::string& page_css);
+                    const std::string& page_css,
+                    const std::string& base_dir = "");
 
 // Deepest element whose hit box contains (x, y); null if none.
 const dom::Node* hit_test(const LayoutResult& l, float x, float y);

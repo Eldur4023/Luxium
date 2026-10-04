@@ -1,4 +1,5 @@
 #include "render/layout.hpp"
+#include "render/images.hpp"
 
 #include <algorithm>
 #include <array>
@@ -96,6 +97,12 @@ struct Style {
     // background con degradado (linear/radial-gradient con paradas de color)
     GradDef  bg_grad;
     bool     has_grad = false;
+    // background-image (url) + repeat/size/position
+    std::string bg_image;
+    int     bg_repeat = 0;   // 0 repeat, 1 no-repeat, 2 repeat-x, 3 repeat-y
+    int     bg_size = 0;     // 0 auto, 1 cover, 2 contain
+    float   bg_px = 0.f, bg_py = 0.f;   // posicion como fraccion
+    int     objfit = 0;      // 0 fill, 1 cover, 2 contain
     // flexbox nivel 1
     bool     flex = false, dir_column = false, wrap = false;
     int      justify = 0;      // 0 start, 1 center, 2 end, 3 between, 4 around
@@ -285,7 +292,7 @@ struct StyleResolver {
             if (v.starts_with("linear-gradient") || v.starts_with("radial-gradient")) {
                 s.bg_grad = parse_grad(v);
                 s.has_grad = s.bg_grad.stops.size() >= 2;
-            } else {
+            } else if (v.find("url(") == std::string::npos) {
                 // color plano (shorthand o background-color)
                 const uint32_t c = parse_color(v, 0);
                 if (c) {
@@ -294,6 +301,55 @@ struct StyleResolver {
                     if (!s.mono) s.pill = c;   // inline pills, too (code)
                 }
             }
+            if (v.find("url(") != std::string::npos) {
+                const size_t a = v.find('(', v.find("url(")) + 1;
+                const size_t b = v.find(')', a);
+                if (b != std::string::npos) {
+                    std::string u = v.substr(a, b - a);
+                    while (!u.empty() && (u.front() == '\'' || u.front() == '"' || u.front() == ' ')) u.erase(u.begin());
+                    while (!u.empty() && (u.back() == '\'' || u.back() == '"' || u.back() == ' ')) u.pop_back();
+                    s.bg_image = u;
+                }
+            }
+        }
+        else if (prop == "background-image" || prop == "background") {
+            const size_t up = v.find("url(");
+            if (up != std::string::npos) {
+                const size_t a = v.find('(', up) + 1;
+                const size_t b = v.find(')', a);
+                if (a != std::string::npos && b != std::string::npos) {
+                    std::string u = v.substr(a, b - a);
+                    while (!u.empty() && (u.front() == '\'' || u.front() == '"' || u.front() == ' ')) u.erase(u.begin());
+                    while (!u.empty() && (u.back() == '\'' || u.back() == '"' || u.back() == ' ')) u.pop_back();
+                    if (prop == "background-image" || !u.empty()) s.bg_image = u;
+                }
+            }
+            if (prop == "background" && v.find("url(") == std::string::npos) {
+                const uint32_t c = parse_color(v, 0);
+                if (c) { s.block_bg = c; s.has_block_bg = true; if (!s.mono) s.pill = c; }
+            }
+        }
+        else if (prop == "background-repeat") {
+            if (v.find("no-repeat") != std::string::npos) s.bg_repeat = 1;
+            else if (v.find("repeat-x") != std::string::npos) s.bg_repeat = 2;
+            else if (v.find("repeat-y") != std::string::npos) s.bg_repeat = 3;
+            else s.bg_repeat = 0;
+        }
+        else if (prop == "background-size") {
+            if (v.find("cover") != std::string::npos) s.bg_size = 1;
+            else if (v.find("contain") != std::string::npos) s.bg_size = 2;
+            else s.bg_size = 0;
+        }
+        else if (prop == "background-position") {
+            s.bg_px = v.find("right") != std::string::npos ? 1.f
+                    : v.find("center") != std::string::npos ? 0.5f : 0.f;
+            s.bg_py = v.find("bottom") != std::string::npos ? 1.f
+                    : v.find("center") != std::string::npos ? 0.5f : 0.f;
+        }
+        else if (prop == "object-fit") {
+            if (v.find("cover") != std::string::npos) s.objfit = 1;
+            else if (v.find("contain") != std::string::npos) s.objfit = 2;
+            else s.objfit = 0;
         }
         else if (prop == "width" || prop == "min-width" || prop == "max-width") {
             bool* set; float* val; bool* pct;
@@ -513,6 +569,7 @@ struct Ctx {
     // list bullets land on top of their first letter.
     float line_left  = 0;
     float line_avail = 0;
+    std::string base_dir;   // dir del documento: <img>/background-image relativos
 
     int   align = 0;               // of the block being laid out
     std::vector<WordPending> pending;
@@ -683,9 +740,9 @@ void layout_flex_item(Ctx& c, const dom::Node& el, const Style& st,
             bg.glen = std::max(1.f, std::fabs(bg.w * bg.gdx) +
                                     std::fabs(bg.h * bg.gdy));
         }
-        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(bg));
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()), std::move(bg));
     } else if (st.has_block_bg) {
-        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()),
                             {ShapeCmd::Kind::RRect, x, y, box_w, hh, 4,
                              st.block_bg});
     }
@@ -946,9 +1003,9 @@ void layout_flex(Ctx& c, const dom::Node& el, float left, float avail,
             g.glen = std::max(1.f, std::fabs(box_width * g.gdx) +
                                    std::fabs(box_h * g.gdy));
         }
-        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(g));
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()), std::move(g));
     } else if (s.has_block_bg) {
-        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()),
                             {ShapeCmd::Kind::RRect, box_left, box_y,
                              box_width, box_h, 4, s.block_bg});
     }
@@ -1032,6 +1089,47 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 
         c.line_w += bw + 10;
         c.line_h = std::max(c.line_h, bh);
+        c.line_has_atom = true;
+        return;
+    }
+
+    if (tag == "img") {
+        // atomo inline con la imagen decodificada (fill/cover/contain)
+        const std::string src = el.attr_or("src");
+        if (src.empty()) return;
+        std::string full = src;
+        if (!full.starts_with('/') && !c.base_dir.empty()) full = c.base_dir + full;
+        const ImageBitmap* bm = load_image(full);
+        if (!bm) return;
+        float dw = s.w_set ? s.w_val : float(bm->w);
+        float dh = s.h_set ? s.h_val : float(bm->h);
+        float sx = 0, sy = 0, sw = float(bm->w), sh = float(bm->h);
+        if (s.objfit == 1 && dw > 0 && dh > 0) {   // cover: recorta el centro
+            const float sc = std::max(dw / float(bm->w), dh / float(bm->h));
+            sw = dw / sc;
+            sh = dh / sc;
+            sx = (float(bm->w) - sw) / 2.f;
+            sy = (float(bm->h) - sh) / 2.f;
+        } else if (s.objfit == 2 && dw > 0 && dh > 0) {   // contain: encaja
+            const float sc = std::min(dw / float(bm->w), dh / float(bm->h));
+            dw = float(bm->w) * sc;
+            dh = float(bm->h) * sc;
+        }
+        dw = std::max(1.f, dw);
+        dh = std::max(1.f, dh);
+        if (c.line_w > 0 && c.line_w + dw + 2 > avail) c.flush();
+        if (c.line_w == 0) c.line_h = std::max(c.line_h, dh);
+        ShapeCmd g;
+        g.kind = ShapeCmd::Kind::Image;
+        g.x = left + c.line_w;
+        g.y = c.y;
+        g.w = dw;
+        g.h = dh;
+        g.img = std::shared_ptr<const ImageBitmap>(bm, [](const ImageBitmap*) {});
+        g.sx = sx; g.sy = sy; g.sw = sw; g.sh = sh;
+        c.out.shapes.push_back(std::move(g));
+        c.line_w += dw + 2;
+        c.line_h = std::max(c.line_h, dh);
         c.line_has_atom = true;
         return;
     }
@@ -1125,7 +1223,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
             start = nl + 1;
         }
         if (s.has_block_bg)
-            c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+            c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()),
                                 {ShapeCmd::Kind::RRect, box_left, box_y,
                                  box_width, c.y - box_y, 6, s.block_bg});
         if (s.pb > 0 || s.border_w > 0) {
@@ -1180,11 +1278,62 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                     g.gry = std::max(g.gry, std::fabs(yy - g.gcy));
                 }
         }
-        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(g));
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()), std::move(g));
     } else if (s.has_block_bg) {   // the box paints before every word
-        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()),
                             {ShapeCmd::Kind::RRect, box_left, box_y,
                              box_width, box_h, 4, s.block_bg});
+    }
+    if (!s.bg_image.empty()) {   // tiles de background-image bajo los hijos
+        std::string full = s.bg_image;
+        if (!full.starts_with('/') && !c.base_dir.empty()) full = c.base_dir + full;
+        const ImageBitmap* bm = load_image(full);
+        if (bm && bm->w > 0 && bm->h > 0) {
+            float tw = float(bm->w), th = float(bm->h);
+            float sx = 0, sy = 0, sw = tw, sh = th;
+            if (s.bg_size == 1) {   // cover: recorta el centro del bitmap
+                const float sc = std::max(box_width / tw, box_h / th);
+                sw = box_width / sc;
+                sh = box_h / sc;
+                sx = (tw - sw) / 2.f;
+                sy = (th - sh) / 2.f;
+                tw = box_width;
+                th = box_h;
+            } else if (s.bg_size == 2) {   // contain
+                const float sc = std::min(box_width / tw, box_h / th);
+                tw *= sc;
+                th *= sc;
+            }
+            int nx = 1, ny = 1;
+            if (s.bg_repeat == 0) {
+                nx = int(std::ceil(box_width / std::max(1.f, tw)));
+                ny = int(std::ceil(box_h / std::max(1.f, th)));
+            } else if (s.bg_repeat == 2) {
+                nx = int(std::ceil(box_width / std::max(1.f, tw)));
+            } else if (s.bg_repeat == 3) {
+                ny = int(std::ceil(box_h / std::max(1.f, th)));
+            }
+            nx = std::clamp(nx, 1, 80);
+            ny = std::clamp(ny, 1, 80);
+            const float ox = (box_width - tw) * s.bg_px;
+            const float oy = (box_h - th) * s.bg_py;
+            int k = 0;
+            for (int iy = 0; iy < ny; ++iy)
+                for (int ix = 0; ix < nx; ++ix) {
+                    ShapeCmd g;
+                    g.kind = ShapeCmd::Kind::Image;
+                    g.x = box_left + ix * tw + ox;
+                    g.y = box_y + iy * th + oy;
+                    g.w = tw;
+                    g.h = th;
+                    g.img = std::shared_ptr<const ImageBitmap>(bm,
+                                                               [](const ImageBitmap*) {});
+                    g.sx = sx; g.sy = sy; g.sw = sw; g.sh = sh;
+                    c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark + 1 + k, c.out.shapes.size()),
+                                        std::move(g));
+                    ++k;
+                }
+        }
     }
     if (s.border_w > 0) {   // los 4 lados, solid
         c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
@@ -1213,11 +1362,12 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 } // namespace
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
-                    const std::string& page_css) {
+                    const std::string& page_css, const std::string& base_dir) {
     LayoutResult out;
     Ctx c{font, out};
     StyleResolver res(page_css, viewport_w);
     c.res = &res;
+    c.base_dir = base_dir;
 
     // Chromium: el body aporta el margen (8px por defecto) y el contenido
     // mide el ancho completo menos esos margenes.  Fuera la columna de
