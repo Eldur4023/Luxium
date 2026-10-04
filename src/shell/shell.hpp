@@ -20,16 +20,18 @@
 #include <string>
 
 struct SDL_Window;
+struct SDL_Cursor;
 struct SDL_Renderer;
 struct SDL_Texture;
 
 namespace luxium::shell {
 
 struct ShellConfig {
-    int  width      = 1100;
-    int  height     = 780;
+    int  width      = 1180;
+    int  height     = 820;
     std::string font_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     std::string font_bold    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+    std::string font_mono    = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
     std::string title        = "Luxium";
 };
 
@@ -54,6 +56,10 @@ private:
     float page_h() const;
     void draw_scrollbar();
     bool handle_click(int mx, int my);  // page coords -> hit test -> page
+
+    int         mouse_x_ = 0, mouse_y_ = 0;
+    bool        cursor_over_clickable_ = false;
+    SDL_Cursor* cursor_hand_ = nullptr;
 
     page::Page&    page_;
     ShellConfig    cfg_;

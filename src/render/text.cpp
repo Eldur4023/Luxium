@@ -25,7 +25,8 @@ struct Font::Face {
 
 static FT_Library ft_lib = nullptr;   // process-wide, fine per FreeType docs
 
-std::unique_ptr<Font> Font::load(const std::string& regular, const std::string& bold) {
+std::unique_ptr<Font> Font::load(const std::string& regular, const std::string& bold,
+                                 const std::string& mono) {
     if (!ft_lib && FT_Init_FreeType(&ft_lib)) return nullptr;
     auto font = std::unique_ptr<Font>(new Font());
     auto load_face = [&](std::unique_ptr<Face>& slot, const std::string& path) {
@@ -36,32 +37,35 @@ std::unique_ptr<Font> Font::load(const std::string& regular, const std::string& 
         slot = std::move(f);
         return true;
     };
-    if (!load_face(font->regular_, regular) || !load_face(font->bold_, bold))
+    if (!load_face(font->regular_, regular) || !load_face(font->bold_, bold) ||
+        !load_face(font->mono_, mono))
         return nullptr;
     return font;
 }
 
 Font::~Font() = default;
 
-Font::Face* Font::face(bool bold) const { return bold ? bold_.get() : regular_.get(); }
+Font::Face* Font::face(bool bold, bool mono) const {
+    return mono ? mono_.get() : (bold ? bold_.get() : regular_.get());
+}
 
 void Font::set_size(float px) {
     size_ = px;
-    for (Face* f : {regular_.get(), bold_.get()})
+    for (Face* f : {regular_.get(), bold_.get(), mono_.get()})
         FT_Set_Pixel_Sizes(f->ft, 0, static_cast<FT_UInt>(px));
 }
 
 float Font::ascent() const {
-    return static_cast<float>(face(false)->ft->size->metrics.ascender) / 64.f;
+    return static_cast<float>(face(false, false)->ft->size->metrics.ascender) / 64.f;
 }
 
 float Font::line_height() const {
-    FT_Face f = face(false)->ft;
+    FT_Face f = face(false, false)->ft;
     return static_cast<float>(f->size->metrics.ascender + -f->size->metrics.descender) / 64.f;
 }
 
-ShapedRun Font::shape(std::string_view utf8, bool bold) const {
-    Face* f = face(bold);
+ShapedRun Font::shape(std::string_view utf8, bool bold, bool mono) const {
+    Face* f = face(bold, mono);
     hb_buffer_reset(f->buf);
     hb_buffer_add_utf8(f->buf, utf8.data(), static_cast<int>(utf8.size()), 0, -1);
     hb_buffer_set_direction(f->buf, HB_DIRECTION_LTR);
@@ -87,12 +91,12 @@ ShapedRun Font::shape(std::string_view utf8, bool bold) const {
     return run;
 }
 
-const Glyph& Font::glyph(uint32_t glyph_index, bool bold) const {
-    const uint64_t key = (static_cast<uint64_t>(glyph_index) << 1) | (bold ? 1 : 0);
+const Glyph& Font::glyph(uint32_t glyph_index, bool bold, bool mono) const {
+    const uint64_t key = (static_cast<uint64_t>(glyph_index) << 2) | (bold ? 2 : 0) | (mono ? 1 : 0);
     auto it = cache_.find(key);
     if (it != cache_.end()) return it->second;
 
-    Face* f = face(bold);
+    Face* f = face(bold, mono);
     Glyph g;
     if (!FT_Load_Glyph(f->ft, glyph_index, FT_LOAD_DEFAULT) &&
         !FT_Render_Glyph(f->ft->glyph, FT_RENDER_MODE_NORMAL)) {
@@ -110,7 +114,7 @@ const Glyph& Font::glyph(uint32_t glyph_index, bool bold) const {
     return cache_.emplace(key, std::move(g)).first->second;
 }
 
-std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold) {
+std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold, bool mono) {
     // HTML white space: a newline or a tab inside a run of text is a space
     // (explicit breaks are <br>'s job).  Left in place, the bytes reach
     // HarfBuzz and come back as .notdef boxes on screen.
@@ -127,9 +131,10 @@ std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold
         if (i == start) break;
         Word w;
         w.text   = flat.substr(start, i - start);
-        w.shaped = font.shape(w.text, bold);
+        w.shaped = font.shape(w.text, bold, mono);
         w.width  = w.shaped.width;
         w.bold   = bold;
+        w.mono   = mono;
         out.push_back(std::move(w));
     }
     return out;
@@ -141,7 +146,7 @@ void draw_word(std::span<uint32_t> fb, int fb_w, int fb_h,
     const float ascent = font.ascent();   // line-box top -> baseline
 
     for (const auto& p : w.shaped.positions) {
-        const Glyph& g = font.glyph(p.glyph_index, w.bold);
+        const Glyph& g = font.glyph(p.glyph_index, w.bold, w.mono);
         const int gx = static_cast<int>(x + p.x) + g.bearing_x;
         const int gy = static_cast<int>(y + ascent) - g.bearing_y;
         for (int r = 0; r < g.height; ++r) {

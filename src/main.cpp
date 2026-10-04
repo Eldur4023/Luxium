@@ -46,9 +46,13 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    luxium::shell::Shell shell(page, {1100, 780, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    std::string title = "Luxium";
+    if (!page.page_title().empty()) title += " \xE2\x80\x94 " + page.page_title();
+    luxium::shell::Shell shell(page, {1180, 820,
+                                      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                                      "Luxium \xE2\x80\x94 " + std::string(path)});
+                                      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                                      title});
     for (const auto& id : clicks) page.click_by_id(id);
     if (shot) return shell.screenshot(shot);   // SDL dummy driver, one frame
     return shell.run();

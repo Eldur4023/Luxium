@@ -35,7 +35,8 @@ public:
     // fallback: a browser without its font is a build error, not a runtime
     // one (see the paths in shell.cpp).
     static std::unique_ptr<Font> load(const std::string& regular,
-                                      const std::string& bold);
+                                      const std::string& bold,
+                                      const std::string& mono);
     ~Font();
 
     void set_size(float px);      // per-pixel em; cheap (FreeType set_pixel_sizes)
@@ -43,19 +44,19 @@ public:
     float line_height() const;    // ascent + descent of the current size
     float ascent() const;         // baseline sits this far below the line top
 
-    // UTF-8 -> positioned glyphs.  `bold` selects the face.
-    ShapedRun shape(std::string_view utf8, bool bold) const;
+    // UTF-8 -> positioned glyphs.  bold/mono select the face.
+    ShapedRun shape(std::string_view utf8, bool bold, bool mono = false) const;
 
     // The cached bitmap for a shaped glyph index at the current size.
-    const Glyph& glyph(uint32_t glyph_index, bool bold) const;
+    const Glyph& glyph(uint32_t glyph_index, bool bold, bool mono = false) const;
 
 private:
     struct Face;
-    std::unique_ptr<Face> regular_, bold_;
+    std::unique_ptr<Face> regular_, bold_, mono_;
     float size_ = 16;
-    Face* face(bool bold) const;
+    Face* face(bool bold, bool mono) const;
 
-    mutable std::unordered_map<uint64_t, Glyph> cache_;
+    mutable std::unordered_map<uint64_t, Glyph> cache_;   // key: idx<<2 | bold<<1 | mono
     friend struct Face;
 };
 
@@ -66,12 +67,13 @@ struct Word {
     ShapedRun shaped;
     float    width = 0;
     bool     bold  = false;
+    bool     mono  = false;
     std::string text;         // for the console pane / debugging
 };
 
 // Splits utf8 into words on ASCII spaces, shaping each.  Newlines never
 // reach here: the layout layer handles explicit breaks first.
-std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold);
+std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold, bool mono = false);
 
 // Draws a shaped word with the top-left of its line box at (x, y); y is the
 // TOP of the line, glyphs are placed via ascent.  `argb` is 0xAARRGGBB.
