@@ -121,6 +121,11 @@ struct Style {
     int      order = 0;
     float    grow = 0, shrink = 1, gap = 0;
     bool     basis_set = false; float basis_val = 0; bool basis_pct = false;
+    // grid nivel 1
+    bool     grid = false;
+    std::vector<std::string> gcols, grows;
+    int      gc_start = 0, gc_span = 0, gr_start = 0, gr_span = 0;  // 0 = auto
+    int      jitems = 0;     // 0 stretch, 1 start, 2 center, 3 end
 };
 
 uint32_t parse_color(const std::string& v, uint32_t fallback) {
@@ -190,6 +195,37 @@ std::vector<std::string> css_tokens_sep(const std::string& v, char sep) {
     }
     if (!cur.empty()) out.push_back(cur);
     return out;
+}
+
+// pistas de grid: separa por espacios fuera de parentesis y expande repeat
+std::vector<std::string> split_tracks(const std::string& v) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    for (char ch : v) {
+        if (ch == '(') { ++depth; cur += ch; }
+        else if (ch == ')') { --depth; cur += ch; }
+        else if (std::isspace(static_cast<unsigned char>(ch))) {
+            if (depth == 0) { if (!cur.empty()) { out.push_back(cur); cur.clear(); } }
+            else cur += static_cast<char>(std::tolower(ch));
+        } else cur += static_cast<char>(std::tolower(ch));
+    }
+    if (!cur.empty()) out.push_back(cur);
+    std::vector<std::string> out2;
+    for (const auto& t : out) {
+        if (t.starts_with("repeat(") && t.ends_with(')')) {
+            const size_t p = t.find('(');
+            const size_t c = t.find(',');
+            if (p != std::string::npos && c != std::string::npos) {
+                const int n = std::atoi(t.substr(p + 1, c - p - 1).c_str());
+                const std::string spec = t.substr(c + 1);
+                for (int k = 0; k < n && k < 64; ++k) out2.push_back(spec);
+                continue;
+            }
+        }
+        out2.push_back(t);
+    }
+    return out2;
 }
 
 // border / border-width: <width> | <style> | <color> en cualquier orden.
@@ -444,6 +480,30 @@ struct StyleResolver {
         else if (prop == "display") {
             s.display_none = (v == "none");
             s.flex = (v.find("flex") != std::string::npos);
+            s.grid = (v.find("grid") != std::string::npos);
+        }
+        else if (prop == "grid-template-columns") s.gcols = split_tracks(v);
+        else if (prop == "grid-template-rows")    s.grows = split_tracks(v);
+        else if (prop == "grid-column" || prop == "grid-row") {
+            // "2" | "1 / 3" | "span 2"
+            const auto toks = css_tokens(v);
+            int a = 0, b = 0;
+            if (!toks.empty() && toks[0] == "span") {
+                if (toks.size() > 1) b = std::atoi(toks[1].c_str());
+                if (prop == "grid-column") { s.gc_start = 0; s.gc_span = std::max(1, b); }
+                else                       { s.gr_start = 0; s.gr_span = std::max(1, b); }
+            } else {
+                if (!toks.empty()) a = std::atoi(toks[0].c_str());
+                if (toks.size() > 2) b = std::atoi(toks[2].c_str());
+                if (prop == "grid-column") { s.gc_start = a; s.gc_span = b > a ? b - a : 1; }
+                else                       { s.gr_start = a; s.gr_span = b > a ? b - a : 1; }
+            }
+        }
+        else if (prop == "justify-items") {
+            if (v.find("center") != std::string::npos)              s.jitems = 2;
+            else if (v.find("end") != std::string::npos)            s.jitems = 3;
+            else if (v.find("start") != std::string::npos)          s.jitems = 1;
+            else s.jitems = 0;   // stretch
         }
         else if (prop == "flex-direction") s.dir_column = v.find("column") != std::string::npos;
         else if (prop == "flex-wrap")      s.wrap = v.find("wrap") != std::string::npos &&
@@ -1131,6 +1191,230 @@ void layout_flex(Ctx& c, const dom::Node& el, float left, float avail,
     c.y += s.pb + s.border_w;
 }
 
+// ── grid (nivel 1): columnas px/fr, auto-placement por filas, spans ────────
+void layout_grid(Ctx& c, const dom::Node& el, float left, float avail,
+                 const Style& parent) {
+    const Style s = c.res->compute(el, parent);
+    if (s.display_none) return;
+    if (in_list(el.name, kSkipped, std::size(kSkipped))) return;
+
+    const bool trapped = s.pt > 0 || s.border_w > 0 || s.h_set;
+    if (trapped) { c.y += collapse(c.pend, s.mt); c.pend = 0; }
+    else { c.pend = collapse(c.pend, s.mt); }
+    const float box_y = trapped ? c.y : c.y + c.pend;
+
+    c.flush();
+    c.glue_next = false;
+
+    const float inner_left = left + s.ml + s.border_w + s.pl;
+    const float inner_w    = std::max(1.f, avail - s.ml - s.pl - s.pr);
+    const float inner_top  = c.y + s.pt;
+    const bool  cross_fixed = s.h_set;
+    const float cross_h = s.h_set ? std::max(0.f, s.h_val - s.pt - s.pb) : 0.f;
+    const size_t bg_mark = c.out.shapes.size();
+
+    // ── items
+    struct GItem {
+        const dom::Node* el = nullptr;
+        Style st;
+        int r0 = 0, c0 = 0, rs = 1, cs = 1;   // celdas (0-based)
+        float mw = 0, mh = 0, w = 0, h = 0;
+    };
+    std::vector<GItem> items;
+    for (const auto& ch : el.children) {
+        if (!ch->is_element()) continue;
+        if (in_list(ch->name, kSkipped, std::size(kSkipped))) continue;
+        GItem it;
+        it.el = ch.get();
+        it.st = c.res->compute(*ch, s);
+        if (it.st.display_none) continue;
+        it.c0 = it.st.gc_start > 0 ? it.st.gc_start - 1 : -1;   // -1 = auto
+        it.c0 = it.st.gc_start > 0 ? it.st.gc_start - 1 : -1;
+        it.cs = it.st.gc_span > 0 ? it.st.gc_span : 1;
+        it.r0 = it.st.gr_start > 0 ? it.st.gr_start - 1 : -1;
+        it.rs = it.st.gr_span > 0 ? it.st.gr_span : 1;
+        items.push_back(std::move(it));
+    }
+
+    // ── pistas de columna
+    std::vector<std::string> col_specs = s.gcols;
+    for (const auto& it : items)
+        if (it.c0 >= 0)
+            while ((int)col_specs.size() < it.c0 + it.cs) col_specs.push_back("auto");
+    const int ncols = std::max<int>(1, (int)col_specs.size());
+
+    // ── placement: explicitos primero, luego auto row-major
+    std::vector<std::vector<bool>> occ(200, std::vector<bool>(ncols, false));
+    int max_row = 0;
+    for (auto& it : items) {
+        if (it.c0 >= 0) {
+            int r = it.r0 >= 0 ? it.r0 : 0;
+            auto fits = [&](int rr) {
+                for (int k = 0; k < it.cs; ++k)
+                    if (it.c0 + k < ncols && occ[rr][it.c0 + k]) return false;
+                return true;
+            };
+            while (r < 199 && !fits(r)) ++r;
+            it.r0 = r; it.c0 = std::min(it.c0, ncols - it.cs);
+            for (int k = 0; k < it.cs; ++k) occ[r][std::min(ncols - 1, it.c0 + k)] = true;
+            max_row = std::max(max_row, r + it.rs);
+        }
+    }
+    for (auto& it : items) {
+        if (it.c0 >= 0) continue;
+        int r = 0, col = 0;
+        bool placed = false;
+        for (; r < 199 && !placed; ++r) {
+            for (col = 0; col + it.cs <= ncols; ++col) {
+                bool free = true;
+                for (int k = 0; k < it.cs && free; ++k) free = !occ[r][col + k];
+                if (free) { it.r0 = r; it.c0 = col; placed = true; break; }
+            }
+            if (placed) break;
+        }
+        if (!placed) { it.r0 = 0; it.c0 = 0; }
+        for (int k = 0; k < it.cs; ++k) occ[it.r0][std::min(ncols - 1, it.c0 + k)] = true;
+        max_row = std::max(max_row, it.r0 + it.rs);
+    }
+    const int nrows = std::max(max_row, 1);
+
+    // ── anchuras de columna
+    std::vector<float> colw(ncols, 0.f);
+    float fixed_sum = 0;
+    int fr_total = 0;
+    std::vector<int> fr_idx;
+    for (int i = 0; i < ncols; ++i) {
+        const std::string spec = i < (int)col_specs.size() ? col_specs[i] : "auto";
+        if (spec.ends_with("fr")) {
+            fr_idx.push_back(i);
+            fr_total += std::max(1, int(std::stof(spec)));
+        } else if (spec == "auto") {
+            colw[i] = -1.f;   // resuelto por contenido
+        } else {
+            colw[i] = std::max(0.f, parse_len(spec, 16.f, 0));
+            fixed_sum += colw[i];
+        }
+    }
+    // contenido de las auto (max de los items que las tocan)
+    for (auto& it : items) {
+        float mw = 0, mh = 0;
+        measure_subtree(c, *it.el, it.st, inner_w, mw, mh);
+        it.mw = mw; it.mh = mh;
+        for (int k = 0; k < it.cs; ++k) {
+            const int col = std::min(ncols - 1, it.c0 + k);
+            if (colw[col] < 0) colw[col] = std::max(colw[col], it.mw / float(it.cs));
+        }
+    }
+    float neg_cnt_f = 0;
+    int neg_cnt = 0;
+    for (int i = 0; i < ncols; ++i)
+        if (colw[i] < 0) { colw[i] = 0; ++neg_cnt; }
+    (void)neg_cnt_f;
+    const float gap_total_c = s.gap * std::max(0, ncols - 1);
+    float free_c = inner_w - fixed_sum - gap_total_c;
+    for (int i = 0; i < ncols; ++i) if (colw[i] < 0) { colw[i] = 0; }
+    if (fr_total > 0 && free_c > 0) {
+        for (int i : fr_idx) {
+            const std::string spec = col_specs[i];
+            colw[i] = free_c * float(std::atoi(spec.c_str())) / float(fr_total);
+        }
+    } else if (fr_total == 0 && neg_cnt > 0) {
+        const float share = std::max(0.f, free_c) / neg_cnt;
+        for (int i = 0; i < ncols; ++i) if (colw[i] <= 0 && (col_specs[i] == "auto")) colw[i] = share;
+    }
+
+    // ── filas: altura = max de los items de la fila (a su ancho asignado)
+    std::vector<float> rowh(nrows, 0.f);
+    for (auto& it : items) {
+        float wspan = s.gap * std::max(0, it.cs - 1);
+        for (int k = 0; k < it.cs; ++k)
+            wspan += colw[std::min(ncols - 1, it.c0 + k)];
+        float mw = 0, mh = 0;
+        measure_subtree(c, *it.el, it.st, wspan, mw, mh);
+        it.w = wspan;
+        it.h = mh;
+        for (int k = 0; k < it.rs; ++k)
+            if (it.r0 + k < nrows) rowh[it.r0 + k] = std::max(rowh[it.r0 + k], mh);
+    }
+    // grid-template-rows px fijos
+    for (int r = 0; r < nrows && r < (int)s.grows.size(); ++r)
+        if (s.grows[r].ends_with("px"))
+            rowh[r] = std::max(0.f, parse_len(s.grows[r], 16.f, 0));
+    if (cross_fixed && nrows == 1) rowh[0] = std::max(rowh[0], cross_h);
+
+    // ── render de items
+    auto col_x = [&](int ci) {
+        float x = inner_left;
+        for (int i = 0; i < std::min(ci, ncols); ++i) x += colw[i] + s.gap;
+        return x;
+    };
+    auto row_y = [&](int ri) {
+        float y = inner_top;
+        for (int i = 0; i < std::min(ri, nrows); ++i) y += rowh[i] + s.gap;
+        return y;
+    };
+    for (auto& it : items) {
+        float wspan = s.gap * std::max(0, it.cs - 1);
+        for (int k = 0; k < it.cs; ++k) wspan += colw[std::min(ncols - 1, it.c0 + k)];
+        float hspan = s.gap * std::max(0, it.rs - 1);
+        for (int k = 0; k < it.rs; ++k) hspan += rowh[std::min(nrows - 1, it.r0 + k)];
+        float x = col_x(it.c0);
+        float y = row_y(it.r0);
+        float w = wspan, h = hspan;
+        // justify-items del contenedor
+        if (s.jitems == 2 && it.mw > 0) { x += (w - std::min(w, it.mw)) / 2.f; w = std::min(w, it.mw); }
+        else if (s.jitems == 3 && it.mw > 0) { x += std::max(0.f, w - it.mw); w = std::min(w, it.mw); }
+        else if (s.jitems == 1 && it.mw > 0) w = std::min(w, it.mw);
+        // align-items del contenedor
+        const int eff = it.st.falign_self >= 0 ? it.st.falign_self : s.falign;
+        if (eff == 2 && it.h > 0) { y += (h - it.h) / 2.f; h = it.h; }
+        else if (eff == 3) { y += std::max(0.f, h - it.h); h = std::min(h, it.h); }
+        layout_flex_item(c, *it.el, it.st, x, y, w, h);
+    }
+
+    // ── fondo/borde del contenedor
+    const float box_left  = left + s.ml;
+    const float box_width = avail - s.ml;
+    float content_bottom = inner_top;
+    for (int r = 0; r < nrows; ++r) content_bottom += rowh[r] + s.gap;
+    const float box_h = (cross_fixed ? inner_top + cross_h + s.pb + s.border_w
+                                     : content_bottom + s.pb + s.border_w) - box_y;
+    if (s.has_grad && s.bg_grad.stops.size() >= 2) {
+        ShapeCmd g;
+        g.kind = ShapeCmd::Kind::Rect;
+        g.x = box_left; g.y = box_y; g.w = box_width; g.h = box_h;
+        g.grad = true;
+        g.grad_radial = s.bg_grad.radial;
+        for (const auto& gs : s.bg_grad.stops) g.stops.push_back({gs.first, gs.second});
+        if (!g.grad_radial) {
+            const float rad = s.bg_grad.angle * 3.14159265f / 180.f;
+            g.gdx = std::sin(rad);
+            g.gdy = -std::cos(rad);
+            g.glen = std::max(1.f, std::fabs(box_width * g.gdx) +
+                                   std::fabs(box_h * g.gdy));
+        }
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(g));
+    } else if (s.has_block_bg) {
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+                            {ShapeCmd::Kind::RRect, box_left, box_y,
+                             box_width, box_h, 4, s.block_bg});
+    }
+    if (s.border_w > 0) {
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
+                                box_width, s.border_w, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left,
+                                box_y + box_h - s.border_w, box_width,
+                                s.border_w, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
+                                s.border_w, box_h, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left + box_width - s.border_w,
+                                box_y, s.border_w, box_h, s.border_color});
+    }
+
+    c.y += s.mb;
+    c.y += s.pb + s.border_w;
+}
+
 void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                   const Style& parent) {
     if (el.type != dom::NodeType::Element) return;
@@ -1143,6 +1427,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 
     if (s.flex) {   // contenedor flex: motor propio (nivel 1)
         layout_flex(c, el, left, avail, parent);
+        return;
+    }
+    if (s.grid) {   // contenedor grid: motor propio (nivel 1)
+        layout_grid(c, el, left, avail, parent);
         return;
     }
 
