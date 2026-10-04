@@ -3,12 +3,17 @@
 Objetivo: que el **renderer propio** (sin CEF) pinta CSS tan parecido a
 Chromium como sea razonable para un motor en espacio de usuario: cajas,
 texto, color, imágenes y los dos grandes sistemas de layout modernos
-(flexbox, grid), con un **criterio de parecido medible**, no a ojo.
+(flexbox, grid).
+
+Criterio de éxito (decisión del proyecto): **todo lo que se pueda hacer en
+Chromium se debe poder hacer en Luxium y SE VER IGUAL.**  La comparación
+que manda es la visual — píxeles contra el oráculo; las comparaciones
+estructurales (rects/computed por elemento) quedan como herramienta de
+depuración cuando un diff visual no se explica solo.
 
 Regla de oro: cada fase termina con pruebas comparadas contra Chromium.
 Tenemos el oráculo perfecto en casa — CEF/Chromium off-screen (M6) puede
-renderizar la misma página y ejecutarle JS. Nada de adivinar valores:
-**se miden**.
+renderizar la misma página.  Nada de adivinar valores: **se miden**.
 
 ---
 

@@ -202,18 +202,29 @@ nunca diferencias de forma).
 
 ---
 
-## 4. Reglas de veredicto
+## 4. Reglas de veredicto (las que implementa `tools/cssrun.py`)
 
-- **PASS** = todos los `data-t` dentro de tolerancia (rects ±1px, computed
-  exacto) y, si el test es de píxel, debajo del umbral del catálogo
-  (por defecto 2%; los marcados "píxel" en 3.x llevan el suyo).
-- **FAIL** siempre imprime: elemento, propiedad, esperado, obtenido.
+- Cada test se renderiza con nuestro motor (`--shot`) y se recorta al área
+  de página; el golden es el render de **Chromium** (`--cefshot`) de la
+  MISMA página, misma fuente, mismo tamaño.
+- **PASS** exige las dos:
+  1. **% de píxeles distintos** (luminancia > 24) por debajo del umbral del
+     test — 2% por defecto, ajustable por test con
+     `<!-- cssrun: threshold=3.5 -->` en el HTML para los que tengan ruido
+     legítimo de anti-aliasing;
+  2. **sin regiones sólidas grandes**: píxeles de diff dentro de una
+     ventana 9x9 al 80% — por encima de 50, es que falta (o está
+     desplazado) un elemento entero y se ve a simple vista, aunque el %
+     total sea pequeño.  Esto es lo que impide que "un elemento pequeño
+     ausente" se cuele bajo el porcentaje.
+- **FAIL** imprime qué regla se rompió y cuánto; el render nuestro queda
+  en `css-tests/out/` para compararlo a ojo con el golden.
 - Un test que el oráculo renderiza distinto entre dos corridas es un bug
   del harness, no del motor: se congela (mismo binario CEF, mismas fuentes,
   sin red) y se investiga antes de seguir.
 - Los tests nunca se "arreglan" relajando tolerancias: se abre variante
   `-known.html` documentando la desviación y su causa (y esa lista, corta,
-  es el nobel del motor: la deuda exacta con Chromium).
+  es la deuda exacta con Chromium).
 
 ## 5. Cuándo corre cada cosa
 

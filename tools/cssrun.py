@@ -15,10 +15,12 @@
 #   python3 tools/cssrun.py --list         # enumerar
 #   python3 tools/cssrun.py --bless ID     # NO usar salvo para goldens del oráculo
 #
-# Veredictos: PASS (<= umbral de píxeles distintos), FAIL, PENDIENTE (sin
-# golden), ERROR (el shot falló).  Exit 1 solo con FAIL o ERROR.
+# Veredictos: PASS (<= umbral de píxeles distintos Y sin regiones sólidas
+# grandes), FAIL, PENDIENTE (sin golden), ERROR (el shot falló).  Exit 1 solo
+# con FAIL o ERROR.
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -35,7 +37,48 @@ SHOT_PPM = Path("/tmp/opencode/cssrun.ppm")
 URL_BAR_H = 38       # kUrlH
 STATUS_H = 20        # tira de estado inferior
 LUM_DIFF = 24        # anti-aliasing perdonado: umbral de luminancia por píxel
-PCT_THRESHOLD = 2.0  # % de píxeles distintos permitido
+PCT_THRESHOLD = 2.0  # % de píxeles distintos permitido (por defecto)
+SOLID_WIN = 9        # ventana de "region solida": 9x9
+SOLID_FRAC = 0.8     # >=80% de la ventana con diff = interior de un blob
+SOLID_MAX = 50       # pixeles "solidos" permitidos (elementos ausentes)
+
+
+def test_options(html: Path):
+    """Umbral y solido por test via comentario en el HTML:
+    <!-- cssrun: threshold=3.5 solid=80 -->"""
+    th, so = PCT_THRESHOLD, SOLID_MAX
+    try:
+        m = re.search(r"cssrun:\s*(.*)", html.read_text(encoding="utf-8", errors="ignore"))
+    except OSError:
+        return th, so
+    if m:
+        d = dict(re.findall(r"(threshold|solid)\s*=\s*([\d.]+)", m.group(1)))
+        th = float(d.get("threshold", th))
+        so = float(d.get("solid", so))
+    return th, so
+
+
+def solid_dirty(a: Image.Image, b: Image.Image):
+    """Pixeles de diff que estan DENTRO de una region grande y solida:
+    un elemento ausente o desplazado deja miles; el ruido de antialiasing,
+    casi ninguno.  Es el detector de 'falta algo que se ve a simple vista'."""
+    aa = np.asarray(a).astype(np.int32)
+    bb = np.asarray(b).astype(np.int32)
+    dl = np.abs(aa.mean(axis=2) - bb.mean(axis=2)) > LUM_DIFF
+    ii = np.cumsum(np.cumsum(dl.astype(np.int32), 0), 1)
+    ii = np.pad(ii, ((1, 0), (1, 0)))
+    h, w = dl.shape
+    r = SOLID_WIN // 2
+    ys = np.arange(h)
+    xs = np.arange(w)
+    y1 = np.minimum(ys + r + 1, h)
+    y0 = np.maximum(ys - r, 0)
+    x1 = np.minimum(xs + r + 1, w)
+    x0 = np.maximum(xs - r, 0)
+    s = (ii[np.ix_(y1, x1)] - ii[np.ix_(y0, x1)]
+         - ii[np.ix_(y1, x0)] + ii[np.ix_(y0, x0)])
+    area = (y1 - y0)[:, None] * (x1 - x0)[None, :]
+    return int((dl & (s >= SOLID_FRAC * area)).sum())
 
 
 def find_tests():
@@ -82,8 +125,17 @@ def run_one(rel: str, bless: bool) -> str:
             parents=True, exist_ok=True)
         img.save(OUT / (rel[:-len(".html")] + ".png"))
         return "PENDIENTE"
+    th, solid_max = test_options(html)
     pct, bad = pixel_diff(img, Image.open(golden).convert("RGB"))
-    return f"PASS ({pct:.2f}%)" if pct <= PCT_THRESHOLD else f"FAIL ({pct:.2f}% {bad}px)"
+    solid = solid_dirty(img, Image.open(golden).convert("RGB"))
+    if pct <= th and solid <= solid_max:
+        return f"PASS ({pct:.2f}% solido={solid})"
+    motivo = []
+    if pct > th:
+        motivo.append(f"{pct:.2f}%>{th}%")
+    if solid > solid_max:
+        motivo.append(f"solido={solid}>{solid_max:.0f}")
+    return f"FAIL ({', '.join(motivo)})"
 
 
 def main():
