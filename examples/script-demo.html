@@ -2,44 +2,50 @@
 <html>
 <head>
     <title>Demo LuxScript</title>
+</head>
+<body>
+    <h1>Demo de LuxScript</h1>
+    <p>Todo lo que ves en la consola sale del script de esta pagina:
+       compilado a bytecode al cargar y ejecutado en el navegador.</p>
+
+    <p id="status">esperando...</p>
+
     <script>
-    # Este script compila en M2; por ahora el lexer de M0 lo tokeniza.
+    # Tipos, listas, diccionarios y funciones (tipo antes del nombre).
     int base = 41
     int factor = 2
 
-    fn duplica(int x) -> int:
+    fn int duplica(int x, int factor):
         return x * factor
 
-    if duplica(base) == 82:
+    if duplica(base, factor) == 82:
         log.info("el doble de 41 es 82")
     else:
         log.warn("matematica rara")
 
-    list<int> numeros = [3, 1, 4, 1, 5]
+    List<int> numeros = [3, 1, 4, 1, 5]
     Dict<string, int> edades = {"ana": 31, "bo": 27}
+    log.info("edades: ana=" + str(edades.get("ana")) + ", bo=" + str(edades.get("bo")))
+
+    int total = 0
+    for int x in numeros:
+        total = total + x
+    log.info("suma de la lista: " + str(total))
 
     int n = 3
     while n > 0:
         log.info("cuenta atras: " + str(n))
         n = n - 1
 
-    for x in numeros:
-        if x == 4:
-            continue
-        log.info("numero " + str(x))
+    # El DOM se toca desde aqui: la pagina completa ya existe.
+    Element status = document.get("status")
+    status.set_text("lista: " + str(numeros[0]) + "...")
     </script>
-    <style>
-    body { font-family: sans-serif; }
-    </style>
-</head>
-<body>
-    <h1 id="titulo">Demo de LuxScript</h1>
-    <p id="status">esperando...</p>
 
     <script>
-    # Segundo script: los globales del primero son visibles aqui.
-    log.info("status: " + document.get("status").text())
-    log.info("fin: " + str(duplica(base + 1)))
+    # Segundo bloque: comparte scope con el primero.
+    document.get("status").set_text("lista: " + str(duplica(base, 2) + 1))
+    log.info("segundo bloque: duplica(41,2)+1 = " + str(duplica(base, 2) + 1))
     </script>
 
     <script type="text/javascript">
