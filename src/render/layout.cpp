@@ -103,6 +103,13 @@ struct Style {
     int     bg_size = 0;     // 0 auto, 1 cover, 2 contain
     float   bg_px = 0.f, bg_py = 0.f;   // posicion como fraccion
     int     objfit = 0;      // 0 fill, 1 cover, 2 contain
+    // position + insets + z-index
+    int     pos = 0;         // 0 static, 1 relative, 2 absolute, 3 fixed
+    bool    t_set = false; float t_val = 0; bool t_pct = false;
+    bool    l_set = false; float l_val = 0; bool l_pct = false;
+    bool    r_set = false; float r_val = 0; bool r_pct = false;
+    bool    b_set = false; float b_val = 0; bool b_pct = false;
+    int     z = 0;
     // flexbox nivel 1
     bool     flex = false, dir_column = false, wrap = false;
     int      justify = 0;      // 0 start, 1 center, 2 end, 3 between, 4 around
@@ -351,6 +358,30 @@ struct StyleResolver {
             else if (v.find("contain") != std::string::npos) s.objfit = 2;
             else s.objfit = 0;
         }
+        else if (prop == "position") {
+            if (v.find("relative") != std::string::npos) s.pos = 1;
+            else if (v.find("absolute") != std::string::npos) s.pos = 2;
+            else if (v.find("fixed") != std::string::npos) s.pos = 3;
+            else s.pos = 0;
+        }
+        else if (prop == "top" || prop == "left" || prop == "right" || prop == "bottom") {
+            bool* set; float* val; bool* pct;
+            if (prop == "top")        { set = &s.t_set; val = &s.t_val; pct = &s.t_pct; }
+            else if (prop == "left")  { set = &s.l_set; val = &s.l_val; pct = &s.l_pct; }
+            else if (prop == "right") { set = &s.r_set; val = &s.r_val; pct = &s.r_pct; }
+            else                      { set = &s.b_set; val = &s.b_val; pct = &s.b_pct; }
+            if (v.find("auto") != std::string::npos) { *set = false; }
+            else {
+                *set = true;
+                *pct = v.find('%') != std::string::npos;
+                *val = std::max(0.f, parse_len(v, s.size, 0));
+            }
+        }
+        else if (prop == "z-index") {
+            if (v.find("auto") == std::string::npos) {
+                try { s.z = std::stoi(v); } catch (...) { s.z = 0; }
+            } else s.z = 0;
+        }
         else if (prop == "width" || prop == "min-width" || prop == "max-width") {
             bool* set; float* val; bool* pct;
             if (prop == "width")        { set = &s.w_set;   val = &s.w_val;   pct = &s.w_pct; }
@@ -571,6 +602,20 @@ struct Ctx {
     float line_avail = 0;
     std::string base_dir;   // dir del documento: <img>/background-image relativos
 
+    // position: containing block actual (padding box del ancestro posicionado)
+    float cb_x = 0, cb_y = 0, cb_w = 0, cb_h = 0;
+    bool  cb_positioned = false;
+    // viewport para fixed (top = bajo la barra de url)
+    float vp_w = 1180.f, vp_y = 38.f, vp_h = 762.f;
+    bool  pos_pass = false;   // pase interno de un elemento posicionado
+    struct Deferred {
+        int z = 0;
+        size_t seq = 0;
+        LayoutResult res;
+    };
+    std::vector<Deferred>* defer = nullptr;   // lista del padre actual
+    int defer_seq = 0;
+
     int   align = 0;               // of the block being laid out
     std::vector<WordPending> pending;
 
@@ -670,6 +715,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 
 void layout_children(Ctx& c, const dom::Node& el, float left, float avail,
                      const Style& el_style) {
+    // los hijos posicionados (absolute/fixed/z) se pintan al final, en orden z
+    std::vector<Ctx::Deferred> def;
+    std::vector<Ctx::Deferred>* old_defer = c.defer;
+    c.defer = &def;
     for (const auto& child : el.children) {
         if (child->type == dom::NodeType::Text) {
             c.y += c.pend;   // texto real: el margen pendiente se aplica
@@ -678,6 +727,19 @@ void layout_children(Ctx& c, const dom::Node& el, float left, float avail,
         } else if (child->is_element()) {
             layout_block(c, *child, left, avail, el_style);
         }
+    }
+    c.defer = old_defer;
+    std::stable_sort(def.begin(), def.end(),
+                     [](const Ctx::Deferred& a, const Ctx::Deferred& b) {
+                         if (a.z != b.z) return a.z < b.z;
+                         return a.seq < b.seq;
+                     });
+    for (const auto& d : def) {
+        c.out.shapes.insert(c.out.shapes.end(), d.res.shapes.begin(),
+                            d.res.shapes.end());
+        c.out.words.insert(c.out.words.end(), d.res.words.begin(),
+                           d.res.words.end());
+        c.out.hits.insert(c.out.hits.end(), d.res.hits.begin(), d.res.hits.end());
     }
 }
 
@@ -1040,6 +1102,57 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
         return;
     }
 
+    // ── absolute/fixed: fuera de flujo; se mide, se coloca en coords del
+    //    containing block y se encola para pintarse en su orden z ──
+    if ((s.pos == 2 || s.pos == 3) && !c.pos_pass && c.defer) {
+        float cbx = c.cb_x, cby = c.cb_y, cbw = c.cb_w, cbh = c.cb_h;
+        if (s.pos == 3) { cbx = 0; cby = c.vp_y; cbw = c.vp_w; cbh = c.vp_h; }
+        float w;
+        if (s.w_set)
+            w = s.w_pct ? s.w_val / 100.f * cbw : s.w_val;
+        else {
+            float mw = 0, mh = 0;
+            measure_subtree(c, el, s, cbw, mw, mh);
+            w = std::max(1.f, mw);
+        }
+        w = std::clamp(w, 1.f, cbw);
+        float mh = 0, mw2 = 0;
+        measure_subtree(c, el, s, w, mw2, mh);
+        float h = s.h_set ? s.h_val : mh;
+        const float lx = s.l_set ? (s.l_pct ? s.l_val / 100.f * cbw : s.l_val) : 0.f;
+        const float rx = s.r_set ? (s.r_pct ? s.r_val / 100.f * cbw : s.r_val) : 0.f;
+        const float ty = s.t_set ? (s.t_pct ? s.t_val / 100.f * cbh : s.t_val) : 0.f;
+        const float by = s.b_set ? (s.b_pct ? s.b_val / 100.f * cbh : s.b_val) : 0.f;
+        float x = c.line_left;
+        float y = c.y;
+        if (s.pos == 3) {
+            x = s.l_set ? cbx + lx : (s.r_set ? cbx + cbw - rx - w : cbx + lx);
+            y = s.t_set ? cby + ty : (s.b_set ? cby + cbh - by - h : cby + ty);
+        } else {
+            if (s.l_set) x = cbx + lx;
+            else if (s.r_set) x = cbx + cbw - rx - w;
+            if (s.t_set) y = cby + ty;
+            else if (s.b_set) y = cby + cbh - by - h;
+        }
+
+        LayoutResult scratch;
+        Ctx sub{c.font, scratch};
+        sub.res = c.res;
+        sub.base_dir = c.base_dir;
+        sub.pos_pass = true;
+        sub.cb_x = cbx; sub.cb_y = cby; sub.cb_w = cbw; sub.cb_h = cbh;
+        sub.cb_positioned = true;
+        sub.vp_w = c.vp_w; sub.vp_y = c.vp_y; sub.vp_h = c.vp_h;
+        sub.line_left = x;
+        sub.line_avail = w + s.ml + s.pl + s.pr;
+        sub.y = y;
+        const size_t seq = static_cast<size_t>(c.defer_seq++);
+        c.defer->push_back({s.z, seq, {}});
+        layout_block(sub, el, x, w + s.ml + s.pl + s.pr, parent);
+        c.defer->back().res = std::move(sub.out);
+        return;   // fuera de flujo: no toca y ni pend
+    }
+
     if (tag == "br") {
         c.y += c.pend;
         c.pend = 0;
@@ -1188,12 +1301,24 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     // las lineas de este bloque se miden y pintan DENTRO de su caja
     c.line_left  = inner_left;
     c.line_avail = inner_avail;
+    // un elemento posicionado se convierte en containing block de sus hijos
+    if (s.pos != 0) {
+        c.cb_x = box_left + s.border_w;
+        c.cb_y = box_y + s.border_w;
+        c.cb_w = box_width - 2 * s.border_w;
+        c.cb_h = s.h_set ? std::max(0.f, s.h_val - s.pt - s.pb) : 0.f;
+        c.cb_positioned = true;
+    }
 
     const bool li        = tag == "li";
     const bool clickable = el.has_attr("id") || tag == "a";
-    // el fondo del bloque entra en el vector ANTES de las formas de los
-    // hijos: si no, el bg del body (blanco, se emite al terminar) tapa todo
     const size_t bg_mark = c.out.shapes.size();
+    const size_t word_mark = c.out.words.size();
+    const size_t hit_mark = c.out.hits.size();
+    // un elemento posicionado se convierte en containing block de sus hijos
+    const float old_cb_x = c.cb_x, old_cb_y = c.cb_y;
+    const float old_cb_w = c.cb_w, old_cb_h = c.cb_h;
+    const bool old_cb_positioned = c.cb_positioned;
 
     if (li) {
         c.out.shapes.push_back({ShapeCmd::Kind::Circle,
@@ -1241,6 +1366,11 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     layout_children(c, el, inner_left, inner_avail, s);
     c.flush();
     c.align = parent.align;
+    if (s.pos != 0) {   // restaurar el containing block del padre
+        c.cb_x = old_cb_x; c.cb_y = old_cb_y;
+        c.cb_w = old_cb_w; c.cb_h = old_cb_h;
+        c.cb_positioned = old_cb_positioned;
+    }
 
     if (clickable && !c.out.hits.empty() && c.out.hits.back().node == &el)
         c.out.hits.back().h = std::max(c.y - c.out.hits.back().y, s.size * 1.2f);
@@ -1357,17 +1487,44 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     } else {
         c.pend = collapse(c.pend, s.mb);   // escapa hacia abajo
     }
+
+    // position: relative — desplaza el pintado sin alterar el flujo
+    if (s.pos == 1 && (s.l_set || s.t_set)) {
+        const float dx = s.l_set ? (s.l_pct ? s.l_val / 100.f * avail : s.l_val) : 0.f;
+        const float dy = s.t_set ? (s.t_pct ? s.t_val / 100.f * std::max(1.f, c.cb_h)
+                                            : s.t_val) : 0.f;
+        for (size_t k = bg_mark; k < c.out.shapes.size(); ++k) {
+            c.out.shapes[k].x += dx;
+            c.out.shapes[k].y += dy;
+        }
+        for (size_t k = word_mark; k < c.out.words.size(); ++k) {
+            c.out.words[k].x += dx;
+            c.out.words[k].y += dy;
+        }
+        for (size_t k = hit_mark; k < c.out.hits.size(); ++k) {
+            c.out.hits[k].x += dx;
+            c.out.hits[k].y += dy;
+        }
+    }
 }
 
 } // namespace
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
-                    const std::string& page_css, const std::string& base_dir) {
+                    const std::string& page_css, const std::string& base_dir,
+                    float vp_y, float vp_h) {
     LayoutResult out;
     Ctx c{font, out};
     StyleResolver res(page_css, viewport_w);
     c.res = &res;
     c.base_dir = base_dir;
+    c.vp_w = viewport_w;
+    c.vp_y = vp_y;
+    c.vp_h = vp_h;
+    c.cb_x = 0;
+    c.cb_y = vp_y;
+    c.cb_w = viewport_w;
+    c.cb_h = vp_h;
 
     // Chromium: el body aporta el margen (8px por defecto) y el contenido
     // mide el ancho completo menos esos margenes.  Fuera la columna de

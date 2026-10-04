@@ -67,7 +67,8 @@ struct LayoutResult {
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::string& page_css,
-                    const std::string& base_dir = "");
+                    const std::string& base_dir = "",
+                    float vp_y = 38.f, float vp_h = 762.f);
 
 // Deepest element whose hit box contains (x, y); null if none.
 const dom::Node* hit_test(const LayoutResult& l, float x, float y);
