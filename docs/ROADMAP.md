@@ -117,23 +117,32 @@ Acceptance:
 - [ ] A leaking handler (allocating every timer tick) is detectable in
       devtools memory printout — kill switch if not.
 
-## M5 — Page model + networking
+## M5 — Page model + networking — DONE (core)
 
-Scope:
-- Links (`<a href>`), history (back/forward), reload; `file://` first.
-- Minimal http/1.1 GET on worker threads (or libcurl — decide by code size),
-  delivered as events to the UI thread; status page for network errors.
-- View-source view (pretty-printed DOM dump — the M0 CLI output in a tab).
-- Console pane graduates to a real devtools tab: DOM tree, script errors,
-  network log.
+Shipped:
+- [x] `<a href>` clicks resolve against the current page: relative file
+      paths (with normalization, `..` included), `file://`, absolute paths,
+      `http(s)://`, `#anchors` (scroll to the id), and `javascript:` URLs
+      are refused with a console message.
+- [x] History: back/forward (Alt+Left/Right, mouse X1/X2), reload
+      (Ctrl+R/F5).
+- [x] HTTP(S) via libcurl on a worker thread (one fetch at a time; the UI
+      never blocks; redirects, timeouts, 32MB cap); the page lands through
+      the normal load pipeline -- its LuxScript compiles and runs.
+- [x] Error pages for dead servers, missing files, HTTP >= 400.
+- [x] `luxium http://...` starts the browser on a URL.
+- [x] Status bar: hovered link / "cargando ..." / page name.
+- [x] View-source on Ctrl+U (the real source, entity-escaped, in a pre).
 
-Non-goals: cookies, cache, TLS beyond what the HTTP library gives for free,
-service workers (forever).
+Still open (M6): devtools tab with DOM tree + network log, page cache,
+cookies, forms.
 
-Acceptance:
-- [ ] Clicking between local pages keeps back/forward working.
-- [ ] An http page renders; a dead server shows a readable error page.
-- [ ] View-source matches the CLI dump for the same file.
+Acceptance (all verified via simulated clicks + framebuffer inspection):
+- [x] `examples/index.html` links into the local pages; navigation renders
+      the target (shot after simulated click).
+- [x] `#contacto` anchor scrolls the document.
+- [x] `luxium http://127.0.0.1:8077/counter.html` renders a page served by
+      a local http server; a dead port renders the error page.
 
 ## M6 — Candidates (unordered, pick when M5 lands)
 

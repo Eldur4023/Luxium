@@ -18,8 +18,10 @@ bool Page::load_file(const std::string& path) {
 
 bool Page::load_string(const std::string& html, const std::string& source_name) {
     name_   = source_name;
+    source_ = html;
     title_.clear();
     console_.clear();
+    css_.clear();
     dirty_  = true;
 
     html::ParseResult result = html::parse(html);
@@ -90,6 +92,21 @@ void Page::console(int level, const std::string& msg) {
 
 void Page::click(const dom::Node* node) {
     if (!node) return;
+
+    // The nearest ancestor with href owns the click: navigation first (the
+    // engine still runs its handlers, but the page is about to change).
+    for (const dom::Node* n = node; n; n = n->parent) {
+        if (!n->is_element()) continue;
+        std::string href = n->attr_or("href");
+        if (!href.empty()) {
+            if (href.rfind("javascript:", 0) == 0) {
+                console(1, "javascript: Luxium does not run JavaScript");
+                return;
+            }
+            if (on_navigate) on_navigate(href);
+            return;
+        }
+    }
     engine_.click_node(node);
 }
 

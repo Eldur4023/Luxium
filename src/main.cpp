@@ -88,8 +88,9 @@ int main(int argc, char** argv) {
     if (check) return run_check(paths);
 
     const std::string path = paths[0];
+    const bool is_url = path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
     luxium::page::Page page;
-    if (!page.load_file(path)) {
+    if (!is_url && !page.load_file(path)) {
         std::fprintf(stderr, "luxium: cannot read '%s'\n", path.c_str());
         return 1;
     }
@@ -108,6 +109,9 @@ int main(int argc, char** argv) {
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
                                       title});
+    // http(s):// starts the navigation flow (fetch on a worker thread); the
+    // rest of the pipeline is exactly the windowed one.
+    if (is_url) shell.navigate_to(path, true);
     for (const auto& id : clicks) page.click_by_id(id);
     if (shot) return shell.screenshot(shot);   // SDL dummy driver, one frame
     return shell.run();

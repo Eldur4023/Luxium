@@ -1,5 +1,7 @@
 #include "shell/shell.hpp"
 
+#include <net/fetch.hpp>
+
 #include <SDL.h>
 
 #include <algorithm>
@@ -11,7 +13,10 @@ namespace luxium::shell {
 
 using render::ShapeCmd;
 
-Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cfg)) {}
+Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cfg)) {
+    // Clicks on <a href> come back here from the page, whatever the run mode.
+    page_.on_navigate = [this](const std::string& href) { navigate_to(href, true); };
+}
 
 Shell::~Shell() {
     if (cursor_hand_) SDL_FreeCursor(cursor_hand_);
@@ -113,6 +118,169 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
 
 // ── shell ────────────────────────────────────────────────────────────────────
 
+// ── navigation (M5) ─────────────────────────────────────────────────────────
+
+static std::string escape_html(const std::string& in) {
+    std::string out;
+    for (char ch : in) {
+        switch (ch) {
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        case '&': out += "&amp;"; break;
+        default:  out += ch;
+        }
+    }
+    return out;
+}
+
+// Path normalization for file targets: "a/./b", "a/x/../b" -> "a/b".
+// A RELATIVE path stays relative -- prepending '/' made every local link
+// point at the filesystem root, and the page quietly never changed.
+static std::string normalize_path(const std::string& p) {
+    const bool absolute = !p.empty() && p[0] == '/';
+    std::vector<std::string> parts;
+    size_t i = 0;
+    while (i <= p.size()) {
+        size_t nl = p.find('/', i);
+        size_t e = (nl == std::string::npos) ? p.size() : nl;
+        std::string seg = p.substr(i, e - i);
+        if (seg == "..") { if (!parts.empty()) parts.pop_back(); }
+        else if (!seg.empty() && seg != ".") parts.push_back(seg);
+        if (nl == std::string::npos) break;
+        i = nl + 1;
+    }
+    std::string out;
+    for (const auto& s : parts) { out += '/'; out += s; }
+    if (absolute) return out.empty() ? "/" : out;
+    return out.empty() ? "." : out.substr(1);
+}
+
+Shell::Resolved Shell::resolve(const std::string& href) const {
+    Resolved r;
+    r.target = href;
+    const std::string& cur = page_.name();
+    const bool cur_http = cur.rfind("http://", 0) == 0 || cur.rfind("https://", 0) == 0;
+
+    if (!href.empty() && href[0] == '#') {
+        r.kind = Target::Anchor;
+        r.target = href.substr(1);
+        return r;
+    }
+    if (href.rfind("http://", 0) == 0 || href.rfind("https://", 0) == 0) {
+        r.kind = Target::Http;
+        return r;
+    }
+    if (href.rfind("file://", 0) == 0) {
+        r.kind = Target::File;
+        r.target = normalize_path(href.substr(7));
+        return r;
+    }
+    if (!href.empty() && href[0] == '/') {
+        r.kind = Target::File;
+        r.target = normalize_path(href);
+        return r;
+    }
+    // relative: against the current page, whatever its scheme is
+    size_t slash = cur.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? "" : cur.substr(0, slash + 1);
+    if (cur_http) {
+        r.kind = Target::Http;
+        r.target = base + href;
+        return r;
+    }
+    r.kind = Target::File;
+    r.target = normalize_path(base + href);
+    return r;
+}
+
+static std::string error_page(const std::string& target, const std::string& why) {
+    return "<html><head><title>No se pudo cargar</title></head><body>"
+           "<h1>No se pudo cargar la pagina</h1>"
+           "<p><b>" + escape_html(target) + "</b></p>"
+           "<p>" + escape_html(why) + "</p>"
+           "<p>Prueba con otra direccion o vuelve atras con Alt+Left.</p>"
+           "</body></html>";
+}
+
+void Shell::navigate_to(const std::string& href, bool push_history) {
+    Resolved r = resolve(href);
+
+    if (r.kind == Target::Anchor) {
+        // scroll to the element with that id
+        for (const auto& h : layout_.hits)
+            if (h.node->is_element() && h.node->attr_or("id") == r.target) {
+                scroll_ = std::max(0.f, h.y - 30.f);
+                return;
+            }
+        page_.console(1, "ancla no encontrada: #" + r.target);
+        return;
+    }
+
+    if (r.kind == Target::Http) {
+        if (fetch_) fetch_.reset();   // one fetch at a time: the newest wins
+        fetch_ = net::Fetch::start(r.target);
+        if (push_history) {
+            hist_.resize(hist_idx_ + 1);
+            hist_.push_back(r.target);
+            hist_idx_ = hist_.size() - 1;
+        }
+        return;   // poll_fetch() completes the load
+    }
+
+    // file
+    if (!page_.load_file(r.target)) {
+        page_.load_string(error_page(r.target, "no existe el archivo (o no se puede leer)"),
+                          "luxium-error:" + r.target);
+    }
+    after_load();
+    if (push_history) {
+        hist_.resize(hist_idx_ + 1);
+        hist_.push_back(r.target);
+        hist_idx_ = hist_.size() - 1;
+    }
+}
+
+void Shell::after_load() {
+    scroll_ = 0;
+    std::string t = "Luxium";
+    if (!page_.page_title().empty()) t += " \xE2\x80\x94 " + page_.page_title();
+    if (window_) SDL_SetWindowTitle(window_, t.c_str());
+    relayout();
+}
+
+void Shell::poll_fetch() {
+    if (!fetch_ || !fetch_->done()) return;
+    const bool ok = fetch_->ok();
+    const std::string body = fetch_->body();
+    const std::string err  = fetch_->error();
+    const std::string url  = fetch_->url();
+    fetch_.reset();
+    if (ok) {
+        page_.load_string(body, url);
+        after_load();
+    } else {
+        page_.load_string(error_page(url, err), "luxium-error:" + url);
+        after_load();
+    }
+}
+
+void Shell::toggle_view_source() {
+    if (!viewing_source_) {
+        viewing_source_origin_ = page_.name();
+        const std::string& src = page_.source();
+        page_.load_string(
+            "<html><head><title>fuente: " + escape_html(viewing_source_origin_) +
+            "</title></head><body><h2>fuente de " + escape_html(viewing_source_origin_) +
+            "</h2><pre>" + escape_html(src) + "</pre></body></html>",
+            "view-source:" + viewing_source_origin_);
+        after_load();
+        viewing_source_ = true;
+    } else {
+        viewing_source_ = false;
+        navigate_to(viewing_source_origin_, false);
+    }
+}
+
 int Shell::run() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -140,6 +308,11 @@ int Shell::run() {
     // window as it is right now.  (A window whose framebuffer is never
     // allocated is a black window, and no SDL error says why.)
     ensure_surface();
+
+    if (hist_.empty()) {
+        hist_.push_back(page_.name());
+        hist_idx_ = 0;
+    }
 
     bool quit = false;
     while (!quit) {
@@ -173,8 +346,33 @@ int Shell::run() {
             case SDL_MOUSEBUTTONDOWN:
                 if (e.button.button == SDL_BUTTON_LEFT)
                     handle_click(e.button.x, e.button.y);
+                else if (e.button.button == 3) navigate_to(hist_[hist_idx_], false);      // X1 = back
+                else if (e.button.button == 4 && hist_idx_ + 1 < hist_.size()) {          // X2 = forward
+                    ++hist_idx_;
+                    navigate_to(hist_[hist_idx_], false);
+                }
                 break;
             case SDL_KEYDOWN:
+                if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_r) {
+                    navigate_to(hist_[hist_idx_], false);   // reload
+                    break;
+                }
+                if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_u) {
+                    toggle_view_source();
+                    break;
+                }
+                if ((e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_LEFT &&
+                    hist_idx_ > 0) {
+                    --hist_idx_;
+                    navigate_to(hist_[hist_idx_], false);
+                    break;
+                }
+                if ((e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_RIGHT &&
+                    hist_idx_ + 1 < hist_.size()) {
+                    ++hist_idx_;
+                    navigate_to(hist_[hist_idx_], false);
+                    break;
+                }
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: quit = true; break;
                 case SDLK_PAGEUP:   scroll_ = std::max(0.f, scroll_ - page_h() * 0.8f); break;
@@ -187,6 +385,7 @@ int Shell::run() {
             }
         }
 
+        poll_fetch();          // network pages land here when the worker ends
         page_.tick();          // timers (page.after) fire here, frame-driven
         if (page_.dirty()) {
             relayout();
@@ -238,6 +437,10 @@ int Shell::screenshot(const std::string& ppm_path) {
     font_ = render::Font::load(cfg_.font_regular, cfg_.font_bold, cfg_.font_mono);
     if (!font_) return 1;
     ensure_surface();
+    // clicks may have navigated to an http page: give the worker a chance
+    for (int i = 0; i < 250 && fetch_ && !fetch_->done(); ++i)
+        SDL_Delay(20);
+    poll_fetch();
     repaint();
 
     FILE* f = std::fopen(ppm_path.c_str(), "wb");
@@ -255,7 +458,8 @@ int Shell::screenshot(const std::string& ppm_path) {
 float Shell::page_h() const { return static_cast<float>(win_h_ - console_h_); }
 
 void Shell::relayout() {
-    if (win_w_ == 0) return;
+    if (win_w_ == 0 || !page_.page_root()) return;   // http pages start empty
+
     page_.clear_dirty();
     layout_ = render::layout(*page_.page_root(), *font_,
                              static_cast<float>(win_w_), page_.css());
@@ -407,8 +611,47 @@ void Shell::repaint() {
                           w.color);
     }
 
+    draw_status();
     draw_scrollbar();
     draw_console();
+}
+
+// The status bar: hovered link (or fetch state) on the left, page name on
+// the right.  Sits at the bottom of the page area, above the console.
+void Shell::draw_status() {
+    const int y0 = win_h_ - console_h_ - 20;
+    if (y0 < 0) return;
+    for (int y = y0; y < y0 + 20; ++y) {
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        for (int x = 0; x < win_w_; ++x) row[x] = 0xFFEEF0F2;
+    }
+    for (int x = 0; x < win_w_; ++x) fb_[static_cast<size_t>(y0) * win_w_ + x] = 0xFFD8DBDF;
+
+    font_->set_size(11.5f);
+    float x = 8;
+    std::string text;
+    uint32_t color = 0xFF5A6270;
+    if (fetch_) {
+        text = "cargando " + fetch_->url() + " ...";
+        color = 0xFF2F6FED;
+    } else if (mouse_y_ < y0) {
+        const float dx = static_cast<float>(mouse_x_);
+        const float dy = static_cast<float>(mouse_y_) + scroll_;
+        if (const dom::Node* n = render::hit_test(layout_, dx, dy)) {
+            for (const dom::Node* a = n; a; a = a->parent) {
+                if (!a->is_element()) continue;
+                std::string href = a->attr_or("href");
+                if (!href.empty()) { text = "enlace: " + href; break; }
+            }
+        }
+    }
+    if (text.empty()) text = page_.name();
+    for (const auto& w : render::shape_words(*font_, text, false, false)) {
+        if (x > win_w_ - 80) break;
+        render::draw_word(fb_, win_w_, win_h_, *font_, w, x,
+                          static_cast<float>(y0) + 4, color);
+        x += w.width + 11.5f * 0.30f;
+    }
 }
 
 } // namespace luxium::shell

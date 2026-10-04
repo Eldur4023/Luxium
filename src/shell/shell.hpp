@@ -1,16 +1,21 @@
 #pragma once
 // The shell: an SDL2 window, an ARGB software framebuffer, and the event
-// loop that drives a Page.  Software rendering on purpose (ARCHITECTURE §6):
-// the demo repaints a few hundred words at 60fps worst case, and every pixel
-// is one we understand.
+// loop that drives a Page.  Software rendering on purpose (ARCHITECTURE §6).
 //
 // Layout of the window:
 //   ┌──────────────────────────────┐
 //   │  page (scrollable)           │
 //   │                              │
 //   ├──────────────────────────────┤
-//   │  console pane (LuxScript)    │  30% of the height, min 140px
+//   │  status bar (links, cargando)│  20px
+//   ├──────────────────────────────┤
+//   │  console pane (LuxScript)    │
 //   └──────────────────────────────┘
+//
+// Navigation: clicks on <a href> come back through Page::on_navigate into
+// navigate_to(), which resolves them (file relative, file://, http(s)://,
+// #anchor), keeps history (back/forward/reload), and fetches network pages
+// on a worker thread (net/fetch).
 
 #include <page/page.hpp>
 #include <render/layout.hpp>
@@ -18,11 +23,16 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 struct SDL_Window;
-struct SDL_Cursor;
 struct SDL_Renderer;
 struct SDL_Texture;
+struct SDL_Cursor;
+
+namespace luxium::net {
+class Fetch;
+}
 
 namespace luxium::shell {
 
@@ -48,18 +58,35 @@ public:
     // stealing anyone's screen.
     int screenshot(const std::string& ppm_path);
 
+    // Navigates (file path, http(s) URL, #anchor).  Public because main()
+    // starts URL arguments through here.
+    void navigate_to(const std::string& href, bool push_history);
+
 private:
+    void poll_fetch();                  // worker thread -> page, once per frame
+    void after_load();
+    void toggle_view_source();
+    bool view_source_on() const { return viewing_source_; }
+
+
+    // Where an href points, once resolved against the current page.
+    enum class Target { File, Http, Anchor };
+    struct Resolved {
+        Target     kind = Target::File;
+        std::string target;    // file path, URL, or anchor id
+    };
+
     void ensure_surface();
     void relayout();                    // DOM -> boxes (page dirty or resize)
     void repaint();                     // boxes -> framebuffer -> screen
     void draw_console();
-    float page_h() const;
+    void draw_status();
     void draw_scrollbar();
     bool handle_click(int mx, int my);  // page coords -> hit test -> page
+    float page_h() const;
 
-    int         mouse_x_ = 0, mouse_y_ = 0;
-    bool        cursor_over_clickable_ = false;
-    SDL_Cursor* cursor_hand_ = nullptr;
+    // Navigation (M5).
+    Resolved resolve(const std::string& href) const;
 
     page::Page&    page_;
     ShellConfig    cfg_;
@@ -68,6 +95,7 @@ private:
     SDL_Window*    window_ = nullptr;
     SDL_Renderer*  renderer_ = nullptr;
     SDL_Texture*   texture_ = nullptr;
+    SDL_Cursor*    cursor_hand_ = nullptr;
     std::vector<uint32_t> fb_;         // ARGB, window-sized
 
     render::LayoutResult layout_;
@@ -77,6 +105,17 @@ private:
     int    console_h_ = 180;
     bool   console_scroll_bottom_ = true;
     float  console_scroll_ = 0;
+
+    int    mouse_x_ = 0, mouse_y_ = 0;
+    bool   cursor_over_clickable_ = false;
+
+    // history + network
+    std::vector<std::string> hist_;
+    size_t  hist_idx_ = 0;
+    bool    navigating_from_history_ = false;
+    std::unique_ptr<net::Fetch> fetch_;
+    bool    viewing_source_ = false;
+    std::string viewing_source_origin_;
 };
 
 } // namespace luxium::shell

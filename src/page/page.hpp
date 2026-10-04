@@ -10,6 +10,7 @@
 #include <dom/node.hpp>
 #include <script/engine.hpp>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,14 @@ public:
     // script or bad HTML still yields a usable page (console shows why).
     bool load_file(const std::string& path);
     bool load_string(const std::string& html, const std::string& source_name);
+
+    // The shell sets this: a click on (or under) an <a href> calls it with
+    // the raw href.  The shell decides what it means (file, http, #anchor).
+    std::function<void(const std::string& href)> on_navigate;
+
+    // The bytes currently displayed (view-source).
+    const std::string& source() const { return source_; }
+    const std::string& name() const { return name_; }
 
     // PageHost ────────────────────────────────────────────────────────────
     void        console(int level, const std::string& msg) override;
@@ -60,6 +69,7 @@ private:
     std::string                title_;
     std::string                name_;
     std::string                css_;
+    std::string                source_;
     bool                       dirty_ = true;
 };
 

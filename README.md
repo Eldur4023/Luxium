@@ -8,7 +8,7 @@ written in Lux Script. Same language, same grammar, same bytecode VM — the
 reserved objects change (`request`, `app`, `routes` → `document`, `page`),
 because the context is a browser, not a server.
 
-## Status: M0–M4 — usable demo
+## Status: M0–M5 — usable demo
 
 The browser opens a window, renders a page, and **runs its LuxScript**:
 
@@ -31,6 +31,10 @@ The browser opens a window, renders a page, and **runs its LuxScript**:
   counter every 400ms).
 - Entities decode (`&middot;` & friends, `&#123;`).
 - `luxium --check dir/` lints every page (exit code for scripts).
+- **Navigation**: `<a href>` between local pages and real http(s):// URLs
+  (libcurl on a worker thread, error pages on failure), history
+  (Alt+Left/Right, mouse buttons), reload (Ctrl+R), `#anchors`,
+  view-source (Ctrl+U), status bar with the hovered link.
 
 The showcase is `examples/counter.html`: two buttons wired in Lux Script,
 state in the page store, the counter updates on screen.
