@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+    <title>Headless test</title>
+</head>
+<body>
+    <h1 id="titulo">Prueba</h1>
+    <p id="status">0</p>
+    <button id="btn">sumar</button>
+
+    <script>
+    # top level: DOM access + log
+    int base = 40
+    log.info("base = " + str(base))
+    log.info("titulo: " + document.title())
+
+    Element titulo = document.get("titulo")
+    log.info("h1 text: " + titulo.text())
+    log.info("h1 tag: " + titulo.tag() + ", hijos: " + str(titulo.child_count()))
+
+    fn void suma():
+        Element status = document.get("status")
+        int n = int(status.text()) + 2
+        status.set_text(str(n))
+        log.info("status ahora: " + status.text())
+
+    Element btn = document.get("btn")
+    btn.click(suma)
+
+    list<int> xs = [1, 2, 3]
+    int total = 0
+    for int x in xs:
+        total = total + x
+    log.info("total = " + str(total))
+    log.warn("esto es un warn")
+    </script>
+
+    <script>
+    # segundo bloque: ve los fns del primero
+    log.info("segundo bloque ve a suma: " + str(base + 2))
+    </script>
+
+    <script type="text/javascript">
+    console.log("no");
+    </script>
+</body>
+</html>
