@@ -34,6 +34,7 @@ blockquote { margin: 1em 40px; }
 ul, ol     { margin: 1em 0; padding-left: 40px; }
 li         { margin: 0; }
 th         { font-weight: bold; text-align: center; }
+td, th     { padding: 1px; }
 pre        { font-family: monospace; font-size: 13px; margin: 1em 0; }
 code, kbd, samp, tt { font-family: monospace; font-size: 13px; }
 a          { color: #0000EE; text-decoration: underline; }
@@ -117,6 +118,8 @@ struct Style {
     int     z = 0;
     int     float_side = 0;  // 0 none, 1 left, 2 right
     int     clear = 0;       // 0 none, 1 left, 2 right, 3 both
+    int     valign = 0;      // celdas: 0 top, 1 middle, 2 bottom
+    bool    border_collapse = false;
     // flexbox nivel 1
     bool     flex = false, dir_column = false, wrap = false;
     int      justify = 0;      // 0 start, 1 center, 2 end, 3 between, 4 around
@@ -459,6 +462,13 @@ struct StyleResolver {
             else if (v.find("right") != std::string::npos) s.clear = 2;
             else s.clear = 0;
         }
+        else if (prop == "vertical-align") {
+            if (v.find("middle") != std::string::npos) s.valign = 1;
+            else if (v.find("bottom") != std::string::npos) s.valign = 2;
+            else s.valign = 0;
+        }
+        else if (prop == "border-collapse")
+            s.border_collapse = v.find("collapse") != std::string::npos;
         else if (prop == "width" || prop == "min-width" || prop == "max-width") {
             bool* set; float* val; bool* pct;
             if (prop == "width")        { set = &s.w_set;   val = &s.w_val;   pct = &s.w_pct; }
@@ -1472,6 +1482,187 @@ void layout_grid(Ctx& c, const dom::Node& el, float left, float avail,
     c.y += s.pb + s.border_w;
 }
 
+// ── tablas: columnas auto por contenido, spans, collapse, valign ───────────
+
+void layout_table_cell(Ctx& c, const dom::Node& cell, const Style& st,
+                       float x, float y, float w, float h,
+                       bool collapse_mode, bool last_col, bool last_row) {
+    const size_t bg_mark = c.out.shapes.size();
+    const size_t word_mark = c.out.words.size();
+    // contenido
+    c.y = y + st.border_w + st.pt;
+    c.line_left  = x + st.border_w + st.pl;
+    c.line_avail = std::max(1.f, w - 2 * st.border_w - st.pl - st.pr);
+    c.align = st.align;
+    c.glue_next = false;
+    layout_children(c, cell, c.line_left, c.line_avail, st);
+    c.flush();
+    c.align = 0;
+    // valign: middle/bottom centra el contenido en la celda
+    const float content_h = c.y - (y + st.border_w + st.pt);
+    float dy = 0;
+    if (st.valign == 1)
+        dy = std::max(0.f, (h - 2 * st.border_w - st.pt - st.pb - content_h) / 2.f);
+    else if (st.valign == 2)
+        dy = std::max(0.f, h - 2 * st.border_w - st.pt - st.pb - content_h);
+    if (dy > 0) {
+        for (size_t k = bg_mark; k < c.out.shapes.size(); ++k) c.out.shapes[k].y += dy;
+        for (size_t k = word_mark; k < c.out.words.size(); ++k) c.out.words[k].y += dy;
+    }
+    // fondo
+    if (st.has_block_bg)
+        c.out.shapes.push_back({ShapeCmd::Kind::RRect, x, y, w, h, 0, st.block_bg});
+    // bordes: collapse comparte (solo top/left, o right/bottom en el borde)
+    if (st.border_w > 0) {
+        const bool draw_r = !collapse_mode || last_col;
+        const bool draw_b = !collapse_mode || last_row;
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y,
+                                w, st.border_w, st.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y,
+                                st.border_w, h, st.border_color});
+        if (draw_r)
+            c.out.shapes.push_back({ShapeCmd::Kind::Rect, x + w - st.border_w, y,
+                                    st.border_w, h, st.border_color});
+        if (draw_b)
+            c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y + h - st.border_w,
+                                    w, st.border_w, st.border_color});
+    }
+}
+
+void layout_table(Ctx& c, const dom::Node& el, float left, float avail,
+                  const Style& parent) {
+    const Style s = c.res->compute(el, parent);
+    if (s.display_none) return;
+    if (in_list(el.name, kSkipped, std::size(kSkipped))) return;
+
+    c.y += collapse(c.pend, s.mt);
+    c.pend = 0;
+    const float box_y = c.y;
+    const size_t bg_mark = c.out.shapes.size();
+    const size_t word_mark = c.out.words.size();
+
+    const int border_attr = std::atoi(el.attr_or("border").c_str());
+    const float attr_bw = border_attr > 0 ? float(border_attr) : 0.f;
+    const float cell_gap = s.border_collapse ? 0.f : 2.f;   // border-spacing UA
+
+    // ── filas/celdas con spans
+    struct TCell {
+        const dom::Node* el = nullptr;
+        Style st;
+        int r0 = 0, c0 = 0, rs = 1, cs = 1;
+        float w = 0, h = 0;
+        bool last_col = false, last_row = false;
+    };
+    std::vector<TCell> cells;
+    std::vector<int> nrows_of;   // filas totales por fines de tamaño
+    int nrows = 0, ncols = 0;
+    std::vector<float> tr_heights;
+    {
+        int r = 0;
+        std::vector<int> rowspan_until(256, -1);   // por columna
+        std::vector<int> rowspan_cs(256, 1);
+        for (const auto& tr : el.children) {
+            if (!tr->is_element() || tr->name != "tr") continue;
+            const Style trs = c.res->compute(*tr, s);
+            tr_heights.push_back(trs.h_set ? trs.h_val : 0.f);
+            int col = 0;
+            for (const auto& cell : tr->children) {
+                if (!cell->is_element()) continue;
+                if (cell->name != "td" && cell->name != "th") continue;
+                while (col < 256 && rowspan_until[col] >= r) ++col;
+                const int cs = std::clamp(std::atoi(cell->attr_or("colspan").c_str()), 1, 32);
+                const int rs = std::clamp(std::atoi(cell->attr_or("rowspan").c_str()), 1, 64);
+                TCell tc;
+                tc.el = cell.get();
+                tc.st = c.res->compute(*cell, s);
+                if (attr_bw > 0 && tc.st.border_w == 0 && !tc.st.border_box) {
+                    tc.st.border_w = attr_bw;
+                    tc.st.border_color = 0xFFA9A9A9;
+                }
+                tc.r0 = r; tc.c0 = col; tc.rs = rs; tc.cs = cs;
+                for (int k = 0; k < cs && col + k < 256; ++k) {
+                    rowspan_until[col + k] = r + rs - 1;
+                    rowspan_cs[col + k] = cs;
+                }
+                cells.push_back(std::move(tc));
+                col += cs;
+                ncols = std::max(ncols, col);
+            }
+            ++r;
+        }
+        nrows = r;
+        for (int cc = 0; cc < 256; ++cc)
+            if (rowspan_until[cc] >= 0) ncols = std::max(ncols, cc + 1);
+    }
+
+    // ── anchos de columna: max contenido shrink-to-fit de sus celdas
+    std::vector<float> colw(std::max(1, ncols), 0.f);
+    for (auto& tc : cells) {
+        float mw = 0, mh = 0;
+        measure_subtree(c, *tc.el, tc.st, 10000.f, mw, mh);
+        tc.w = mw;
+        const float outer = mw + tc.st.pl + tc.st.pr + 2 * tc.st.border_w;
+        const float per = outer / tc.cs;
+        for (int k = 0; k < tc.cs; ++k)
+            if (tc.c0 + k < ncols) colw[tc.c0 + k] = std::max(colw[tc.c0 + k], per);
+    }
+    // width del table (attr o CSS) escala las columnas
+    float table_w = 0;
+    for (float w : colw) table_w += w;
+    table_w += cell_gap * std::max(0, ncols - 1);
+    const std::string wattr = el.attr_or("width");
+    float want_w = s.w_set ? (s.w_pct ? s.w_val / 100.f * avail : s.w_val) : 0.f;
+    if (!wattr.empty()) want_w = std::max(want_w, std::max(0.f, parse_len(wattr, 16.f, 0)));
+    if (want_w > 0 && table_w > 0) {
+        const float f = want_w / table_w;
+        for (auto& w : colw) w *= f;
+        table_w = want_w;
+    }
+
+    // ── alturas de fila: max altura de celda (contenido + pad + borde)
+    std::vector<float> rowh(nrows, 0.f);
+    for (int r = 0; r < nrows && r < (int)tr_heights.size(); ++r)
+        rowh[r] = std::max(rowh[r], tr_heights[r]);
+    for (auto& tc : cells) {
+        float mw = 0, mh = 0;
+        measure_subtree(c, *tc.el, tc.st, tc.w - tc.st.pl - tc.st.pr - 2 * tc.st.border_w, mw, mh);
+        tc.h = mh + tc.st.pt + tc.st.pb + 2 * tc.st.border_w;
+        for (int k = 0; k < tc.rs; ++k)
+            if (tc.r0 + k < nrows) rowh[tc.r0 + k] = std::max(rowh[tc.r0 + k], tc.h / float(tc.rs));
+    }
+
+    // ── render de celdas
+    float y = box_y + s.border_w;
+    for (int r = 0; r < nrows; ++r) {
+        float x = left + s.ml + s.border_w;
+        for (auto& tc : cells) {
+            if (tc.r0 != r) continue;
+            float wspan = s.gap * 0.f;
+            for (int k = 0; k < tc.cs; ++k)
+                if (tc.c0 + k < ncols) wspan += colw[tc.c0 + k];
+            wspan += cell_gap * std::max(0, tc.cs - 1);
+            float hspan = 0;
+            for (int k = 0; k < tc.rs; ++k) hspan += rowh[std::min(nrows - 1, tc.r0 + k)];
+            const bool last_col = tc.c0 + tc.cs >= ncols;
+            const bool last_row = tc.r0 + tc.rs >= nrows;
+            layout_table_cell(c, *tc.el, tc.st, x, y, wspan, hspan,
+                              s.border_collapse, last_col, last_row);
+            x += wspan;
+        }
+        y += rowh[r];
+    }
+
+    // borde exterior del table (attr border)
+    if (attr_bw > 0)
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, left + s.ml, box_y,
+                                table_w + 2 * s.border_w, y - box_y + s.border_w,
+                                attr_bw, 0xFF000000});
+
+    c.y += s.pb + s.border_w;
+    c.y += std::max(s.mb, 0.f);
+    (void)bg_mark; (void)word_mark;
+}
+
 void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                   const Style& parent) {
     if (el.type != dom::NodeType::Element) return;
@@ -1488,6 +1679,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     }
     if (s.grid) {   // contenedor grid: motor propio (nivel 1)
         layout_grid(c, el, left, avail, parent);
+        return;
+    }
+    if (tag == "table") {   // tablas: motor propio (nivel 1)
+        layout_table(c, el, left, avail, parent);
         return;
     }
 
