@@ -93,11 +93,14 @@ static inline float rrect_sdf(float px, float py, float x, float y, float w,
 
 static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
                        const ShapeCmd& s, float scroll, int yoff, float alpha_mult) {
-    const int x0 = std::max(0, static_cast<int>(s.x) - 1);
-    const int y0 = std::max(0, static_cast<int>(s.y - scroll) - 1 + yoff);
-    const int x1 = std::min(fb_w, static_cast<int>(s.x + s.w) + 2);
-    const int y1 = std::min(fb_h, static_cast<int>(s.y - scroll + s.h) + 2 + yoff);
+    const int margin = s.blur > 0 ? int(s.blur * 2.f) + 2 : 2;
+    const int x0 = std::max(0, static_cast<int>(s.x) - margin);
+    const int y0 = std::max(0, static_cast<int>(s.y - scroll) - margin + yoff);
+    const int x1 = std::min(fb_w, static_cast<int>(s.x + s.w) + margin);
+    const int y1 = std::min(fb_h, static_cast<int>(s.y - scroll + s.h) + margin + yoff);
     if (x0 >= x1 || y0 >= y1) return;
+    const float sigma = std::max(0.5f, s.blur * 0.5f);
+    const float blur_k = 0.5f / (sigma * 1.41421356f);
 
     for (int y = y0; y < y1; ++y) {
         uint32_t* row = fb.data() + static_cast<size_t>(y) * fb_w;
@@ -105,7 +108,12 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
             float d = 0;
             switch (s.kind) {
             case ShapeCmd::Kind::Rect:
-                d = -1.f;   // interior pleno: sin banda AA (d=0 daba 50% alpha!)
+                d = s.blur > 0
+                      ? std::max(std::max(float(x) + 0.5f - (s.x + s.w),
+                                          s.x - (float(x) + 0.5f)),
+                                 std::max(float(y) + 0.5f - (s.y - scroll + yoff + s.h),
+                                          s.y - scroll + yoff - (float(y) + 0.5f)))
+                      : -1.f;   // interior pleno: sin banda AA (d=0 daba 50% alpha!)
                 break;
             case ShapeCmd::Kind::RRect:
                 d = rrect_sdf(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f,
@@ -117,7 +125,16 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
                     s.r;
                 break;
             }
-            if (d > 0.5f) continue;
+            float cov = 1.f;
+            if (s.blur > 0) {
+                // sombra gausiana: perfil 0.5*erfc(d/(sigma*sqrt2)), sigma = blur/2
+                cov = std::clamp(0.5f * std::erfc(d * blur_k), 0.f, 1.f);
+                if (cov <= 0.004f) continue;   // 1/255: invisible
+            } else if (d > 0.5f) {
+                continue;
+            } else if (d > -0.5f) {
+                cov = 0.5f - d;
+            }
             uint32_t argb = s.argb;
             if (s.grad && !s.stops.empty()) {
                 // degradado: color interpolado en la posicion del pixel
@@ -151,11 +168,9 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
                        uint32_t(ag + (bg - ag) * f) << 8 |
                        uint32_t(ab + (bb - ab) * f);
             }
-            if (d > -0.5f) {   // the antialiased edge: alpha by coverage
-                const uint32_t a = (argb >> 24) & 0xFF;
-                const uint32_t cov = static_cast<uint32_t>((0.5f - d) * 255.f);
-                argb = (a * cov / 255) << 24 | (argb & 0xFFFFFF);
-            }
+            const uint32_t a = uint32_t(float((argb >> 24) & 0xFF) * cov);
+            if (a == 0) continue;
+            argb = (a << 24) | (argb & 0xFFFFFF);
             if (((argb >> 24) & 0xFF) == 255 && alpha_mult == 1.f) {
                 uint32_t& dst = row[static_cast<size_t>(x)];
                 const float ca = alpha_mult;

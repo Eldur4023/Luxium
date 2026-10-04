@@ -97,6 +97,11 @@ struct Style {
     // background con degradado (linear/radial-gradient con paradas de color)
     GradDef  bg_grad;
     bool     has_grad = false;
+    // box-shadow (subset: una sombra exterior)
+    bool     has_shadow = false;
+    float    sh_x = 0, sh_y = 0, sh_blur = 0, sh_spread = 0;
+    uint32_t sh_color = 0;
+    float    opacity = 1.f;
     // background-image (url) + repeat/size/position
     std::string bg_image;
     int     bg_repeat = 0;   // 0 repeat, 1 no-repeat, 2 repeat-x, 3 repeat-y
@@ -142,6 +147,29 @@ uint32_t parse_color(const std::string& v, uint32_t fallback) {
         unsigned long rgb = 0;
         try { rgb = std::stoul(s + s, nullptr, 16); } catch (...) { return fallback; }
         return 0xFF000000u | static_cast<uint32_t>(rgb);
+    }
+    // rgb(r,g,b) / rgba(r,g,b,a) — a en 0..1
+    if (s.starts_with("rgb(") || s.starts_with("rgba(")) {
+        std::vector<float> nums;
+        std::string cur;
+        for (char ch : s) {
+            if ((std::isdigit(static_cast<unsigned char>(ch)) || ch == '.') && ch != '\0')
+                cur += ch;
+            else if (!cur.empty()) {
+                try { nums.push_back(std::stof(cur)); } catch (...) {}
+                cur.clear();
+            }
+        }
+        if (!cur.empty()) {
+            try { nums.push_back(std::stof(cur)); } catch (...) {}
+        }
+        if (nums.size() >= 3) {
+            const float af = nums.size() > 3 ? std::clamp(nums[3], 0.f, 1.f) : 1.f;
+            const uint32_t a = uint32_t(af * 255.f);
+            return (a << 24) | (uint32_t(nums[0]) << 16) |
+                   (uint32_t(nums[1]) << 8) | uint32_t(nums[2]);
+        }
+        return fallback;
     }
     static const std::array<std::pair<std::string_view, uint32_t>, 12> kNames{{
         {"white", 0xFFFFFFFF}, {"black", 0xFF000000}, {"red", 0xFFCC2E2E},
@@ -452,6 +480,27 @@ struct StyleResolver {
                 s.h_val = std::max(0.f, parse_len(v, s.size, 0));
             }
             // % y otras unidades: con padre de altura auto equivalen a auto
+        }
+        else if (prop == "box-shadow") {
+            // subset: <dx> <dy> [<blur>] [<spread>] <color> (una sombra)
+            float nums[4] = {0, 0, 0, 0};
+            int nn = 0;
+            for (const auto& t : css_tokens(v)) {
+                if (t.find("inset") != std::string::npos) continue;
+                const uint32_t c = parse_color(t, 0);
+                if (c) { s.sh_color = c; continue; }
+                if (nn < 4) {
+                    const float f = parse_len(t, s.size, -1);
+                    if (f >= 0) nums[nn++] = f;
+                }
+            }
+            s.sh_x = nums[0]; s.sh_y = nums[1];
+            s.sh_blur = nums[2]; s.sh_spread = nums[3];
+            if (s.sh_color == 0) s.sh_color = 0xFF000000;
+            s.has_shadow = true;
+        }
+        else if (prop == "opacity") {
+            try { s.opacity = std::clamp(std::stof(v), 0.f, 1.f); } catch (...) {}
         }
         else if (prop == "box-sizing")
             s.border_box = v.find("border") != std::string::npos;
@@ -1765,7 +1814,18 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
             c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()),
                                 {ShapeCmd::Kind::RRect, box_left, box_y,
                                  box_width, c.y - box_y, 6, s.block_bg});
-        if (s.pb > 0 || s.border_w > 0) {
+        if (s.opacity < 1.f) {   // opacidad: escala todo lo pintado por el bloque
+        for (size_t k = bg_mark; k < c.out.shapes.size(); ++k) {
+            const uint32_t al = uint32_t(float((c.out.shapes[k].argb >> 24) & 0xFF) * s.opacity);
+            c.out.shapes[k].argb = (al << 24) | (c.out.shapes[k].argb & 0xFFFFFF);
+        }
+        for (size_t k = word_mark; k < c.out.words.size(); ++k) {
+            const uint32_t al = uint32_t(float((c.out.words[k].color >> 24) & 0xFF) * s.opacity);
+            c.out.words[k].color = (al << 24) | (c.out.words[k].color & 0xFFFFFF);
+        }
+    }
+
+    if (s.pb > 0 || s.border_w > 0) {
             c.y += c.pend;
             c.pend = s.mb;
         } else {
@@ -1795,6 +1855,17 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     // el primer contenido: el margen escapado queda FUERA de la caja
     const float bg_top = c.first_box_top >= 0.f ? c.first_box_top : box_y;
     const float box_h = (c.y + s.pb + s.border_w) - bg_top;
+    if (s.has_shadow) {   // la sombra: insertada ANTES del fondo (queda debajo)
+        ShapeCmd sh;
+        sh.kind = ShapeCmd::Kind::Rect;
+        sh.x = box_left + s.sh_x - s.sh_spread;
+        sh.y = bg_top + s.sh_y - s.sh_spread;
+        sh.w = std::max(1.f, box_width + 2 * s.sh_spread);
+        sh.h = std::max(1.f, box_h + 2 * s.sh_spread);
+        sh.argb = s.sh_color;
+        sh.blur = s.sh_blur;
+        c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()), std::move(sh));
+    }
     if (s.has_grad && s.bg_grad.stops.size() >= 2) {
         // degradado: Rect relleno por pixel (el recorte de esquinas, luego)
         ShapeCmd g;

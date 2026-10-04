@@ -43,6 +43,8 @@ struct ShapeCmd {
     // imagen: rect destino (x,y,w,h) y rect fuente en pixeles de bitmap
     std::shared_ptr<const ImageBitmap> img;
     float    sx = 0, sy = 0, sw = 0, sh = 0;
+    // sombra gausiana: si blur > 0 el perfil de alpha es 0.5*erfc(d/(sigma*sqrt2))
+    float    blur = 0;
 };
 
 struct WordCmd {
