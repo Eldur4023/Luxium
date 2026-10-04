@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+    <title>Demo LuxScript</title>
+    <script>
+    # Este script compila en M2; por ahora el lexer de M0 lo tokeniza.
+    int base = 41
+    int factor = 2
+
+    fn duplica(int x) -> int:
+        return x * factor
+
+    if duplica(base) == 82:
+        log.info("el doble de 41 es 82")
+    else:
+        log.warn("matematica rara")
+
+    list<int> numeros = [3, 1, 4, 1, 5]
+    Dict<string, int> edades = {"ana": 31, "bo": 27}
+
+    int n = 3
+    while n > 0:
+        log.info("cuenta atras: " + str(n))
+        n = n - 1
+
+    for x in numeros:
+        if x == 4:
+            continue
+        log.info("numero " + str(x))
+    </script>
+    <style>
+    body { font-family: sans-serif; }
+    </style>
+</head>
+<body>
+    <h1 id="titulo">Demo de LuxScript</h1>
+    <p id="status">esperando...</p>
+
+    <script>
+    # Segundo script: los globales del primero son visibles aqui.
+    log.info("status: " + document.get("status").text())
+    log.info("fin: " + str(duplica(base + 1)))
+    </script>
+
+    <script type="text/javascript">
+    // Luxium no ejecuta JavaScript; esto debe dar un aviso, no un error.
+    console.log("no soy bienvenido");
+    </script>
+</body>
+</html>
