@@ -47,10 +47,14 @@ using Chain = std::vector<Compound>;
 struct Rule {
     std::vector<Chain> selectors;
     std::vector<std::pair<std::string, std::string>> decls;   // prop, value
+    std::string media;   // vacio = siempre; "(max-width: 1200px) and ..." etc.
 
     // Highest specificity among the chains that match, or -1 if none does.
     int match(const dom::Node& el) const;
 };
+
+// A caso: "(min-width: 800px) and (max-width: 1200px)" contra el viewport.
+bool media_matches(const std::string& media, float viewport_w);
 
 // Parses a whole stylesheet.  Never fails: broken rules are skipped.
 std::vector<Rule> parse_stylesheet(const std::string& text);

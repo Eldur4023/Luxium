@@ -57,6 +57,14 @@ bool in_list(std::string_view name, const std::string_view* list, size_t n) {
 
 // ── computed style ──────────────────────────────────────────────────────────
 
+// degradado de background: linear/radial con paradas (t<0 = repartir uniforme)
+struct GradDef {
+    bool  radial = false;
+    float angle = 180.f;    // 0deg = hacia arriba, 90deg = a la derecha (CSS)
+    float cx = 0.5f, cy = 0.5f;
+    std::vector<std::pair<uint32_t, float>> stops;
+};
+
 struct Style {
     // text face (what a word needs)
     float    size  = 16.f;
@@ -78,11 +86,16 @@ struct Style {
     bool     w_set = false;    float w_val = 0;    bool w_pct = false;
     bool     minw_set = false; float minw_val = 0; bool minw_pct = false;
     bool     maxw_set = false; float maxw_val = 0; bool maxw_pct = false;
+    // height fija en px (% con padre de altura auto = auto, como Chromium)
+    bool     h_set = false;    float h_val = 0;
     bool     ml_auto = false, mr_auto = false;
     // borde uniforme (subset: solo el estilo solid se pinta)
     float    border_w = 0;
     uint32_t border_color = 0xFF000000;
     bool     border_box = false;
+    // background con degradado (linear/radial-gradient con paradas de color)
+    GradDef  bg_grad;
+    bool     has_grad = false;
 };
 
 uint32_t parse_color(const std::string& v, uint32_t fallback) {
@@ -139,6 +152,21 @@ std::vector<std::string> css_tokens(const std::string& v) {
     return out;
 }
 
+// lo mismo partiendo por un separador dado (p.ej. las comas de un degradado)
+std::vector<std::string> css_tokens_sep(const std::string& v, char sep) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char ch : v) {
+        if (ch == sep) {
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+        } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+            cur += static_cast<char>(std::tolower(ch));
+        }
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
 // border / border-width: <width> | <style> | <color> en cualquier orden.
 // Solo pintamos solid; los demas estilos se aceptan y se dibujan igual.
 void parse_border(Style& s, const std::string& v, bool shorthand) {
@@ -166,11 +194,76 @@ float collapse(float a, float b) {
     return std::max(a, b) + std::min(a, b);
 }
 
+// linear-gradient(90deg, #a, #b) / radial-gradient(circle, #a, #b) /
+// radial-gradient(ellipse at top, ...)  — subset: paradas de color sin
+// posiciones explicitas (se reparten uniformes).
+GradDef parse_grad(const std::string& v) {
+    GradDef g;
+    g.radial = v.starts_with("radial-gradient");
+    const size_t p0 = v.find('(');
+    const size_t p1 = v.rfind(')');
+    if (p0 == std::string::npos || p1 == std::string::npos || p1 <= p0) return g;
+    const auto toks = css_tokens_sep(v.substr(p0 + 1, p1 - p0 - 1), ',');
+    if (toks.empty()) return g;
+
+    size_t first = 0;
+    if (!g.radial) {
+        const std::string a = toks[0];
+        float ang = 180.f;
+        if (a.ends_with("deg")) {
+            try { ang = std::stof(a); } catch (...) {}
+        } else if (a.starts_with("to")) {
+            if (a.find("right") != std::string::npos) ang = 90.f;
+            else if (a.find("left") != std::string::npos) ang = 270.f;
+            else if (a.find("top") != std::string::npos) ang = 0.f;
+            else ang = 180.f;   // to bottom
+        }
+        g.angle = ang;
+        first = 1;
+    } else {
+        for (size_t k = 0; k < toks.size(); ++k) {
+            const std::string t = toks[k];
+            if (t.find("circle") == 0 || t.find("ellipse") == 0) {
+                if (t.find("at top") != std::string::npos) g.cy = 0.f;
+                if (t.find("at bottom") != std::string::npos) g.cy = 1.f;
+                if (t.find("at left") != std::string::npos) g.cx = 0.f;
+                if (t.find("at right") != std::string::npos) g.cx = 1.f;
+                first = k + 1;
+            } else break;
+        }
+    }
+
+    for (size_t k = first; k < toks.size(); ++k) {
+        const auto parts = css_tokens(toks[k]);
+        if (parts.empty()) continue;
+        const uint32_t c = parse_color(parts[0], 0);
+        if (!c) continue;
+        float t = -1.f;
+        if (parts.size() > 1 && parts[1].ends_with('%')) {
+            try { t = std::stof(parts[1]) / 100.f; } catch (...) { t = -1.f; }
+        }
+        g.stops.push_back({c, t});
+    }
+    if (g.stops.size() >= 2) {
+        g.stops.front().second = 0.f;
+        g.stops.back().second = 1.f;
+        const float n = static_cast<float>(g.stops.size() - 1);
+        for (size_t k = 1; k + 1 < g.stops.size(); ++k)
+            if (g.stops[k].second < 0)
+                g.stops[k].second = static_cast<float>(k) / n;
+        return g;
+    }
+    g.stops.clear();
+    return g;
+}
+
 struct StyleResolver {
     std::vector<css::Rule> ua;
     std::vector<css::Rule> page;
+    float viewport = 1180.f;
 
-    explicit StyleResolver(const std::string& page_css) {
+    explicit StyleResolver(const std::string& page_css, float vw = 1180.f)
+        : viewport(vw) {
         ua   = css::parse_stylesheet(std::string(kUAStylesheet));
         page = css::parse_stylesheet(page_css);
     }
@@ -180,13 +273,17 @@ struct StyleResolver {
                const std::string& v) const {
         if (prop == "color")                    s.color = parse_color(v, s.color);
         else if (prop == "background-color" || prop == "background") {
-            // shorthand: solo cuando el valor es un color plano (gradientes,
-            // url(...) y demas se ignoran por ahora)
-            const uint32_t c = parse_color(v, 0);
-            if (c) {
-                s.block_bg = c;
-                s.has_block_bg = true;
-                if (!s.mono) s.pill = c;   // inline pills, too (code)
+            if (v.starts_with("linear-gradient") || v.starts_with("radial-gradient")) {
+                s.bg_grad = parse_grad(v);
+                s.has_grad = s.bg_grad.stops.size() >= 2;
+            } else {
+                // color plano (shorthand o background-color)
+                const uint32_t c = parse_color(v, 0);
+                if (c) {
+                    s.block_bg = c;
+                    s.has_block_bg = true;
+                    if (!s.mono) s.pill = c;   // inline pills, too (code)
+                }
             }
         }
         else if (prop == "width" || prop == "min-width" || prop == "max-width") {
@@ -203,6 +300,13 @@ struct StyleResolver {
                 k.pop_back();
                 *set = true; *pct = true; *val = std::max(0.f, parse_len(k, s.size, 0));
             } else { *set = true; *pct = false; *val = parse_len(k, s.size, 0); }
+        }
+        else if (prop == "height") {
+            if (v.ends_with("px")) {
+                s.h_set = true;
+                s.h_val = std::max(0.f, parse_len(v, s.size, 0));
+            }
+            // % y otras unidades: con padre de altura auto equivalen a auto
         }
         else if (prop == "box-sizing")
             s.border_box = v.find("border") != std::string::npos;
@@ -294,6 +398,8 @@ struct StyleResolver {
         auto fold = [&](const std::vector<css::Rule>& rules) {
             std::vector<std::pair<int, const css::Rule*>> matched;
             for (const auto& r : rules) {
+                if (!r.media.empty() && !css::media_matches(r.media, viewport))
+                    continue;   // @media que no aplica a este viewport
                 int spec = r.match(el);
                 if (spec >= 0) matched.push_back({spec, &r});
             }
@@ -523,8 +629,8 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     // TOP: mi margin-top colapsa con lo pendiente; sin padding/border arriba
     // el margen de mi primer hijo ESCAPA a traves de mi (y el mio con el de
     // fuera: el body con margin 8 y un h1 de 21.44 arrancan a 21.44, como
-    // Chromium).
-    const bool trapped = s.pt > 0 || s.border_w > 0;
+    // Chromium).  Con altura fija nada escapa: la caja contiene.
+    const bool trapped = s.pt > 0 || s.border_w > 0 || s.h_set;
     if (trapped) {
         c.y += collapse(c.pend, s.mt);
         c.pend = 0;
@@ -563,12 +669,16 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     const float inner_left  = box_left + s.border_w + s.pl;
     const float inner_avail = w;
     c.y += s.pt + s.border_w;
+    const float y_content_top = c.y;   // para height fija
     // las lineas de este bloque se miden y pintan DENTRO de su caja
     c.line_left  = inner_left;
     c.line_avail = inner_avail;
 
     const bool li        = tag == "li";
     const bool clickable = el.has_attr("id") || tag == "a";
+    // el fondo del bloque entra en el vector ANTES de las formas de los
+    // hijos: si no, el bg del body (blanco, se emite al terminar) tapa todo
+    const size_t bg_mark = c.out.shapes.size();
 
     if (li) {
         c.out.shapes.push_back({ShapeCmd::Kind::Circle,
@@ -598,8 +708,9 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
             start = nl + 1;
         }
         if (s.has_block_bg)
-            c.out.shapes.push_back({ShapeCmd::Kind::RRect, box_left, box_y,
-                                    box_width, c.y - box_y, 6, s.block_bg});
+            c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+                                {ShapeCmd::Kind::RRect, box_left, box_y,
+                                 box_width, c.y - box_y, 6, s.block_bg});
         if (s.pb > 0 || s.border_w > 0) {
             c.y += c.pend;
             c.pend = s.mb;
@@ -619,10 +730,45 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     if (clickable && !c.out.hits.empty() && c.out.hits.back().node == &el)
         c.out.hits.back().h = std::max(c.y - c.out.hits.back().y, s.size * 1.2f);
 
+    if (s.h_set)   // altura fija: el contenido que sobra se pinta igual pero
+        c.y = y_content_top + s.h_val;   // la caja no crece
     const float box_h = (c.y + s.pb + s.border_w) - box_y;
-    if (s.has_block_bg)   // the box paints before every word, whatever the order
-        c.out.shapes.push_back({ShapeCmd::Kind::RRect, box_left, box_y,
-                                box_width, box_h, 4, s.block_bg});
+    if (s.has_grad && s.bg_grad.stops.size() >= 2) {
+        // degradado: Rect relleno por pixel (el recorte de esquinas, luego)
+        ShapeCmd g;
+        g.kind = ShapeCmd::Kind::Rect;
+        g.x = box_left;
+        g.y = box_y;
+        g.w = box_width;
+        g.h = box_h;
+        g.grad = true;
+        g.grad_radial = s.bg_grad.radial;
+        for (const auto& gs : s.bg_grad.stops) g.stops.push_back({gs.first, gs.second});
+        if (!g.grad_radial) {
+            const float rad = s.bg_grad.angle * 3.14159265f / 180.f;
+            g.gdx = std::sin(rad);
+            g.gdy = -std::cos(rad);
+            g.glen = std::max(1.f, std::fabs(box_width * g.gdx) +
+                                   std::fabs(box_h * g.gdy));
+        } else {
+            g.gcx = box_left + s.bg_grad.cx * box_width;
+            g.gcy = box_y + s.bg_grad.cy * box_h;
+            g.grx = 1.f;
+            g.gry = 1.f;
+            const float xs[2] = {box_left, box_left + box_width};
+            const float ys[2] = {box_y, box_y + box_h};
+            for (const float xx : xs)
+                for (const float yy : ys) {
+                    g.grx = std::max(g.grx, std::fabs(xx - g.gcx));
+                    g.gry = std::max(g.gry, std::fabs(yy - g.gcy));
+                }
+        }
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(g));
+    } else if (s.has_block_bg) {   // the box paints before every word
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+                            {ShapeCmd::Kind::RRect, box_left, box_y,
+                             box_width, box_h, 4, s.block_bg});
+    }
     if (s.border_w > 0) {   // los 4 lados, solid
         c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
                                 box_width, s.border_w, s.border_color});
@@ -636,7 +782,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                                 s.border_w, box_h, s.border_color});
     }
 
-    if (s.pb > 0 || s.border_w > 0) {
+    if (s.h_set) {
+        c.y = y_content_top + s.h_val + s.pb + s.border_w;
+        c.pend = s.mb;   // los hijos quedan contenidos: sin escape
+    } else if (s.pb > 0 || s.border_w > 0) {
         c.y += c.pend;      // lo pendiente de los hijos no atraviesa el padding
         c.pend = s.mb;
     } else {
@@ -650,7 +799,7 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::string& page_css) {
     LayoutResult out;
     Ctx c{font, out};
-    StyleResolver res(page_css);
+    StyleResolver res(page_css, viewport_w);
     c.res = &res;
 
     // Chromium: el body aporta el margen (8px por defecto) y el contenido

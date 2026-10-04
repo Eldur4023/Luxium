@@ -152,23 +152,34 @@ std::vector<std::pair<std::string, std::string>> parse_decls(const std::string& 
     return out;
 }
 
-std::vector<Rule> parse_stylesheet(const std::string& raw) {
-    const std::string text = strip_comments(raw);
-    std::vector<Rule> out;
-
+// La carne del parser: `media` se cuelga de cada regla generada (vacía =
+// incondicional).  @media anida recursivamente acumulando condiciones.
+void parse_rules(const std::string& text, const std::string& media,
+                 std::vector<Rule>& out) {
     size_t i = 0;
     while (i < text.size()) {
         // skip leading whitespace
         while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
         if (i >= text.size()) break;
 
-        if (text[i] == '@') {   // at-rule: skip to ';' or the matching block
+        if (text[i] == '@') {
+            size_t brace = text.find('{', i);
             size_t j = i, depth = 0;
             while (j < text.size()) {
                 if (text[j] == '{') ++depth;
                 if (text[j] == '}') { --depth; if (depth <= 0) { ++j; break; } }
                 if (text[j] == ';' && depth == 0) { ++j; break; }
                 ++j;
+            }
+            if (brace != std::string::npos && brace < j) {
+                const std::string head = lower(trim(text.substr(i, brace - i)));
+                if (head.starts_with("@media")) {
+                    const std::string cond = trim(text.substr(i + 6, brace - i - 6));
+                    const std::string inner = text.substr(brace + 1, j - brace - 2);
+                    parse_rules(inner, media.empty() ? cond : media + " and " + cond,
+                                out);
+                }
+                // otros at-rules: ignorados
             }
             i = j;
             continue;
@@ -180,6 +191,7 @@ std::vector<Rule> parse_stylesheet(const std::string& raw) {
         if (close == std::string::npos) close = text.size();
 
         Rule rule;
+        rule.media = media;
         // selector list: comma-separated chains
         std::string sel_text = trim(text.substr(i, brace - i));
         size_t a = 0;
@@ -197,7 +209,42 @@ std::vector<Rule> parse_stylesheet(const std::string& raw) {
 
         i = (close < text.size()) ? close + 1 : text.size();
     }
+}
+
+std::vector<Rule> parse_stylesheet(const std::string& raw) {
+    std::vector<Rule> out;
+    parse_rules(strip_comments(raw), "", out);
     return out;
+}
+
+// "(min-width: 800px) and (max-width: 1200px)" y variantes.  Todo lo que no
+// sepamos evaluar (print, hover...) cuenta como cierto, menos print.
+bool media_matches(const std::string& media, float viewport_w) {
+    if (trim(lower(media)).empty()) return true;
+    const std::string s = lower(trim(media));
+    size_t a = 0;
+    while (true) {
+        const size_t andp = s.find(" and ", a);
+        const std::string part = trim(s.substr(a, andp == std::string::npos
+                                                    ? std::string::npos
+                                                    : andp - a));
+        bool ok = true;
+        if (part.find("max-width") != std::string::npos) {
+            const size_t c = part.find(':');
+            ok = viewport_w <= (c == std::string::npos ? 1e9f
+                                                       : std::stof(part.substr(c + 1)));
+        } else if (part.find("min-width") != std::string::npos) {
+            const size_t c = part.find(':');
+            ok = viewport_w >= (c == std::string::npos ? 0.f
+                                                       : std::stof(part.substr(c + 1)));
+        } else if (part.find("print") != std::string::npos) {
+            ok = false;
+        }
+        if (!ok) return false;
+        if (andp == std::string::npos) break;
+        a = andp + 5;
+    }
+    return true;
 }
 
 } // namespace luxium::css

@@ -102,7 +102,7 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
             float d = 0;
             switch (s.kind) {
             case ShapeCmd::Kind::Rect:
-                d = 0;
+                d = -1.f;   // interior pleno: sin banda AA (d=0 daba 50% alpha!)
                 break;
             case ShapeCmd::Kind::RRect:
                 d = rrect_sdf(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f,
@@ -116,6 +116,38 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
             }
             if (d > 0.5f) continue;
             uint32_t argb = s.argb;
+            if (s.grad && !s.stops.empty()) {
+                // degradado: color interpolado en la posicion del pixel
+                const float px = static_cast<float>(x) + 0.5f;
+                const float py = static_cast<float>(y) + 0.5f - scroll + yoff;
+                float t;
+                if (s.grad_radial) {
+                    const float ddx = (px - s.gcx) / s.grx;
+                    const float ddy = (py - s.gcy) / s.gry;
+                    t = std::sqrt(ddx * ddx + ddy * ddy);
+                } else {
+                    const float cxm = s.x + s.w / 2.f;
+                    const float cym = s.y - scroll + yoff + s.h / 2.f;
+                    t = 0.5f + ((px - cxm) * s.gdx + (py - cym) * s.gdy) / s.glen;
+                }
+                t = std::clamp(t, 0.f, 1.f);
+                size_t i = 0;
+                while (i + 1 < s.stops.size() && s.stops[i + 1].t <= t) ++i;
+                const auto& sa = s.stops[i];
+                const auto& sb = s.stops[std::min(i + 1, s.stops.size() - 1)];
+                const float span = sb.t - sa.t;
+                const float f = span > 1e-6f
+                                  ? std::clamp((t - sa.t) / span, 0.f, 1.f)
+                                  : 0.f;
+                const int ar = (sa.argb >> 16) & 0xFF, ag = (sa.argb >> 8) & 0xFF,
+                          ab = sa.argb & 0xFF;
+                const int br = (sb.argb >> 16) & 0xFF, bg = (sb.argb >> 8) & 0xFF,
+                          bb = sb.argb & 0xFF;
+                argb = 0xFF000000u |
+                       uint32_t(ar + (br - ar) * f) << 16 |
+                       uint32_t(ag + (bg - ag) * f) << 8 |
+                       uint32_t(ab + (bb - ab) * f);
+            }
             if (d > -0.5f) {   // the antialiased edge: alpha by coverage
                 const uint32_t a = (argb >> 24) & 0xFF;
                 const uint32_t cov = static_cast<uint32_t>((0.5f - d) * 255.f);

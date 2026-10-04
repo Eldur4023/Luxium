@@ -22,10 +22,22 @@ namespace luxium::render {
 
 // Filled geometry, painted before every word (a button's box under its own
 // text).  alpha < 255 blends over what is already there.
+struct GradStop {
+    uint32_t argb = 0;
+    float    t = 0;     // 0..1 a lo largo del eje del degradado
+};
+
 struct ShapeCmd {
     enum class Kind { Rect, RRect, Circle } kind = Kind::Rect;
     float    x = 0, y = 0, w = 0, h = 0, r = 0;
     uint32_t argb = 0;
+    // degradado: si stops no esta vacio, argb se ignora y el color se
+    // interpola por pixel (lineal segun gdx/gdy/glen, o radial)
+    bool     grad = false;
+    bool     grad_radial = false;
+    std::vector<GradStop> stops;
+    float    gdx = 0, gdy = 0, glen = 1;          // lineal: direccion + largo
+    float    gcx = 0, gcy = 0, grx = 1, gry = 1;  // radial: centro y radios (doc)
 };
 
 struct WordCmd {
