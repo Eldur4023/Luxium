@@ -41,6 +41,7 @@ CefRefPtr<CefBrowser>   g_browser;
 unsigned long           g_display = 0, g_parent = 0;
 std::atomic<int>        g_view_w{1}, g_view_h{1};
 std::atomic<int>        g_cursor_type{0};
+std::atomic<int>        g_paints{0};
 
 std::mutex              g_paint_mutex;      // guards g_pixels/g_pw/g_ph
 std::vector<uint8_t>    g_pixels;           // BGRA, g_pw * g_ph * 4
@@ -164,6 +165,7 @@ public:
         std::memcpy(g_pixels.data(), buffer, g_pixels.size());
         g_pw = width;
         g_ph = height;
+        ++g_paints;
     }
 
 private:
@@ -369,6 +371,8 @@ bool copy_frame(uint8_t* dst, int dst_stride, int dst_w, int dst_h,
 }
 
 int cursor() { return g_cursor_type.load(); }
+
+int paints() { return g_paints.load(); }
 
 bool pop_console(int* level, std::string* text) {
     std::lock_guard<std::mutex> lk(g_mutex);

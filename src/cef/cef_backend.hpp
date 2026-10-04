@@ -63,6 +63,9 @@ bool copy_frame(uint8_t* dst, int dst_stride, int dst_w, int dst_h,
 // Current cursor type (cef_cursor_type_t: 0 pointer, 2 hand, 3 ibeam...).
 int cursor();
 
+// Cuantos frames ha entregado OnPaint (para esperas estables del oraculo).
+int paints();
+
 // Pops the next console message Chromium emitted (console.log/warn/error).
 // level: 0 info/debug, 1 warning, 2 error.  Returns false when the queue
 // is empty.  Drained once per frame by the shell and shown in our console.

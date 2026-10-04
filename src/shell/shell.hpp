@@ -61,6 +61,9 @@ public:
     // framebuffer goes to a PPM.  This is how the render is tested without
     // stealing anyone's screen.
     int screenshot(const std::string& ppm_path);
+    // El oraculo: Chromium (CEF off-screen) pinta la pagina en nuestro
+    // framebuffer; para generar los goldens de css-tests.
+    int cef_shot(const std::string& target, const std::string& ppm_path);
 
     // Navigates (file path, http(s) URL, #anchor, luxium:inicio).  Public
     // because main() starts URL arguments through here.

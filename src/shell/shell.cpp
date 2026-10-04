@@ -1242,6 +1242,99 @@ int Shell::screenshot(const std::string& ppm_path) {
     return 0;
 }
 
+// El ORACULO (docs/plan-css.md fase 0): la pagina la pinta Chromium en
+// off-screen y volcamos NUESTRO framebuffer, que dentro del area de pagina
+// son pixeles exactos de Chromium.  Ventana real pero OCULTA: OSR no la
+// necesita para pintar, solo quiere el display X11 vivo.  Con esto se
+// generan los goldens de css-tests (docs/plan-css-tests.md).
+int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
+#ifdef LUXIUM_CEF
+    if (!cef::built()) {
+        std::fprintf(stderr, "cefshot: binario sin CEF\n");
+        return 1;
+    }
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return 1;
+    }
+    window_ = SDL_CreateWindow(cfg_.title.c_str(), SDL_WINDOWPOS_CENTERED,
+                               SDL_WINDOWPOS_CENTERED, cfg_.width, cfg_.height,
+                               SDL_WINDOW_HIDDEN);
+    renderer_ = SDL_CreateRenderer(window_, -1, 0);
+    font_ = render::Font::load(cfg_.font_regular, cfg_.font_bold, cfg_.font_mono);
+    if (!font_) return 1;
+    ensure_surface();
+
+    SDL_SysWMinfo wm{};
+    SDL_VERSION(&wm.version);
+    if (!window_ || !SDL_GetWindowWMInfo(window_, &wm)) {
+        std::fprintf(stderr, "cefshot: se necesita una sesion X11 real\n");
+        return 1;
+    }
+    cef_display_ = (unsigned long)wm.info.x11.display;
+    cef_parent_  = (unsigned long)wm.info.x11.window;
+    cef::init(cef_display_, cef_parent_);
+
+    std::string url = target;
+    if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+        std::error_code ec;
+        auto abs = std::filesystem::absolute(target, ec);
+        url = std::string("file://") + (ec ? std::string("/") + target
+                                           : abs.string());
+    }
+    // el juicio NO aplica aqui: el oraculo es Chromium SIEMPRE
+    cef::attach(cef_display_, cef_parent_, url);
+    cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
+    cef::set_focus(true);
+    engine_cef_ = true;
+
+    // estable = sin frames nuevos de OnPaint durante 600ms (imagenes,
+    // fuentes y layout tardan); techo de 20s
+    int last_paints = -1, stable_ms = 0, total_ms = 0;
+    while (stable_ms < 600 && total_ms < 20000) {
+        int lv = 0;
+        std::string tx;
+        while (cef::pop_console(&lv, &tx)) page_.console(lv, tx);
+        page_.tick();
+        repaint();
+        if (texture_ && !fb_.empty()) {
+            SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
+            SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+        }
+        SDL_RenderPresent(renderer_);
+        const int p = cef::paints();
+        if (p == last_paints) stable_ms += 8;
+        else { stable_ms = 0; last_paints = p; }
+        total_ms += 8;
+        SDL_Delay(8);
+    }
+    if (cef::paints() == 0) {
+        std::fprintf(stderr, "cefshot: Chromium no pinto nada en 20s\n");
+        cef::shutdown();
+        return 1;
+    }
+    repaint();   // ultimo blit con el frame final
+
+    FILE* f = std::fopen(ppm_path.c_str(), "wb");
+    if (!f) { cef::shutdown(); return 1; }
+    std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
+    for (size_t i = 0; i < fb_.size(); ++i) {
+        uint8_t rgb[3] = {uint8_t(fb_[i] >> 16), uint8_t(fb_[i] >> 8), uint8_t(fb_[i])};
+        std::fwrite(rgb, 1, 3, f);
+    }
+    std::fclose(f);
+    std::printf("wrote %s (%dx%d, %d paints)\n", ppm_path.c_str(),
+                win_w_, win_h_, cef::paints());
+    cef::shutdown();
+    return 0;
+#else
+    (void)target;
+    (void)ppm_path;
+    std::fprintf(stderr, "cefshot: binario sin CEF\n");
+    return 1;
+#endif
+}
+
 float Shell::page_h() const { return static_cast<float>(win_h_ - bottom_h() - kUrlH); }
 
 void Shell::relayout() {

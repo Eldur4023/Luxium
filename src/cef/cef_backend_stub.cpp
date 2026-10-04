@@ -21,6 +21,7 @@ void key(int, uint32_t, uint32_t, uint32_t, const char*) {}
 void set_focus(bool) {}
 bool copy_frame(uint8_t*, int, int, int, int*, int*) { return false; }
 int cursor() { return 0; }
+int paints() { return 0; }
 bool pop_console(int*, std::string*) { return false; }
 std::string url() { return {}; }
 std::string title() { return {}; }

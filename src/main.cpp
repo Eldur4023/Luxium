@@ -76,6 +76,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::string> paths;
     const char* shot = nullptr;
+    const char* cefshot = nullptr;
     std::vector<std::string> clicks;
     bool check = false, headless = false;
     for (int i = 1; i < argc; ++i) {
@@ -84,10 +85,11 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--check") == 0) check = true;
         else if (std::strcmp(a, "--click") == 0 && i + 1 < argc) clicks.push_back(argv[++i]);
         else if (std::strcmp(a, "--shot") == 0 && i + 1 < argc) shot = argv[++i];
+        else if (std::strcmp(a, "--cefshot") == 0 && i + 1 < argc) cefshot = argv[++i];
         else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
             std::fprintf(stderr,
                 "uso: luxium <page.html|dir> [--check] [--headless] "
-                "[--click id] [--shot out.ppm]\n");
+                "[--click id] [--shot out.ppm] [--cefshot out.ppm]\n");
             return 0;
         } else paths.push_back(a);
     }
@@ -125,6 +127,7 @@ int main(int argc, char** argv) {
     if (is_url) shell.navigate_to(path, true);
     else if (path == "luxium:inicio") shell.navigate_address(path, true);
     for (const auto& id : clicks) page.click_by_id(id);
+    if (cefshot) return shell.cef_shot(path, cefshot);
     if (shot) return shell.screenshot(shot);   // SDL dummy driver, one frame
     return shell.run();
 }

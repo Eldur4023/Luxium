@@ -99,6 +99,21 @@ Aceptación:
 - UA stylesheet regenerada: en una página sin CSS propio, h1/p/ul difieren
   de Chromium en 0px.
 
+**Estado — el oráculo de captura ya existe.** `luxium <file> --cefshot
+out.ppm` renderiza la página con Chromium off-screen (ventana oculta, OSR)
+y vuelca el framebuffer; `tools/cssgolden.py` genera así los goldens de
+todo `css-tests/` (85/85, ~80s) y `tools/cssrun.py` compara el motor
+propio contra ellos (luminancia >24, umbral 2%). Primera línea de base:
+**61 pass / 24 fail** — los fallos son exactamente las features sin
+implementar (gradientes, background-image, grid, floats, radius, orden de
+pintado...). Limitación conocida: el % de píxeles deja pasar elementos
+PEQUEÑOS que faltan por completo (la caja azul de flex-center, 0.7%, no
+basta para fallar) — el sondeo JSON de abajo lo cierra por vía numérica.
+
+Pendiente de la fase: la sonda JSON (`getComputedStyle` +
+`getBoundingClientRect` por `ExecuteJavaScript`) para diffs de rects
+elemento a elemento, inmunes al umbral de píxeles.
+
 El catálogo COMPLETO de pruebas (ids, qué comprueba cada una, tolerancias
 y veredictos) está definido desde ya en `docs/plan-css-tests.md`: cada
 fase de este plan nace con sus tests ya enumerados.
