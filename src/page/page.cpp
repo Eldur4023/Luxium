@@ -22,6 +22,7 @@ bool Page::load_string(const std::string& html, const std::string& source_name) 
     title_.clear();
     console_.clear();
     css_.clear();
+    saw_js_ = false;
     dirty_  = true;
 
     html::ParseResult result = html::parse(html);
@@ -63,12 +64,17 @@ void Page::run_scripts() {
     for (dom::Node* s : root_->find_all("script")) {
         const std::string type = s->attr_or("type");
         if (type.find("javascript") != std::string::npos) {
-            console(1, "script type=" + type + ": Luxium does not run JavaScript");
+            saw_js_ = true;   // esta pagina quiere JavaScript -> CEF la toma
             continue;
         }
         if (s->has_attr("src")) {
-            console(1, "script src=\"" + s->attr_or("src") +
-                           "\": external scripts are not loaded yet");
+            // En la web real, <script src> es JavaScript (salvo .lux).
+            const std::string src = s->attr_or("src");
+            if (src.size() < 4 || src.substr(src.size() - 4) != ".lux") {
+                saw_js_ = true;
+                continue;
+            }
+            console(1, "script src=\"" + src + "\": external .lux not loaded yet");
             continue;
         }
         blocks.emplace_back(s->text_content(), s->line);
@@ -78,6 +84,12 @@ void Page::run_scripts() {
     for (const auto& [body, line] : blocks)
         engine_.add_script(body, line);
     if (!engine_.finalize()) {
+        // El juicio de la casa: un <script> pelado que no compila como Lux
+        // casi seguro es JavaScript (la web habla JS).  La pagina entera se
+        // la pasa a Chromium -- el shell consulta used_javascript().
+        saw_js_ = true;
+        console(1, "el script no compila como LuxScript: probablemente "
+                   "JavaScript, pasando a Chromium");
         for (const auto& e : engine_.errors())
             console(2, "luxscript: " + e);
         return;
@@ -108,6 +120,10 @@ void Page::click(const dom::Node* node) {
         }
     }
     engine_.click_node(node);
+}
+
+bool Page::has_click_handler(const dom::Node* node) const {
+    return engine_.has_handler_for(node);
 }
 
 void Page::click_by_id(const std::string& id) {

@@ -1,3 +1,13 @@
 build/
 .cache/
 compile_commands.json
+third_party/cef/
+build/luxium
+build/*.pak
+build/icudtl.dat
+build/locales/
+build/v8_context_snapshot.bin
+build/libcef.so
+build/libvk_swiftshader.so
+build/vk_swiftshader_icd.json
+build/chrome-sandbox

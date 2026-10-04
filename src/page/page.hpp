@@ -35,6 +35,10 @@ public:
 
     // The bytes currently displayed (view-source).
     const std::string& source() const { return source_; }
+
+    // La pagina pide JavaScript?  Cualquier <script type="text/javascript">
+    // o <script src> externo la marca: en la web real, src es JS.
+    bool used_javascript() const { return saw_js_; }
     const std::string& name() const { return name_; }
 
     // PageHost ────────────────────────────────────────────────────────────
@@ -56,6 +60,10 @@ public:
     // Fires due timers (the shell calls it once per frame).
     void tick() { engine_.tick(); }
 
+    // Does this node (or an ancestor?) carry a click handler registered from
+    // LuxScript?  The shell asks to decide click-vs-text-selection.
+    bool has_click_handler(const dom::Node* node) const;
+
     // Test/CLI bridge: click the first element with this id.
     void click_by_id(const std::string& id);
 
@@ -69,6 +77,7 @@ private:
     std::string                title_;
     std::string                name_;
     std::string                css_;
+    bool                       saw_js_ = false;
     std::string                source_;
     bool                       dirty_ = true;
 };

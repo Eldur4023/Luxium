@@ -1,6 +1,12 @@
 #include "shell/shell.hpp"
 
 #include <net/fetch.hpp>
+#include <cef/cef_backend.hpp>
+
+#ifdef LUXIUM_CEF
+#include <SDL_syswm.h>
+#include <X11/Xlib.h>
+#endif
 
 #include <SDL.h>
 
@@ -35,6 +41,10 @@ void Shell::ensure_surface() {
     win_w_ = w;
     win_h_ = h;
     console_h_ = std::max(140, win_h_ * 26 / 100);
+#ifdef LUXIUM_CEF
+    if (engine_cef_)
+        cef::set_view(win_w_, win_h_ - console_h_ - 20 - kUrlH);
+#endif
     fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFAFAF7u);
     if (texture_) SDL_DestroyTexture(texture_);
     texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
@@ -218,6 +228,25 @@ void Shell::navigate_to(const std::string& href, bool push_history) {
     }
 
     if (r.kind == Target::Http) {
+#ifdef LUXIUM_CEF
+        // Con CEF construido, http(s) lo renderiza Chromium directamente
+        // (JS y web moderna completas).  El juicio lux/js sigue existiendo
+        // para lo que llega por curl+motor propio.
+        if (cef::built()) {
+            cef::attach(cef_display_, cef_parent_, r.target);
+            cef::set_view(win_w_, win_h_ - console_h_ - 20 - kUrlH);
+            cef::set_focus(true);
+            engine_cef_ = true;
+            scroll_ = 0;
+            if (push_history) {
+                hist_.resize(hist_idx_ + 1);
+                hist_.push_back(r.target);
+                hist_idx_ = hist_.size() - 1;
+            }
+            return;
+        }
+        page_.console(1, "CEF no disponible en este binario: motor propio");
+#endif
         if (fetch_) fetch_.reset();   // one fetch at a time: the newest wins
         fetch_ = net::Fetch::start(r.target);
         if (push_history) {
@@ -229,10 +258,14 @@ void Shell::navigate_to(const std::string& href, bool push_history) {
     }
 
     // file
+    engine_cef_ = false;   // el motor propio vuelve a pintar (papel + page)
     if (!page_.load_file(r.target)) {
         page_.load_string(error_page(r.target, "no existe el archivo (o no se puede leer)"),
                           "luxium-error:" + r.target);
     }
+    // El juicio lux/js para paginas locales: si piden JavaScript y hay CEF,
+    // se las pasa (file:// tambien es mundo Chromium).
+    maybe_cef_handoff();
     after_load();
     if (push_history) {
         hist_.resize(hist_idx_ + 1);
@@ -256,13 +289,17 @@ void Shell::poll_fetch() {
     const std::string err  = fetch_->error();
     const std::string url  = fetch_->url();
     fetch_.reset();
-    if (ok) {
-        page_.load_string(body, url);
-        after_load();
-    } else {
+    if (!ok) {
         page_.load_string(error_page(url, err), "luxium-error:" + url);
         after_load();
+        return;
     }
+    page_.load_string(body, url);   // nuestro motor la juzga al cargar
+    after_load();
+#ifdef LUXIUM_CEF
+    // La pagina pide JavaScript?  CEF la descarga y renderiza con todo.
+    maybe_cef_handoff();
+#endif
 }
 
 void Shell::toggle_view_source() {
@@ -372,6 +409,86 @@ void Shell::navigate_address(std::string addr, bool push_history) {
     navigate_to(addr, push_history);   // will show the error page: honest
 }
 
+// ── selection + clipboard ───────────────────────────────────────────────────
+
+void Shell::selection_clear() {
+    sel_start_ = sel_end_ = -1;
+    sel_dragging_ = false;
+}
+
+int Shell::word_index_at(float doc_x, float doc_y) const {
+    // The word whose line contains doc_y and whose span contains doc_x;
+    // else the nearest word on that line; else -1.
+    int best = -1;
+    float best_d = 1e9f;
+    for (int i = 0; i < static_cast<int>(layout_.words.size()); ++i) {
+        const auto& w = layout_.words[i];
+        if (doc_y < w.y - 2 || doc_y > w.y + w.word.size * 2 + 2) continue;
+        float d = 0;
+        if (doc_x < w.x)            d = w.x - doc_x;
+        else if (doc_x > w.x + w.word.width) d = doc_x - (w.x + w.word.width);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    return best;
+}
+
+void Shell::selection_word_at(float doc_x, float doc_y) {
+    int i = word_index_at(doc_x, doc_y);
+    if (i < 0) { selection_clear(); return; }
+    sel_start_ = sel_end_ = i;
+}
+
+void Shell::selection_extend(float doc_x, float doc_y) {
+    int i = word_index_at(doc_x, doc_y);
+    if (i < 0) return;
+    sel_end_ = i;
+}
+
+std::string Shell::selection_text() const {
+    if (sel_start_ < 0 || sel_end_ < 0) return "";
+    const int a = std::min(sel_start_, sel_end_);
+    const int b = std::max(sel_start_, sel_end_);
+    std::string out;
+    float last_y = -1e9f;
+    for (int i = a; i <= b && i < static_cast<int>(layout_.words.size()); ++i) {
+        const auto& w = layout_.words[static_cast<size_t>(i)];
+        if (last_y > -1e8f && std::fabs(w.y - last_y) > 2.f) out += '\n';
+        else if (!out.empty()) out += ' ';
+        out += w.word.text;
+        last_y = w.y;
+    }
+    return out;
+}
+
+void Shell::copy_selection() const {
+    const std::string t = selection_text();
+    if (!t.empty()) {
+        SDL_SetClipboardText(t.c_str());
+        // feedback in the status area would be nicer; the console is honest
+    }
+}
+
+// El juicio de la casa: si la pagina que acaba de cargar pide JavaScript y
+// hay CEF, se la pasa a Chromium (que la descarga y renderiza con todo).
+// Sin display X11 (modo --shot, dummy) no hay handoff: el motor propio la
+// deja en blanco y lo dice por consola.
+void Shell::maybe_cef_handoff() {
+#ifdef LUXIUM_CEF
+    if (!page_.used_javascript() || !cef::built() || !cef_display_) return;
+    std::string target = page_.name();
+    if (target.rfind("http", 0) != 0) {
+        std::error_code ec;
+        auto abs = std::filesystem::absolute(target, ec);
+        target = "file://" + (ec ? std::string("/") + target : abs.string());
+    }
+    cef::attach(cef_display_, cef_parent_, target);
+    cef::set_view(win_w_, win_h_ - console_h_ - 20 - kUrlH);
+    cef::set_focus(true);
+    engine_cef_ = true;
+    scroll_ = 0;
+#endif
+}
+
 // ── the URL bar itself ──────────────────────────────────────────────────────
 
 void Shell::draw_url_bar() {
@@ -414,7 +531,8 @@ void Shell::draw_url_bar() {
     font_->set_size(14);
     float tx = fx + 74;
     const float ty = fy + (fh - font_->line_height()) / 2.f;
-    std::string visible = url_focus_ ? url_edit_ : page_.name();
+    std::string visible = url_focus_ ? url_edit_
+                        : (engine_cef_ ? cef::url() : page_.name());
     if (visible.empty()) visible = "escribe una uri...";
     // keep the tail that fits (utf-8 sequences dropped whole from the front)
     const float avail = fx + fw - tx - 12;
@@ -449,6 +567,101 @@ void Shell::draw_url_bar() {
     }
 }
 
+#ifdef LUXIUM_CEF
+// ── SDL -> Chromium key translation ─────────────────────────────────────────
+// EVENTFLAG bits: 1 shift, 2 ctrl, 4 alt, 8 cmd, 16 caps, 32 num, 1024 repeat.
+static uint32_t cef_mods_flags(int sdl_mod, bool repeat) {
+    uint32_t m = 0;
+    if (sdl_mod & KMOD_SHIFT) m |= 1;
+    if (sdl_mod & KMOD_CTRL)  m |= 2;
+    if (sdl_mod & KMOD_ALT)   m |= 4;
+    if (sdl_mod & KMOD_GUI)   m |= 8;
+    if (sdl_mod & KMOD_CAPS)  m |= 16;
+    if (sdl_mod & KMOD_NUM)   m |= 32;
+    if (repeat)               m |= 1024;
+    return m;
+}
+
+// Windows virtual key de las teclas que reenviamos.
+static uint32_t cef_vk(SDL_Keycode s) {
+    if (s >= 'a' && s <= 'z') return (uint32_t)(s - 32);
+    if (s >= '0' && s <= '9') return (uint32_t)s;
+    switch (s) {
+    case SDLK_RETURN: case SDLK_KP_ENTER: return 0x0D;
+    case SDLK_BACKSPACE: return 0x08;
+    case SDLK_TAB:       return 0x09;
+    case SDLK_ESCAPE:    return 0x1B;
+    case SDLK_SPACE:     return 0x20;
+    case SDLK_LEFT:      return 0x25;
+    case SDLK_UP:        return 0x26;
+    case SDLK_RIGHT:     return 0x27;
+    case SDLK_DOWN:      return 0x28;
+    case SDLK_PAGEUP:    return 0x21;
+    case SDLK_PAGEDOWN:  return 0x22;
+    case SDLK_HOME:      return 0x24;
+    case SDLK_END:       return 0x23;
+    case SDLK_INSERT:    return 0x2D;
+    case SDLK_DELETE:    return 0x2E;
+    case SDLK_LSHIFT:    return 0xA0;
+    case SDLK_RSHIFT:    return 0xA1;
+    case SDLK_LCTRL:     return 0xA2;
+    case SDLK_RCTRL:     return 0xA3;
+    case SDLK_LALT:      return 0xA4;
+    case SDLK_RALT:      return 0xA5;
+    default: break;
+    }
+    if (s >= SDLK_F1 && s <= SDLK_F12) return 0x70 + (s - SDLK_F1);
+    if (s >= 32 && s < 127) return (uint32_t)s;   // resto de ASCII
+    return 0;
+}
+
+// Keysym X11 equivalente (los keycodes de SDL son ASCII/XK para lo basico).
+static uint32_t cef_x_keysym(SDL_Keycode s) {
+    if (s >= 'a' && s <= 'z') return (uint32_t)s;
+    if (s >= 'A' && s <= 'Z') return (uint32_t)(s + 32);
+    if (s >= '0' && s <= '9') return (uint32_t)s;
+    if (s >= 32 && s < 127)   return (uint32_t)s;
+    switch (s) {
+    case SDLK_RETURN: case SDLK_KP_ENTER: return 0xFF0D;
+    case SDLK_BACKSPACE: return 0xFF08;
+    case SDLK_TAB:       return 0xFF09;
+    case SDLK_ESCAPE:    return 0xFF1B;
+    case SDLK_SPACE:     return 0x0020;
+    case SDLK_LEFT:      return 0xFF51;
+    case SDLK_UP:        return 0xFF52;
+    case SDLK_RIGHT:     return 0xFF53;
+    case SDLK_DOWN:      return 0xFF54;
+    case SDLK_PAGEUP:    return 0xFF55;
+    case SDLK_PAGEDOWN:  return 0xFF56;
+    case SDLK_HOME:      return 0xFF50;
+    case SDLK_END:       return 0xFF57;
+    case SDLK_INSERT:    return 0xFF63;
+    case SDLK_DELETE:    return 0xFFFF;
+    case SDLK_LSHIFT:    return 0xFFE1;
+    case SDLK_RSHIFT:    return 0xFFE2;
+    case SDLK_LCTRL:     return 0xFFE3;
+    case SDLK_RCTRL:     return 0xFFE4;
+    case SDLK_LALT:      return 0xFFE9;
+    case SDLK_RALT:      return 0xFFEA;
+    default: break;
+    }
+    if (s >= SDLK_F1 && s <= SDLK_F12) return 0xFFBE + (s - SDLK_F1);
+    return 0;
+}
+
+// type: 0 = raw key down, 1 = key up.  native = hardware keycode X11.
+static void forward_cef_key(const SDL_Keysym& k, int type, unsigned long display,
+                            bool repeat) {
+    const uint32_t vk = cef_vk(k.sym);
+    if (vk == 0) return;                 // tecla desconocida: no estorbar
+    uint32_t native = 0;
+    const uint32_t xs = cef_x_keysym(k.sym);
+    if (xs && display)
+        native = XKeysymToKeycode((Display*)display, (KeySym)xs);
+    cef::key(type, cef_mods_flags(k.mod, repeat), vk, native, nullptr);
+}
+#endif // LUXIUM_CEF
+
 int Shell::run() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -482,6 +695,21 @@ int Shell::run() {
         hist_idx_ = 0;
     }
 
+#ifdef LUXIUM_CEF
+    // Chromium se inicializa con la ventana ya viva: su hijo X11 cuelga de
+    // la nuestra.
+    {
+        SDL_SysWMinfo wm;
+        SDL_VERSION(&wm.version);
+        if (SDL_GetWindowWMInfo(window_, &wm)) {
+            cef_display_ = (unsigned long)wm.info.x11.display;
+            cef_parent_  = (unsigned long)wm.info.x11.window;
+            cef::init(cef_display_, cef_parent_);
+        }
+    }
+    maybe_cef_handoff();   // la pagina inicial tambien se juzga (lux vs js)
+#endif
+
     bool quit = false;
     while (!quit) {
         SDL_Event e;
@@ -494,15 +722,52 @@ int Shell::run() {
                 if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
                     e.window.event == SDL_WINDOWEVENT_RESIZED)
                     ensure_surface();
+#ifdef LUXIUM_CEF
+                else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
+                    cef::set_focus(engine_cef_ && !url_focus_);
+                else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+                    cef::set_focus(false);
+#endif
                 break;
             case SDL_MOUSEMOTION:
                 mouse_x_ = e.motion.x;
                 mouse_y_ = e.motion.y;
+#ifdef LUXIUM_CEF
+                if (engine_cef_) {
+                    const bool inside =
+                        e.motion.x >= 0 && e.motion.x < win_w_ &&
+                        e.motion.y >= kUrlH &&
+                        e.motion.y < win_h_ - console_h_ - 20;
+                    cef::mouse_move(e.motion.x, e.motion.y - kUrlH, !inside,
+                                    cef_mods_flags(SDL_GetModState(), false));
+                }
+#endif
                 break;
             case SDL_TEXTINPUT:
                 if (url_focus_) { url_edit_ += e.text.text; url_caret_ = static_cast<int>(url_edit_.size()); }
+#ifdef LUXIUM_CEF
+                else if (engine_cef_)
+                    cef::key(2, cef_mods_flags(SDL_GetModState(), false), 0, 0,
+                             e.text.text);
+#endif
                 break;
             case SDL_MOUSEWHEEL: {
+#ifdef LUXIUM_CEF
+                if (engine_cef_ && !url_focus_ && mouse_y_ >= kUrlH &&
+                    mouse_y_ < win_h_ - console_h_ - 20) {
+                    float dy = e.wheel.preciseY;
+                    float dx = e.wheel.preciseX;
+                    if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+                        dy = -dy;
+                        dx = -dx;
+                    }
+                    cef::mouse_wheel(mouse_x_, mouse_y_ - kUrlH,
+                                     static_cast<int>(dx * 100),
+                                     static_cast<int>(dy * 100),
+                                     cef_mods_flags(SDL_GetModState(), false));
+                    break;
+                }
+#endif
                 const float lines = static_cast<float>(-e.wheel.y) * 3;
                 if (mouse_y_ > win_h_ - console_h_) {
                     // console pane scrolls its own history
@@ -515,6 +780,19 @@ int Shell::run() {
                 break;
             }
             case SDL_MOUSEBUTTONDOWN:
+#ifdef LUXIUM_CEF
+                if (engine_cef_ && e.button.y >= kUrlH &&
+                    e.button.y < win_h_ - console_h_ - 20) {
+                    // click dentro del area de pagina: el chrome no la toca
+                    url_focus_ = false;
+                    const int btn = e.button.button == SDL_BUTTON_LEFT ? 0
+                                  : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
+                    cef::mouse_button(e.button.x, e.button.y - kUrlH, btn, false,
+                                      e.button.clicks,
+                                      cef_mods_flags(SDL_GetModState(), false));
+                    break;
+                }
+#endif
                 if (e.button.button == SDL_BUTTON_LEFT)
                     handle_click(e.button.x, e.button.y);
                 else if (e.button.button == 3) navigate_to(hist_[hist_idx_], false);      // X1 = back
@@ -522,6 +800,18 @@ int Shell::run() {
                     ++hist_idx_;
                     navigate_to(hist_[hist_idx_], false);
                 }
+                break;
+            case SDL_MOUSEBUTTONUP:
+#ifdef LUXIUM_CEF
+                if (engine_cef_ && e.button.y >= kUrlH &&
+                    e.button.y < win_h_ - console_h_ - 20) {
+                    const int btn = e.button.button == SDL_BUTTON_LEFT ? 0
+                                  : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
+                    cef::mouse_button(e.button.x, e.button.y - kUrlH, btn, true,
+                                      e.button.clicks,
+                                      cef_mods_flags(SDL_GetModState(), false));
+                }
+#endif
                 break;
             case SDL_KEYDOWN:
                 if (url_focus_) {
@@ -555,7 +845,8 @@ int Shell::run() {
                     break;
                 }
                 if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_r) {
-                    navigate_to(hist_[hist_idx_], false);   // reload
+                    if (engine_cef_) cef::reload();
+                    else navigate_to(hist_[hist_idx_], false);
                     break;
                 }
                 if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_u) {
@@ -565,15 +856,31 @@ int Shell::run() {
                 if ((e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_LEFT &&
                     hist_idx_ > 0) {
                     --hist_idx_;
+#ifdef LUXIUM_CEF
+                    if (engine_cef_) cef::go_back();
+                    else
+#endif
                     navigate_to(hist_[hist_idx_], false);
                     break;
                 }
                 if ((e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_RIGHT &&
                     hist_idx_ + 1 < hist_.size()) {
                     ++hist_idx_;
+#ifdef LUXIUM_CEF
+                    if (engine_cef_) cef::go_forward();
+                    else
+#endif
                     navigate_to(hist_[hist_idx_], false);
                     break;
                 }
+#ifdef LUXIUM_CEF
+                if (engine_cef_) {
+                    // Todo lo que el chrome no se quedo (letras, Esc, flechas,
+                    // Ctrl+C/V...) va a Chromium como evento nativo.
+                    forward_cef_key(e.key.keysym, 0, cef_display_, e.key.repeat);
+                    break;
+                }
+#endif
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: quit = true; break;
                 case SDLK_PAGEUP:   scroll_ = std::max(0.f, scroll_ - page_h() * 0.8f); break;
@@ -583,10 +890,34 @@ int Shell::run() {
                 case SDLK_END:  scroll_ = std::max(0.f, content_h_ - page_h()); break;
                 }
                 break;
+#ifdef LUXIUM_CEF
+            case SDL_KEYUP:
+                if (engine_cef_ && !url_focus_)
+                    forward_cef_key(e.key.keysym, 1, cef_display_, false);
+                break;
+#endif
             }
         }
 
         poll_fetch();          // network pages land here when the worker ends
+#ifdef LUXIUM_CEF
+        if (engine_cef_) {
+            // console.log/warn/error de Chromium -> nuestro panel
+            int lv = 0;
+            std::string tx;
+            while (cef::pop_console(&lv, &tx)) {
+                page_.console(lv, tx);
+                console_scroll_ = 0;   // el panel salta a la ultima linea
+            }
+            // el titulo de la ventana sigue a la pagina de Chromium
+            static std::string last_title;
+            const std::string t = cef::title();
+            if (!t.empty() && t != last_title) {
+                last_title = t;
+                SDL_SetWindowTitle(window_, ("Luxium \xE2\x80\x94 " + t).c_str());
+            }
+        }
+#endif
         page_.tick();          // timers (page.after) fire here, frame-driven
         if (page_.dirty()) {
             relayout();
@@ -604,7 +935,9 @@ int Shell::run() {
         // user's screen gets) -- LUXIUM_DUMP_FRAME=/path/out.ppm
         if (const char* dump = std::getenv("LUXIUM_DUMP_FRAME")) {
             static int frames = 0;
-            if (++frames == 30) {   // half a second in, past any warmup
+            // volcado en frio a los 0,25s y luego cada 3s (el ultimo
+            // sobrevive al kill: sirve para verificar tras entrada simulada)
+            if (++frames == 30 || frames % 360 == 0) {
                 FILE* f = std::fopen(dump, "wb");
                 if (f) {
                     std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
@@ -619,6 +952,9 @@ int Shell::run() {
         }
         SDL_Delay(8);   // ~120fps cap; the CPU is idle at this size anyway
     }
+#ifdef LUXIUM_CEF
+    cef::shutdown();
+#endif
     return 0;
 }
 
@@ -780,7 +1116,26 @@ void Shell::draw_console() {
 }
 
 void Shell::repaint() {
-    if (win_w_ == 0 || !page_.page_root()) {
+    if (win_w_ == 0 || engine_cef_) {   // CEF pinta la pagina; nosotros el chrome
+#ifdef LUXIUM_CEF
+        if (engine_cef_ && !fb_.empty()) {
+            // OSR: los pixeles BGRA de Chromium entran en el framebuffer
+            // (mismo layout ARGB little-endian) solo en el area de pagina.
+            int fw = 0, fh = 0;
+            uint8_t* page = reinterpret_cast<uint8_t*>(fb_.data()) +
+                            static_cast<size_t>(kUrlH) * win_w_ * 4;
+            const int ph = win_h_ - console_h_ - 20 - kUrlH;
+            if (ph > 0)
+                cef::copy_frame(page, win_w_ * 4, win_w_, ph, &fw, &fh);
+        }
+#endif
+        draw_url_bar();
+        draw_status();
+        draw_console();
+        ++frames_;
+        return;
+    }
+    if (!page_.page_root()) {
         draw_url_bar();
         return;
     }
@@ -861,7 +1216,7 @@ void Shell::draw_status() {
             }
         }
     }
-    if (text.empty()) text = page_.name();
+    if (text.empty()) text = engine_cef_ ? cef::url() : page_.name();
     for (const auto& w : render::shape_words(*font_, text, false, false)) {
         if (x > win_w_ - 80) break;
         render::draw_word(fb_, win_w_, win_h_, *font_, w, x,

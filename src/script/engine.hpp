@@ -98,6 +98,7 @@ public:
 
     // Shell bridge: the page hit-tested a click on `node`; fire its handlers.
     void click_node(const dom::Node* node);
+    bool has_handler_for(const dom::Node* node) const;
 
     // The shell calls this every frame: fires timers whose deadline passed.
     void tick();

@@ -628,4 +628,12 @@ void Engine::click_node(const dom::Node* node) {
         if (n == node) { fire("click", h); return; }
 }
 
+bool Engine::has_handler_for(const dom::Node* node) const {
+    for (const auto& [h, n] : nodes_)
+        if (n == node)
+            for (const auto& eh : handlers_)
+                if (eh.handle == h) return true;
+    return false;
+}
+
 } // namespace luxium::script

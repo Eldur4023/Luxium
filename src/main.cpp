@@ -11,6 +11,9 @@
 
 #include <page/page.hpp>
 #include <shell/shell.hpp>
+#ifdef LUXIUM_CEF
+#include <cef/cef_backend.hpp>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -63,6 +66,14 @@ int run_check(const std::vector<std::string>& paths) {
 } // namespace
 
 int main(int argc, char** argv) {
+#ifdef LUXIUM_CEF
+    // CEF relanza este mismo binario como subproceso (renderer, GPU,
+    // utility...): si esta invocacion es una de esas, CEF la atiende aqui
+    // dentro y NUNCA se llega al parser de argumentos.
+    if (const int cef_code = luxium::cef::early(argc, argv); cef_code >= 0)
+        return cef_code;
+#endif
+
     std::vector<std::string> paths;
     const char* shot = nullptr;
     std::vector<std::string> clicks;

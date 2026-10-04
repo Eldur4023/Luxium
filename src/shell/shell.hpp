@@ -121,8 +121,22 @@ private:
     std::string url_edit_;
     bool        url_focus_ = false;
     int         url_caret_ = 0;      // caret position in BYTES (utf-8)
+    bool        url_selected_ = false;   // select-all state in the bar
     uint64_t    frames_ = 0;         // caret blink
     void        draw_url_bar();
+    void        copy_url();
+    void        paste_url();
+
+    // Text selection over the page's words (indices into layout_.words).
+    int    sel_start_ = -1, sel_end_ = -1;   // inclusive word range, -1 = none
+    bool   sel_dragging_ = false;
+    int    sel_anchor_ = -1;
+    void   selection_clear();
+    void   selection_word_at(float doc_x, float doc_y);   // double-click
+    int    word_index_at(float doc_x, float doc_y) const;
+    void   selection_extend(float doc_x, float doc_y);
+    void   copy_selection() const;
+    std::string selection_text() const;
     
 
     // history + network
@@ -132,6 +146,9 @@ private:
     std::unique_ptr<net::Fetch> fetch_;
     bool    viewing_source_ = false;
     std::string viewing_source_origin_;
+    bool    engine_cef_ = false;   // la pagina actual la renderiza Chromium
+    unsigned long cef_display_ = 0, cef_parent_ = 0;
+    void    maybe_cef_handoff();
 };
 
 } // namespace luxium::shell

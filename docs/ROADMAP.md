@@ -144,7 +144,51 @@ Acceptance (all verified via simulated clicks + framebuffer inspection):
 - [x] `luxium http://127.0.0.1:8077/counter.html` renders a page served by
       a local http server; a dead port renders the error page.
 
-## M6 — Candidates (unordered, pick when M5 lands)
+## M6 — Dual engine: Chromium off-screen (OSR) — DONE
+
+Luxium judges every page: if it asks for JavaScript (explicit
+`type="...javascript"`, an external `<script src>` that is not `.lux`, or a
+plain `<script>` that fails to compile as LuxScript) the URL is handed to
+Chromium through CEF; everything else renders with the own engine. The
+chrome — URL bar, status line, console pane — is always ours.
+
+Shipped:
+- [x] CEF 154 vendored in `third_party/cef` (gitignored); CMake toggle
+      `LUXIUM_CEF` with a no-op stub backend when the dist is absent.
+- [x] Windowless (OSR) rendering: Chromium creates NO X11 window. A native
+      child was proven impossible — X11 children must share the parent's
+      visual when depths match, SDL picks 0x3ba and Chromium hardcodes the
+      default 0x21, so every CreateWindow died in BadMatch. Instead
+      `CefRenderHandler::OnPaint` delivers BGRA frames and we blit them
+      into our framebuffer, page area only.
+- [x] Input forwarded from our SDL loop via CefBrowserHost: mouse move /
+      click / wheel inside the page area, raw keys + CHAR events (Windows
+      VK table + X11 native keycodes), focus, engine-aware Esc (goes to
+      the page, not the app) and Chrome shortcuts (Ctrl+L/R/U,
+      Alt+arrows).
+- [x] Engine-aware chrome: the address bar shows `cef::url()`, the window
+      title follows OnTitleChange, Chromium's console messages land in our
+      console pane, back/forward/reload route to the right engine.
+- [x] Bug found by instrumentation: `set_view` computed `a && b` over two
+      `exchange`s — the first comparison short-circuited the second, the
+      height stayed at its initial 1 and Chromium painted a 1px strip
+      (the "blank screen" report).
+
+Acceptance (verified visually through framebuffer dumps + xdotool input):
+- [x] `examples/js-test.html` (`type="text/javascript"`) renders through
+      Chromium: the crimson h1 written by the page's own JS appears inside
+      our chrome.
+- [x] `http://google.es` loads, redirects and renders (logo, search box,
+      autocomplete); xdotool click + typing lands in the box, Enter
+      searches — and a hand-driven Google search succeeded.
+- [x] Chromium console messages appear in our console panel.
+- [x] `--check examples/` still 0 errors; the `--shot` path is untouched
+      (the dummy driver never hands off).
+
+Still open (M7 candidates): cursor-shape mapping (`cef::cursor` → SDL),
+wheel sign on long pages, text selection + copy/paste in the own engine.
+
+## M7 — Candidates (unordered, pick when M6 lands)
 
 Forms (input/text/checkbox, LuxScript-validated submission to Lux servers —
 the round trip with `../Lux` as the origin server is the showcase), flexbox,
