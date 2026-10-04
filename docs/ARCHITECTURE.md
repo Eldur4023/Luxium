@@ -188,12 +188,22 @@ run on the UI thread (guarded by the instruction budget, §4.4). Networking
 (M5) does I/O on worker threads and delivers completed bytes as events into
 the UI thread's queue — the same shape as Lux's event loop, inverted.
 
-## 8. Open decisions (unset on purpose)
+## 8. Decisions taken
 
-| Question | Options on the table | Leaning |
+| Question | Decision | Why |
 |---|---|---|
-| Script embedding syntax | `<script>` default / `<script type="text/luxscript">` / a new `<lux>` tag | `<script>` plain — see [LUXSCRIPT.md §2](LUXSCRIPT.md) |
-| Shell toolkit | GTK4 / Qt6 / custom (SDL2 + own widgets) | custom: fewer deps, and the browser chrome is small |
-| Text stack | FreeType+HarfBuzz vs. system toolkit fonts | FreeType+HarfBuzz: shaping control beats convenience |
-| CSS scope for M3 | property list, selector level | tag/class/id + box model + color/font — enough to lay out a form |
-| C++ standard library JSON for devtools protocol | nlohmann / own | own tiny writer, like Lux's |
+| Script embedding syntax | plain `<script>` is LuxScript; `type="text/javascript"` is refused with a console message | there is no other language to disambiguate from — see [LUXSCRIPT.md §2](LUXSCRIPT.md) |
+| Shell toolkit | **SDL2** window + own software framebuffer | installed and smallest; GTK3 was the fallback and remains one |
+| Text stack | **FreeType + HarfBuzz**, DejaVu Sans regular+bold, glyph cache keyed by (glyph, bold) | shaping control; HarfBuzz reuses FreeType's faces (hb_ft) |
+| Handler state | `page.get/page.set` page-scoped store | a script's top level is a fn body: its locals die before a click can arrive. This is the browser's `state.*` |
+| CSS scope for M3 | tag/class/id + box model + color/font | enough to lay out a form |
+| C++ JSON for devtools | own tiny writer, like Lux's | no deps |
+
+One deliberate divergence from the vendored engine: `render()`/templates are
+stubbed to a compile-time diagnostic — a page renders its own DOM, it does
+not render templates.
+
+Two debug envs exist for the pipelines: `LUXIUM_DEBUG_WRAP` (dumps the
+wrapped script source the compiler sees) and `LUXIUM_DEBUG_LAYOUT` (dumps the
+box list). They are how the wrapping and layout bugs were found and how the
+next ones will be.

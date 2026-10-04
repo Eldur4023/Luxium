@@ -397,6 +397,15 @@ Value Engine::document_root() {
     return root ? make_element(root) : Value::null();
 }
 
+Value Engine::page_get(const std::string& key) {
+    auto it = page_state_.find(key);
+    return it == page_state_.end() ? Value::null() : it->second;
+}
+
+void Engine::page_set(const std::string& key, Value v) {
+    page_state_[key] = std::move(v);
+}
+
 Value Engine::element_text(long long handle) {
     dom::Node* n = node_of(handle);
     return n ? Value::str(n->text_content()) : Value::null();
@@ -509,7 +518,7 @@ bool Engine::fire(const std::string& event, long long handle) {
     return ok;
 }
 
-void Engine::click_node(dom::Node* node) {
+void Engine::click_node(const dom::Node* node) {
     for (const auto& [h, n] : nodes_)
         if (n == node) { fire("click", h); return; }
 }

@@ -41,7 +41,7 @@ public:
     void clear_dirty() { dirty_ = false; }
 
     // Routes a click at a node (hit-tested by the shell) to script handlers.
-    void click(dom::Node* node);
+    void click(const dom::Node* node);
 
     // Test/CLI bridge: click the first element with this id.
     void click_by_id(const std::string& id);

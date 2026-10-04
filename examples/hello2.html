@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+    <title>Luxium</title>
+</head>
+<body>
+    <h1>Luxium</h1>
+    <p>Un navegador que renderiza <b>HTML + LuxScript</b> en lugar de
+       JavaScript. Sin maquina virtual ajena, sin tipos dinamicos: el mismo
+       lenguaje que sirve <i>Lux</i>, compilado a bytecode y ejecutado en el
+       propio navegador.</p>
+
+    <h2>Que sabe hacer hoy</h2>
+    <ul>
+        <li>HTML: titulos, parrafos, listas, botones, reglas</li>
+        <li>LuxScript: se compila al cargar y ejecuta con presupuesto de pasos</li>
+        <li>document.get(id), element.set_text(), element.click(fn)</li>
+        <li>Consola integrada: log.info / log.warn / log.error</li>
+    </ul>
+
+    <h2>Prueba el contador</h2>
+    <p>Abre <b>counter.html</b> y pulsa el boton: es Lux Script de verdad.</p>
+    <button id="saluda">pulsa</button>
+    <p id="respuesta">...</p>
+
+    <hr>
+
+    <script>
+    fn void saluda():
+        Element r = document.get("respuesta")
+        r.set_text("Lux Script ha respondido a tu click.")
+        r.set_attr("style", "color: #2A6E2A")
+
+    document.get("saluda").click(saluda)
+
+    int segundos = 3
+    while segundos > 0:
+        log.info("cargando... " + str(segundos))
+        segundos = segundos - 1
+    log.info("pagina lista")
+    </script>
+</body>
+</html>

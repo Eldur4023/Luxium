@@ -8,29 +8,47 @@ written in Lux Script. Same language, same grammar, same bytecode VM — the
 reserved objects change (`request`, `app`, `routes` → `document`, `page`),
 because the context is a browser, not a server.
 
-## Status: M0 — skeleton (planning phase)
+## Status: M0–M2 — usable demo
 
-Right now Luxium is a **plan** plus a **compilable skeleton** that proves the
-two foundational pipelines:
+The browser opens a window, renders a page, and **runs its LuxScript**:
 
-- **HTML → DOM**: tokenizer + tree builder (simplified WHATWG model: raw-text
-  mode for `<script>`/`<style>`, implied `html`/`head`/`body`, void elements,
-  basic implied end tags, error recovery).
-- **LuxScript → tokens**: indentation-aware lexer for the Lux Script grammar
-  (placeholders until the real lexer/parser/VM are vendored from Lux in M2).
+- HTML: h1–h3, p, ul/li, buttons, hr, br, b/i/code, blockquote, inline
+  `style="color: #rrggbb"` — block layout, word wrap, scroll, scrollbar.
+- LuxScript: every `<script>` block compiles at page load with Lux's own
+  pipeline (lexer → parser → checker → IR → bytecode) and runs on Lux's own
+  VM. `while` loops are bounded by the VM's step limit, so a page cannot hang
+  the browser.
+- Browser surface: `log.info/warn/error` (console pane), `document.get /
+  query_all / title / root`, `element.text / set_text / click / attr /
+  set_attr / tag / id / child_count`, `page.get / page.set` (the page-scoped
+  store — the browser's `state.*`). Nothing else exists to call: the sandbox
+  is the API surface.
+- `element.click(fn)` handlers run on real mouse clicks and mutate the DOM;
+  a mutation relayouts and repaints.
 
-No rendering, no CSS, no networking, no UI yet. See
-[docs/ROADMAP.md](docs/ROADMAP.md).
+The showcase is `examples/counter.html`: two buttons wired in Lux Script,
+state in the page store, the counter updates on screen.
 
-## Build
+## Build and run
 
 ```sh
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-./build/luxium examples/script-demo.html
+./compile.sh
+./build/luxium examples/counter.html        # the window
+./build/luxium examples/hello2.html         # the long page
 ```
 
-Or just `./compile.sh`.
+Deps: SDL2, FreeType, HarfBuzz (plus a C++23 compiler).
+
+Headless tools, for working without a display:
+
+```sh
+./build/luxium page.html --headless               # console output only
+./build/luxium page.html --click mas --shot out.ppm   # one frame to a PPM
+./build/luxium_headless page.html id [id...]      # load + click ids
+```
+
+`--shot` runs on SDL's dummy driver: that is how the rendering is tested
+without stealing a screen, and how this README's claims were verified.
 
 ## Layout
 
@@ -38,9 +56,14 @@ Or just `./compile.sh`.
 docs/               the plan: architecture, roadmap, LuxScript-in-browser spec
 src/dom/            DOM tree (Node, Document)
 src/html/           HTML tokenizer + tree builder
-src/luxscript/      Lux Script frontend skeleton (lexer; parser/VM come from Lux)
-src/main.cpp        `luxium` CLI: parse a file, dump the DOM tree, lex scripts
-examples/           sample pages
+src/lux_script/     Lux's engine, vendored (lexer/parser/IR/emitter/bytecode/VM)
+                    with browser natives — see docs/ARCHITECTURE.md §4
+src/script/         compile driver + per-page Engine (the Host the VM talks to)
+src/page/           the page model: DOM + scripts + console
+src/render/         text (FreeType+HarfBuzz, glyph cache) and layout (boxes)
+src/shell/          SDL2 shell: framebuffer, event loop, console pane
+src/tools/          headless harness
+examples/           demo pages
 ```
 
 ## Documents

@@ -50,6 +50,16 @@ Value fn_document_root(NativeCtx& ctx, std::vector<Value>&, std::string&) {
     return ctx.host->document_root();
 }
 
+Value fn_page_get(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
+    if (!args[0].is_str()) { error = "page.get() expects the key as a string"; return Value::null(); }
+    return ctx.host->page_get(args[0].as_str());
+}
+Value fn_page_set(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
+    if (!args[0].is_str()) { error = "page.set() expects the key as a string"; return Value::null(); }
+    ctx.host->page_set(args[0].as_str(), args[1]);
+    return Value::null();
+}
+
 Value fn_len(NativeCtx&, std::vector<Value>& args, std::string& error) {
     const Value& v = args[0];
     if (v.is_str())  return Value::integer((long long)utf8_length(v.as_str()));
@@ -281,7 +291,7 @@ Value call_func_value(NativeCtx& ctx, const Value& fn, std::vector<Value> args,
 // here is asynchronous: the browser's M-demo has no awaitables, and a page
 // that writes `await` gets a compile error at the call site, not a hang.
 
-const std::array<NativeDef, 12> kNatives = {{
+const std::array<NativeDef, 14> kNatives = {{
     // Utilities (same semantics as the server's)
     {"len",   1, 1, fn_len},
     {"str",   1, 1, fn_str},
@@ -297,6 +307,9 @@ const std::array<NativeDef, 12> kNatives = {{
     {"__document_query_all", 1, 1, fn_document_query_all},
     {"__document_title",     0, 0, fn_document_title},
     {"__document_root",      0, 0, fn_document_root},
+    // page.* -- the page-scoped store
+    {"__page_get",           1, 1, fn_page_get},
+    {"__page_set",           2, 2, fn_page_set},
 }};
 
 } // namespace
@@ -824,7 +837,7 @@ struct MemberMap { const char* object; const char* member; const char* native; }
 // The reserved objects of the browser, in full.  The server's table had
 // request/response/session/jwt/state/sse/ws/db/error; a browser page has
 // log and document, and that is the sandbox.
-constexpr std::array<MemberMap, 7> kMembers = {{
+constexpr std::array<MemberMap, 9> kMembers = {{
     {"log",      "info",      "__log_info"},
     {"log",      "warn",      "__log_warn"},
     {"log",      "error",     "__log_error"},
@@ -832,6 +845,8 @@ constexpr std::array<MemberMap, 7> kMembers = {{
     {"document", "query_all", "__document_query_all"},
     {"document", "title",     "__document_title"},
     {"document", "root",      "__document_root"},
+    {"page",     "get",       "__page_get"},
+    {"page",     "set",       "__page_set"},
 }};
 } // namespace
 

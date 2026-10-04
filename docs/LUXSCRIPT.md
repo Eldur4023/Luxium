@@ -50,23 +50,38 @@ The language's reserved objects exist only in the context that defines them
 | Reserved object | Available in | Replaces (server) | Since |
 |---|---|---|---|
 | `log` | anywhere | `log` (kept) | M2 |
-| `document` | top level + any handler | — (new) | M2 |
-| `element` handles | returned by `document.get/query` | — (new) | M2 |
-| `page` | top level + any handler | — (new) | M4 |
+| `document` | anywhere | — (new) | M2 |
+| `element` handles | returned by `document.get/query_all/root` | — (new) | M2 |
+| `page` | anywhere | `state` (the page-scoped store) | M2 |
 | `event` | inside an event handler | — (new) | M4 |
 
-Sketch of the M2 surface (read-only):
+The M2 surface, as shipped:
 
 ```lux
-# runs once, after the DOM is complete
-document.title = document.title + " — Luxium"      # reads; writes come in M4
-Element root = document.root()
-log.info("nodes: " + str(root.child_count()))
+# top level: runs once, after the DOM is complete
+log.info("titulo: " + document.title())
 
-Element status = document.get("status")            # by id; null if absent
+Element root = document.root()
+log.info("hijos: " + str(root.child_count()))
+
+Element status = document.get("status")      # by id; null if absent
 if status != null:
-    log.info("status text: " + status.text())
-```
+    log.info("status: " + status.text())
+
+for Element p in document.query_all("p"):    # typed loop variable
+    log.info(p.tag() + ": " + p.text())
+
+# handler state MUST live in the page store: the top level is a fn body,
+# so its locals die before any click can arrive
+page.set("n", 0)
+
+fn void suma():
+    int n = int(page.get("n")) + 1
+    page.set("n", n)
+    document.get("out").set_text(str(n))
+
+document.get("mas").click(suma)              # NOT .on("click", fn):
+                                             # `on` is a language keyword
 
 The full per-context tables will be documented here as each milestone lands
 them, in the same style as the grammar's §45 ("the complete surface").
@@ -77,9 +92,13 @@ them, in the same style as the grammar's §45 ("the complete surface").
   is cached on the script node. Top-level code runs once, after the *whole*
   DOM exists (Luxium parses incrementally-free by design — see
   [ARCHITECTURE §4.4](ARCHITECTURE.md#44-execution-model)).
-- **Where:** one VM per page; scripts of one page share that VM's globals in
-  document order, so a `fn` defined in the first `<script>` is visible to the
-  second — same-file semantics as a Lux server project's module.
+- **Where:** all of a page's `<script>` blocks compile as ONE program:
+  statements run inside one `__luxium_main__` in document order, and
+  `fn`/`class`/`enum` declarations are hoisted to the program's top level
+  (the parser rejects them nested) — so a `fn` defined in the first
+  `<script>` is visible to the second, and both see the same globals.
+  Compile errors report with the line **of the HTML document**, not of the
+  invisible wrapped source.
 - **Errors:** compile errors report with the script's line/col *remapped to
   the HTML document's* coordinates (the engine prepends the script's source
   offset to every diagnostic), and appear in the console pane. The page still

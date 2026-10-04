@@ -38,9 +38,9 @@ add_executable(luxium
     src/html/tokenizer.cpp
     src/html/parser.cpp
     src/script/engine.cpp
-    # src/render/text.cpp      (next)
-    # src/render/layout.cpp    (next)
-    # src/shell/shell.cpp      (next)
+    src/render/text.cpp
+    src/render/layout.cpp
+    src/shell/shell.cpp
     src/page/page.cpp
 )
 target_include_directories(luxium PRIVATE src)

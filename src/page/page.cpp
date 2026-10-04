@@ -67,7 +67,7 @@ void Page::console(int level, const std::string& msg) {
     if (console_.size() > 500) console_.erase(console_.begin());
 }
 
-void Page::click(dom::Node* node) {
+void Page::click(const dom::Node* node) {
     if (!node) return;
     engine_.click_node(node);
 }

@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+    <title>Contador</title>
+</head>
+<body>
+    <h1>Contador en LuxScript</h1>
+    <p>Este boton no ejecuta JavaScript: ejecuta <b>Lux Script</b>,
+       compilado a bytecode al cargar la pagina.</p>
+
+    <p id="out">0</p>
+    <button id="mas">+1</button>
+    <button id="reset">reset</button>
+
+    <script>
+    # El estado de la pagina vive en page.*: el top level de un script es el
+    # cuerpo de una funcion, asi que sus locales no sobreviven para los
+    # handlers -- igual que el state.* del servidor.
+    page.set("n", 0)
+
+    fn void pinta():
+        document.get("out").set_text(str(page.get("n")))
+
+    fn void suma():
+        int n = int(page.get("n")) + 1
+        page.set("n", n)
+        pinta()
+        log.info("contador: " + str(n))
+
+    fn void resetea():
+        page.set("n", 0)
+        pinta()
+        log.warn("contador a cero")
+
+    document.get("mas").click(suma)
+    document.get("reset").click(resetea)
+    log.info("listo: pulsa +1")
+    </script>
+</body>
+</html>

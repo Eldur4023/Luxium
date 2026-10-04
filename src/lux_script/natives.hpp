@@ -11,6 +11,7 @@
 //   str/int/float/len/range     -- the stdlib, same semantics as the server
 //   log.info/warn/error         -- the page's console pane
 //   document.get/query_all/title/root
+//   page.get/page.set  -- the page store
 //   <Element>.text/set_text/click/attr/set_attr/tag/id/child_count
 // and nothing else: there is no fs, no net, no db, no state, no session.
 
@@ -35,6 +36,12 @@ struct Host {
     virtual Value document_query_all(const std::string& tag)         = 0;  // List<Element>
     virtual Value document_root()                                    = 0;  // Element
     virtual std::string document_title()                             = 0;
+
+    // The page-scoped store: the browser equivalent of the server's
+    // state.* -- the one place handlers share mutable state, because a
+    // script's top level is a fn body and its locals die with it.
+    virtual Value       page_get(const std::string& key)             = 0;
+    virtual void        page_set(const std::string& key, Value v)    = 0;
 
     virtual Value       element_text(long long handle)               = 0;
     virtual bool        element_set_text(long long h, const std::string& t, std::string& err) = 0;

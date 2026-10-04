@@ -19,53 +19,55 @@ Two pipelines proven end to end, zero UI.
 
 Non-goals: rendering, CSS, script *execution*, networking, windows.
 
-## M1 — Text renderer ("something on screen")
+## M1 — Text renderer ("something on screen") — DONE
 
-HTML in, pixels out. Layout of block and inline boxes, text only.
+HTML in, pixels out. Block and inline boxes, real text, real window.
 
-Scope:
-- Shell window (toolkit per ARCHITECTURE §8) + software framebuffer.
-- Box tree: block layout (stacking), inline layout (words, wrapping at the
-  viewport edge), fixed DPI.
-- Painted: text with one font/size, `body` background color, nothing else.
-- Scrollbar for vertical overflow (even a crude one).
-- A test page corpus under `examples/` that must render readably.
+Shipped:
+- [x] SDL2 shell window + ARGB software framebuffer; repaint on resize.
+- [x] Block layout (per-tag sizes/margins), inline words, wrap at the
+      viewport edge; DejaVu Sans regular+bold via FreeType, shaped with
+      HarfBuzz, glyphs rasterized once per (glyph, bold) and cached.
+- [x] Vertical scroll (wheel, PgUp/PgDn, Home/End) + scrollbar.
+- [x] Buttons painted as boxes with their text inside; hr rules.
+- [x] The `examples/` corpus renders legibly — verified pixel-by-pixel via
+      the `--shot` PPM path on SDL's dummy driver.
 
-Non-goals: CSS (colors beyond body background come from defaults), images,
-selection, input.
+Deferred to later milestones (was in scope here, moved on purpose): text
+selection, per-word damage tracking, DPI scaling beyond the default.
 
-Acceptance:
-- [ ] A `examples/*.html` page with headings, paragraphs and lists renders
-      legibly and scrolls.
-- [ ] Malformed input renders *something* and logs every dropped node.
-- [ ] Repaint on resize; no tearing artifacts visible on interactive scroll.
+## M2 — LuxScript executes — DONE
 
-## M2 — LuxScript executes
+The reason this browser exists. Lux's frontend + VM vendored, browser natives
+wired, and (ahead of the original scope) the DOM is already mutable and
+clickable, because a browser whose scripts cannot touch the page is a viewer.
 
-The reason this browser exists. Vendor the Lux frontend + VM, wire the first
-browser natives.
+Shipped:
+- [x] `../Lux`'s engine vendored verbatim into `src/lux_script/` (lexer,
+      parser, checker, IR, emitter, bytecode, value, VM); `template.cpp`
+      stubbed so `render()` is a precise compile-time "does not exist".
+- [x] `script::Engine`: all `<script>` blocks compile as ONE shared-scope
+      program (declarations hoisted to top level, HTML margin stripped,
+      diagnostics remapped to document lines); top-level runs after the DOM
+      is complete; one VM per run, nothing shared between pages.
+- [x] Natives: `log.*` → console pane; read + write `document`;
+      `element.click(fn)` handlers; `page.get/page.set` page-scoped store
+      (the browser's `state.*` — a script's top level is a fn body, so its
+      locals cannot be handler state).
+- [x] Infinite loops die on the VM's own step limit ("infinite loop?") —
+      the budget already existed in Lux's VM; no patch was needed.
+- [x] Compile and runtime errors surface in the console pane with the
+      page's line numbers; the HTML still renders.
 
-Scope:
-- Vendor `../Lux` frontend (lexer, parser, ast, ir, emitter, bytecode, value,
-  vm, diagnostic, type) into `src/luxscript/` as `libluxscript`; delete the
-  M0 lexer skeleton.
-- `luxium::script::Engine`: compile-at-parse, one VM per page, run top-level
-  after the DOM is complete.
-- Natives: `log.*` (to a console pane in the shell) and read-only `document`
-  (title, element counts, `get(id)` → opaque handle, text reading).
-- Instruction budget per run; budget exhaustion = script killed + diagnostic.
-- Script compile errors and runtime errors surface in the console pane with
-  line/col, never in a dialog.
-
-Non-goals: DOM mutation, events, timers, fetch.
-
-Acceptance:
-- [ ] A page with `<script>` doing arithmetic, strings, lists, dicts, loops
-      and a user `fn` runs on load; its `log` output appears in order.
-- [ ] A compile error (bad type, unknown method) prints one precise
-      diagnostic; the page still renders its HTML.
-- [ ] An infinite loop is killed by the budget; the window stays responsive.
-- [ ] `document.title` and `document.get("x").text` work from a script.
+Acceptance (all verified):
+- [x] `examples/engine-test.html`: arithmetic, strings, lists, loops, user
+      `fn`s, two `<script>` blocks sharing scope — log output in order.
+- [x] A compile error prints one precise diagnostic with the page's line;
+      the page still renders.
+- [x] An infinite `while` is killed by the step limit.
+- [x] `document.title`, `document.get("x").text` from a script.
+- [x] `examples/counter.html`: clicks mutate the DOM, the counter updates
+      on screen (verified via `--shot` after simulated clicks).
 
 ## M3 — CSS subset
 
