@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.fila { display: flex; }
+.i { background: #2f6fed; color: #fff; padding: 10px; }
+.i:nth-child(1) { flex: 1; }
+.i:nth-child(2) { flex: 2; }
+.i:nth-child(3) { flex: 1; min-width: 180px; }
+</style>
+<div class="fila" data-t="cont">
+  <div class="i" data-t="i1">1</div>
+  <div class="i" data-t="i2">2</div>
+  <div class="i" data-t="i3">1 con min-width</div>
+</div>

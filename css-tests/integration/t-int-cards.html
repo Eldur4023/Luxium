@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.tarjeta { width: 420px; border: 1px solid #d9dce0; border-radius: 12px;
+                   overflow: hidden; margin: 14px 0; box-shadow: 0 4px 14px rgba(0,0,0,0.12); }
+.cab { background: linear-gradient(90deg, #2f6fed, #35b36a); color: #fff;
+       padding: 12px; }
+.cab2 { background: linear-gradient(90deg, #b03080, #d42020); }
+.cuerpo { padding: 12px; }
+.recorte { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+<div class="tarjeta" data-t="t1">
+  <div class="cab" data-t="cab1">cabecera con degradado</div>
+  <div class="cuerpo">
+    <h3 data-t="h31">Primera tarjeta</h3>
+    <p class="recorte" data-t="p1">Texto largo que debe cortarse con puntos suspensivos porque la tarjeta no crece eternamente ni rompe el diseno.</p>
+  </div>
+</div>
+<div class="tarjeta" data-t="t2">
+  <div class="cab cab2" data-t="cab2">otra cabecera</div>
+  <div class="cuerpo">
+    <h3 data-t="h32">Segunda tarjeta</h3>
+    <p class="recorte" data-t="p2">Radio, sombra y recorte: el trio visual de la web moderna en una sola pagina de prueba.</p>
+  </div>
+</div>

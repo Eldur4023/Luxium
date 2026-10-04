@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.z div { width: 220px; height: 80px; color: #fff; }
+.a { position: relative; left: 60px; top: 20px; background: #d42020; z-index: 2; }
+.b { background: #888888; }
+.c { position: absolute; left: 130px; top: 55px; background: #2f6fed; z-index: 1; }
+</style>
+<div class="z" style="position: relative; height: 150px;">
+  <div class="a" data-t="a">relative z 2</div>
+  <div class="b" data-t="b">static (debajo siempre)</div>
+  <div class="c" data-t="c">absolute z 1</div>
+</div>

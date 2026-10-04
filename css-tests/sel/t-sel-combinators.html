@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.wrap > p { color: #1d8a2e; }
+.marca ~ p { color: #2f6fed; }
+.marca + p { color: #d42020; }
+</style>
+<div class="wrap">
+  <p data-t="hijo">hijo directo de .wrap (verde)</p>
+  <div><p data-t="nieto">nieto (NO verde)</p></div>
+  <p data-t="p2">hermano posterior a .marca (azul)</p>
+  <span class="marca" data-t="marca">marca</span>
+  <p data-t="p3">adyacente a .marca (rojo)</p>
+  <p data-t="p4">hermano cualquiera posterior (azul de nuevo)</p>
+</div>

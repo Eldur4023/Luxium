@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.a1[href] { color: #1d8a2e; }
+.a2[lang="es-ES"] { color: #2f6fed; }
+.a3[href^="https"] { color: #d42020; }
+.a4[href$="pdf"] { color: #b03080; }
+.a5[title~="dos"] { color: #b07020; }
+.a6[lang|="en"] { color: #2090a0; }
+</style>
+<p class="a1" data-t="a1" href="x">[href] existe</p>
+<p class="a2" data-t="a2" lang="es-ES">[lang=es-ES] igualdad</p>
+<p class="a3" data-t="a3" href="https://ejemplo.org">[href^=https] prefijo</p>
+<p class="a4" data-t="a4" href="doc.pdf">[href$=pdf] sufijo</p>
+<p class="a5" data-t="a5" title="uno dos tres">[title~=dos] palabra</p>
+<p class="a6" data-t="a6" lang="en">[lang|=en] guion</p>

@@ -206,9 +206,12 @@ ParseResult parse(std::string_view source) {
             if (b.stack.size() < 2) {
                 if (blank) break;              // whitespace before <html>: dropped
                 b.ensure_body(t.line);         // bare text implies body
-            } else if (b.cur()->is_element("head") || b.cur()->is_element("html")) {
-                // Whitespace between head-level tags is dropped (like the
-                // spec's "in head" mode); real text there is an error.
+            } else if (b.cur()->is_element("head")) {
+                // whitespace between head-level tags: dropped (in-head mode);
+                // real text STARTS THE BODY, like the spec's "after head".
+                if (blank) break;
+                b.ensure_body(t.line);
+            } else if (b.cur()->is_element("html")) {
                 if (!blank)
                     b.error(t.line, "text inside <head> ignored");
                 break;
@@ -273,6 +276,15 @@ ParseResult parse(std::string_view source) {
                 b.pending_rawtext = &parent->append(std::move(el));
                 break;
             }
+
+            // Primer contenido de cuerpo: el head implicito (creado por un
+            // <meta>/<link> suelto) se cierra y se abre el body.  Sin esto,
+            // todo el contenido aterriza dentro de <head> y la pagina sale
+            // en blanco sin un solo error de parser.
+            if (b.cur()->is_element("head") && !is_head_only(name))
+                b.ensure_body(t.line);
+            else if (b.cur()->is_element("html"))
+                b.ensure_body(t.line);
 
             b.close_implied(name, t.line);
             Node* parent = b.content_parent(t.line);

@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.f { display: flex; background: #fdeeee; margin: 8px 0; }
+.f div { background: #2f6fed; color: #fff; padding: 6px 10px; }
+.f1 { justify-content: flex-start; }
+.f2 { justify-content: flex-end; }
+.f3 { justify-content: center; }
+.f4 { justify-content: space-between; }
+.f5 { justify-content: space-around; }
+.f::after { content: ""; }
+</style>
+<div class="f f1" data-t="fs">flex-start</div>
+<div class="f f2" data-t="fe">flex-end</div>
+<div class="f f3" data-t="c">center</div>
+<div class="f f4" data-t="sb">space-between</div>
+<div class="f f5" data-t="sa">space-around</div>

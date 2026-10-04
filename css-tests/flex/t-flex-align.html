@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.fila { display: flex; align-items: stretch; height: 120px;
+                background: #fdeeee; }
+.i { background: #2f6fed; color: #fff; padding: 8px; }
+.self { align-self: center; }
+.fila .i:last-child { align-self: flex-end; }
+</style>
+<div class="fila" data-t="cont">
+  <div class="i" data-t="st">stretch</div>
+  <div class="i self" data-t="self">align-self: center</div>
+  <div class="i" data-t="end">flex-end del contenedor</div>
+</div>

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.app { display: flex; flex-direction: column; height: 300px; }
+.nav { display: flex; justify-content: space-between; align-items: center;
+       background: #16305e; color: #fff; padding: 10px; }
+.cuerpo { display: flex; flex: 1; }
+.lado { width: 180px; background: #eef2f7; padding: 10px; }
+.main { flex: 1; padding: 10px; }
+</style>
+<div class="app" data-t="app">
+  <div class="nav" data-t="nav">
+    <span data-t="logo">LOGO</span>
+    <span data-t="menu">menu usuario</span>
+  </div>
+  <div class="cuerpo" data-t="cuerpo">
+    <div class="lado" data-t="lado">sidebar 180</div>
+    <div class="main" data-t="main">contenido flex 1</div>
+  </div>
+</div>

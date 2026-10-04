@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.z div { position: absolute; width: 220px; height: 90px; color: #fff; }
+.a { left: 10px; top: 10px; background: #d42020; z-index: 1; }
+.b { left: 90px; top: 40px; background: #2f6fed; z-index: 3; }
+.c { left: 170px; top: 70px; background: #1d8a2e; z-index: 2; }
+</style>
+<div class="z" style="position: relative; height: 150px;">
+  <div class="a" data-t="a">z 1</div>
+  <div class="b" data-t="b">z 3 (tapa a ambos)</div>
+  <div class="c" data-t="c">z 2</div>
+</div>

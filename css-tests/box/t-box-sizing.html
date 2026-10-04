@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.caja { background: #eef2f7; border: 10px solid #2f6fed; padding: 10px; }
+.cb { width: 120px; box-sizing: content-box; }
+.bb { width: 120px; box-sizing: border-box; }
+</style>
+<div class="cb caja" data-t="cb">content-box: 120 + 2x10 border + 2x10 pad = 160 fuera</div>
+<div class="bb caja" data-t="bb">border-box: 120 fuera en total</div>

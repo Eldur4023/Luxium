@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+</style>
+<style>
+.caja { background: #eef2f7; }
+.hijo { margin-top: 40px; }
+</style>
+<div class="pad caja" data-t="padre">
+  <p class="hijo" data-t="hijo">el margin-top de 40 sale HACIA FUERA del padre</p>
+</div>
+<div data-t="despues">esto queda a 40px del BORDE del padre, no del texto</div>
