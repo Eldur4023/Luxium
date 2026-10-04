@@ -28,8 +28,29 @@ bool Page::load_string(const std::string& html, const std::string& source_name) 
         console(1, "html: " + e);
 
     if (dom::Node* t = root_->find_first("title")) title_ = t->text_content();
+    collect_css();
     run_scripts();
     return true;
+}
+
+void Page::collect_css() {
+    css_.clear();
+    // <style> blocks first, then <link rel=stylesheet> (local files, next to
+    // the page -- Luxium has no network yet).
+    for (dom::Node* st : root_->find_all("style")) css_ += st->text_content() + "\n";
+    for (dom::Node* ln : root_->find_all("link")) {
+        std::string rel = ln->attr_or("rel");
+        std::string href = ln->attr_or("href");
+        if (rel != "stylesheet" || href.empty()) continue;
+        std::string dir = name_;
+        size_t slash = dir.find_last_of('/');
+        dir = (slash == std::string::npos) ? "" : dir.substr(0, slash + 1);
+        std::ifstream in(dir + href, std::ios::binary);
+        if (!in) { console(1, "stylesheet not found: " + href); continue; }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        css_ += ss.str() + "\n";
+    }
 }
 
 void Page::run_scripts() {

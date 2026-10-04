@@ -7,6 +7,7 @@
 
 #include <span>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -91,11 +92,16 @@ ShapedRun Font::shape(std::string_view utf8, bool bold, bool mono) const {
     return run;
 }
 
-const Glyph& Font::glyph(uint32_t glyph_index, bool bold, bool mono) const {
-    const uint64_t key = (static_cast<uint64_t>(glyph_index) << 2) | (bold ? 2 : 0) | (mono ? 1 : 0);
+const Glyph& Font::glyph(uint32_t glyph_index, bool bold, bool mono, float size) const {
+    const uint64_t key = (static_cast<uint64_t>(glyph_index) << 34) |
+                         (static_cast<uint64_t>(static_cast<uint32_t>(size * 4.f)) << 2) |
+                         (bold ? 2 : 0) | (mono ? 1 : 0);
     auto it = cache_.find(key);
     if (it != cache_.end()) return it->second;
 
+    // Rasterize at THIS word's em: the face's current size is whatever the
+    // last shaped word had, so set it explicitly (cheap metric update).
+    FT_Set_Pixel_Sizes(face(bold, mono)->ft, 0, static_cast<FT_UInt>(size));
     Face* f = face(bold, mono);
     Glyph g;
     if (!FT_Load_Glyph(f->ft, glyph_index, FT_LOAD_DEFAULT) &&
@@ -135,6 +141,8 @@ std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold
         w.width  = w.shaped.width;
         w.bold   = bold;
         w.mono   = mono;
+        w.size   = font.size();
+        w.ascent = font.ascent();
         out.push_back(std::move(w));
     }
     return out;
@@ -143,12 +151,11 @@ std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold
 void draw_word(std::span<uint32_t> fb, int fb_w, int fb_h,
                const Font& font, const Word& w, float x, float y, uint32_t argb) {
     const uint32_t rgb = argb & 0x00FFFFFF;
-    const float ascent = font.ascent();   // line-box top -> baseline
 
     for (const auto& p : w.shaped.positions) {
-        const Glyph& g = font.glyph(p.glyph_index, w.bold, w.mono);
-        const int gx = static_cast<int>(x + p.x) + g.bearing_x;
-        const int gy = static_cast<int>(y + ascent) - g.bearing_y;
+        const Glyph& g = font.glyph(p.glyph_index, w.bold, w.mono, w.size);
+        const int gx = static_cast<int>(std::lround(x) + std::lround(p.x)) + g.bearing_x;
+        const int gy = static_cast<int>(std::lround(y) + std::lround(w.ascent)) - g.bearing_y;
         for (int r = 0; r < g.height; ++r) {
             const int fy = gy + r;
             if (fy < 0 || fy >= fb_h) continue;

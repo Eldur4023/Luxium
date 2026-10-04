@@ -36,6 +36,7 @@ public:
     std::string page_source_name() const override { return name_; }
 
     // For the shell ───────────────────────────────────────────────────────
+    const std::string& css() const { return css_; }
     const std::vector<ConsoleLine>& console_lines() const { return console_; }
     bool dirty() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
@@ -47,6 +48,7 @@ public:
     void click_by_id(const std::string& id);
 
 private:
+    void collect_css();
     void run_scripts();
 
     std::unique_ptr<dom::Node> root_;
@@ -54,6 +56,7 @@ private:
     std::vector<ConsoleLine>   console_;
     std::string                title_;
     std::string                name_;
+    std::string                css_;
     bool                       dirty_ = true;
 };
 

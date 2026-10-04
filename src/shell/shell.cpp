@@ -257,7 +257,7 @@ void Shell::relayout() {
     if (win_w_ == 0) return;
     page_.clear_dirty();
     layout_ = render::layout(*page_.page_root(), *font_,
-                             static_cast<float>(win_w_));
+                             static_cast<float>(win_w_), page_.css());
     content_h_ = layout_.content_height;
     scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_h_ - page_h()));
     if (std::getenv("LUXIUM_DEBUG_LAYOUT"))

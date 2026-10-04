@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+    <title>CSS en Luxium</title>
+    <style>
+    /* Pagina de prueba del motor CSS: selectores, especificidad,
+       herencia y caja. */
+    body {
+        color: #33383F;
+        text-align: center;
+    }
+    h1 {
+        color: #2F6FED;
+        font-size: 38px;
+        margin-bottom: 4px;
+    }
+    .sub {
+        color: #8A919B;
+        font-size: 14px;
+        margin-bottom: 26px;
+    }
+    section {
+        background-color: #EFF3F9;
+        padding: 14px 18px;
+        margin: 0 0 16px 0;
+        text-align: left;
+    }
+    section.oscuro {
+        background-color: #232936;
+        color: #E8ECF2;
+    }
+    section.oscuro b {
+        color: #7FB2FF;
+    }
+    #especial {
+        background-color: #FFF4E0;
+        color: #8A5A2E;
+    }
+    button.demo {
+        background-color: #2E8B3A;
+    }
+    .oculto { display: none; }
+    pre {
+        text-align: left;
+        color: #244A6E;
+    }
+    </style>
+</head>
+<body>
+    <h1>CSS de verdad</h1>
+    <p class="sub">Hoja de estilo del propio documento: selectores, cascada,
+       herencia, caja.</p>
+
+    <section>
+        <b>section</b> con background-color, padding y margin. El texto hereda
+        el color del section y el <b>bold</b> lo respeta.
+    </section>
+
+    <section class="oscuro">
+        <b>section.oscuro</b>: la clase sube la especificidad (0,1,1 vence a
+        0,0,1) y el <b>bold</b> coge el color de la regla con clase.
+    </section>
+
+    <section id="especial">
+        <b>#especial</b>: un id vence a una clase (100 &gt; 10). El color
+        viene de aqui aunque section oscura tambien podria cascar.
+    </section>
+
+    <button class="demo">boton verde</button>
+    <button>boton azul</button>
+
+    <p class="oculto">Esto NO se ve: display:none quita el subarbol entero.</p>
+
+    <pre>pre { con fuentes monoespaciadas
+     y   espacios   conservados }</pre>
+
+    <p>Un <code>code en linea</code> con su pildora, y texto normal despues
+    para comprobar que la linea sigue centrada.</p>
+</body>
+</html>

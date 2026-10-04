@@ -37,6 +37,7 @@ add_executable(luxium
     src/dom/node.cpp
     src/html/tokenizer.cpp
     src/html/parser.cpp
+    src/css/css.cpp
     src/script/engine.cpp
     src/render/text.cpp
     src/render/layout.cpp
@@ -54,6 +55,7 @@ add_executable(luxium_headless
     src/dom/node.cpp
     src/html/tokenizer.cpp
     src/html/parser.cpp
+    src/css/css.cpp
     src/script/engine.cpp
     src/page/page.cpp
 )

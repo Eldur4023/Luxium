@@ -69,25 +69,35 @@ Acceptance (all verified):
 - [x] `examples/counter.html`: clicks mutate the DOM, the counter updates
       on screen (verified via `--shot` after simulated clicks).
 
-## M3 — CSS subset
+## M3 — CSS subset — DONE (the subset that shipped)
 
-Scope:
-- CSS tokenizer/parser (subset: rules, declarations; no at-rules except
-  maybe `@media` later).
-- Selectors: tag, `.class`, `#id`, descendant combinator.
-- Cascade: specificity, source order, inheritance for inherited properties.
-- Properties: `display` (block/inline/none), `color`, `background-color`,
-  `font-size`, `font-weight`, `margin`, `padding`, `width`, `height`,
-  `text-align`, `border` (solid, single color).
-- Inline `<style>` blocks; `<link rel=stylesheet>` for local files.
+The browser's own default look is ITSELF a stylesheet: `kUAStylesheet` in
+layout.cpp is parsed with the same engine as page CSS, so a page rule wins
+purely by specificity — zero special cases.
 
-Non-goals: flexbox/grid (M6 candidates), floats, positioning, transitions,
-vendor prefixes, `!important` (decide then).
+Shipped:
+- [x] `src/css/`: parser (rules, comma selector lists, descendant
+      combinator, at-rules skipped, comments stripped, malformed rules
+      degrade) + cascade: specificity (id/class/tag), source order,
+      per-property inheritance (color/size/line-height/family/align/weight
+      flow down; boxes do not).
+- [x] Selectors: tag, `.class`, `#id`, descendant chains, comma lists.
+- [x] Properties: `color`, `background-color` (block boxes AND inline
+      pills), `font-size` (px/em/rem/%), `font-weight`, `font-family`
+      (mono detection), `line-height`, `text-align` (left/center/right),
+      `display: none` (subtree gone), `margin*`, `padding*` (block box
+      model: background + padding).
+- [x] `<style>` blocks and `<link rel=stylesheet>` (local files).
+- [x] `style=""` inline attributes through the same declaration parser.
+- [x] Button box color overridable with `background-color`.
 
-Acceptance:
-- [ ] The M1 corpus restyled with CSS looks like the same document properly
-      typeset: margins collapse, headings sized, lists indented.
-- [ ] Selector specificity resolved per spec order for the supported subset.
+Found and fixed while building it: the compound-selector parser dropped
+`.`/`#` markers (`section.oscuro` parsed as tag `section`, so one rule
+styled every section and `display:none` never hid anything) — the probe
+now prints parsed chains, which is how it was caught.
+
+Still open in CSS-land (M6 candidates): flexbox/grid, floats, specific
+borders, `!important`, `@media`.
 
 ## M4 — DOM mutation + events (the page wakes up)
 

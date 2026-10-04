@@ -47,8 +47,10 @@ public:
     // UTF-8 -> positioned glyphs.  bold/mono select the face.
     ShapedRun shape(std::string_view utf8, bool bold, bool mono = false) const;
 
-    // The cached bitmap for a shaped glyph index at the current size.
-    const Glyph& glyph(uint32_t glyph_index, bool bold, bool mono = false) const;
+    // The cached bitmap for a shaped glyph at a given em.  The size is part
+    // of the cache key: a glyph rasterized for the h1 (31px) reused by a
+    // 15.5px run is exactly the "sometimes giant, sometimes glued" bug.
+    const Glyph& glyph(uint32_t glyph_index, bool bold, bool mono, float size) const;
 
 private:
     struct Face;
@@ -65,10 +67,12 @@ private:
 // a word is exact.
 struct Word {
     ShapedRun shaped;
-    float    width = 0;
-    bool     bold  = false;
-    bool     mono  = false;
-    std::string text;         // for the console pane / debugging
+    float    width  = 0;
+    bool     bold   = false;
+    bool     mono   = false;
+    float    size   = 0;     // the em this word was shaped at
+    float    ascent = 0;     // baseline depth for THAT size
+    std::string text;        // for the console pane / debugging
 };
 
 // Splits utf8 into words on ASCII spaces, shaping each.  Newlines never
