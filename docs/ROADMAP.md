@@ -173,6 +173,11 @@ Shipped:
       `exchange`s — the first comparison short-circuited the second, the
       height stayed at its initial 1 and Chromium painted a 1px strip
       (the "blank screen" report).
+- [x] The console pane is hidden by default: F12 toggles it (works even
+      with the address bar focused), a thin 20px status strip stays at the
+      bottom edge always, and the page gets the rest. Toggling re-runs
+      ensure_surface, so Chromium re-renders at the new page size
+      (OnPaint 1180x762 <-> 1180x549 verified).
 - [x] The URL bar is a real text field: caret placed by clicking (word on
       double-click, all on triple), arrows/Home/End with shift-selection,
       Ctrl+A/C/X/V through the SDL clipboard (paste strips CR/LF and

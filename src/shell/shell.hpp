@@ -86,6 +86,8 @@ private:
     };
 
     void ensure_surface();
+    int  bottom_h() const;      // 20px status strip + console pane when visible
+    void toggle_console();      // F12
     void relayout();                    // DOM -> boxes (page dirty or resize)
     void repaint();                     // boxes -> framebuffer -> screen
     void draw_console();
@@ -112,6 +114,7 @@ private:
     float  content_h_ = 0;
     int    win_w_ = 0, win_h_ = 0;
     int    console_h_ = 180;
+    bool   console_visible_ = false;   // F12 shows/hides the console pane
     bool   console_scroll_bottom_ = true;
     float  console_scroll_ = 0;
 
@@ -138,8 +141,7 @@ private:
     int    sel_start_ = -1, sel_end_ = -1;   // inclusive word range, -1 = none
     bool   sel_dragging_ = false;
     int    sel_anchor_ = -1;
-    void   selection_clear();
-    void   selection_word_at(float doc_x, float doc_y);   // double-click
+    void   selection_clear();    void   selection_word_at(float doc_x, float doc_y);   // double-click
     int    word_index_at(float doc_x, float doc_y) const;
     void   selection_extend(float doc_x, float doc_y);
     void   copy_selection() const;

@@ -37,19 +37,31 @@ void Shell::ensure_surface() {
     int w = 0, h = 0;
     SDL_GetWindowSize(window_, &w, &h);
     if (w <= 0 || h <= 0) return;
-    if (w == win_w_ && h == win_h_) return;
+    const int ch = console_visible_ ? std::max(140, h * 26 / 100) : 0;
+    if (w == win_w_ && h == win_h_ && ch == console_h_) return;
     win_w_ = w;
     win_h_ = h;
-    console_h_ = std::max(140, win_h_ * 26 / 100);
+    console_h_ = ch;
 #ifdef LUXIUM_CEF
     if (engine_cef_)
-        cef::set_view(win_w_, win_h_ - console_h_ - 20 - kUrlH);
+        cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
 #endif
     fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFAFAF7u);
     if (texture_) SDL_DestroyTexture(texture_);
     texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
                                  SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_);
     relayout();
+}
+
+// 20px de tira de estado siempre; el panel de consola solo cuando esta
+// visible (F12).  La pagina ocupa todo lo demas.
+int Shell::bottom_h() const {
+    return 20 + (console_visible_ ? console_h_ : 0);
+}
+
+void Shell::toggle_console() {
+    console_visible_ = !console_visible_;
+    ensure_surface();   // reasigna fb, textura, vista CEF y re-layout
 }
 
 // ── raster primitives (all coordinates clipped to the framebuffer) ──────────
@@ -234,7 +246,7 @@ void Shell::navigate_to(const std::string& href, bool push_history) {
         // para lo que llega por curl+motor propio.
         if (cef::built()) {
             cef::attach(cef_display_, cef_parent_, r.target);
-            cef::set_view(win_w_, win_h_ - console_h_ - 20 - kUrlH);
+            cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
             cef::set_focus(true);
             engine_cef_ = true;
             scroll_ = 0;
@@ -482,7 +494,7 @@ void Shell::maybe_cef_handoff() {
         target = "file://" + (ec ? std::string("/") + target : abs.string());
     }
     cef::attach(cef_display_, cef_parent_, target);
-    cef::set_view(win_w_, win_h_ - console_h_ - 20 - kUrlH);
+    cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
     cef::set_focus(true);
     engine_cef_ = true;
     scroll_ = 0;
@@ -900,7 +912,7 @@ int Shell::run() {
                     const bool inside =
                         e.motion.x >= 0 && e.motion.x < win_w_ &&
                         e.motion.y >= kUrlH &&
-                        e.motion.y < win_h_ - console_h_ - 20;
+                        e.motion.y < win_h_ - bottom_h();
                     cef::mouse_move(e.motion.x, e.motion.y - kUrlH, !inside,
                                     cef_mods_flags(SDL_GetModState(), false));
                 }
@@ -917,7 +929,7 @@ int Shell::run() {
             case SDL_MOUSEWHEEL: {
 #ifdef LUXIUM_CEF
                 if (engine_cef_ && !url_focus_ && mouse_y_ >= kUrlH &&
-                    mouse_y_ < win_h_ - console_h_ - 20) {
+                    mouse_y_ < win_h_ - bottom_h()) {
                     float dy = e.wheel.preciseY;
                     float dx = e.wheel.preciseX;
                     if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
@@ -932,7 +944,7 @@ int Shell::run() {
                 }
 #endif
                 const float lines = static_cast<float>(-e.wheel.y) * 3;
-                if (mouse_y_ > win_h_ - console_h_) {
+                if (console_visible_ && mouse_y_ >= win_h_ - bottom_h()) {
                     // console pane scrolls its own history
                     console_scroll_ = std::clamp(console_scroll_ + lines * 18.f,
                                                  0.f, 1e9f);
@@ -945,7 +957,7 @@ int Shell::run() {
             case SDL_MOUSEBUTTONDOWN:
 #ifdef LUXIUM_CEF
                 if (engine_cef_ && e.button.y >= kUrlH &&
-                    e.button.y < win_h_ - console_h_ - 20) {
+                    e.button.y < win_h_ - bottom_h()) {
                     // click dentro del area de pagina: el chrome no la toca
                     url_focus_ = false;
                     url_drag_  = false;
@@ -969,7 +981,7 @@ int Shell::run() {
                 if (e.button.button == SDL_BUTTON_LEFT) url_drag_ = false;
 #ifdef LUXIUM_CEF
                 if (engine_cef_ && e.button.y >= kUrlH &&
-                    e.button.y < win_h_ - console_h_ - 20) {
+                    e.button.y < win_h_ - bottom_h()) {
                     const int btn = e.button.button == SDL_BUTTON_LEFT ? 0
                                   : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
                     cef::mouse_button(e.button.x, e.button.y - kUrlH, btn, true,
@@ -979,6 +991,10 @@ int Shell::run() {
 #endif
                 break;
             case SDL_KEYDOWN:
+                if (e.key.keysym.sym == SDLK_F12) {   // consola: mostrar/ocultar
+                    toggle_console();
+                    break;
+                }
                 if (url_focus_) {
                     const uint16_t mods = e.key.keysym.mod;
                     const bool ctrl  = (mods & KMOD_CTRL) != 0;
@@ -1226,7 +1242,7 @@ int Shell::screenshot(const std::string& ppm_path) {
     return 0;
 }
 
-float Shell::page_h() const { return static_cast<float>(win_h_ - console_h_ - 20 - kUrlH); }
+float Shell::page_h() const { return static_cast<float>(win_h_ - bottom_h() - kUrlH); }
 
 void Shell::relayout() {
     if (win_w_ == 0 || !page_.page_root()) return;   // http pages start empty
@@ -1274,7 +1290,7 @@ bool Shell::handle_click(int mx, int my, int clicks) {
         url_drag_ = true;
         return true;
     }
-    if (my > win_h_ - console_h_ - 20) return false;   // console: not clickable yet
+    if (my >= win_h_ - bottom_h()) return false;   // status strip + console
     url_focus_ = false;
     url_drag_  = false;
     const float doc_x = static_cast<float>(mx);
@@ -1308,9 +1324,11 @@ void Shell::draw_scrollbar() {
 }
 
 void Shell::draw_console() {
-    const int y0 = win_h_ - console_h_;
+    if (!console_visible_) return;
+    const int y0 = win_h_ - bottom_h();
+    const int y_end = win_h_ - 20;   // la tira de estado sigue debajo
     // pane background + its top border
-    for (int y = y0 + 1; y < win_h_; ++y) {
+    for (int y = y0 + 1; y < y_end; ++y) {
         uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFF171B21;
     }
@@ -1318,7 +1336,7 @@ void Shell::draw_console() {
 
     // header strip: "Consola" + the error count
     const int header_h = 26;
-    for (int y = y0 + 1; y < y0 + 1 + header_h && y < win_h_; ++y) {
+    for (int y = y0 + 1; y < y0 + 1 + header_h && y < y_end; ++y) {
         uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFF1E232B;
     }
@@ -1351,7 +1369,7 @@ void Shell::draw_console() {
     int begin = std::max(0, end - visible);
 
     float y = body_y;
-    for (int i = begin; i < end && y < win_h_ - lh; ++i, y += lh) {
+    for (int i = begin; i < end && y < y_end - lh; ++i, y += lh) {
         const auto& l = lines[static_cast<size_t>(i)];
         const uint32_t dot   = l.level == 2 ? 0xFFFF6B5E
                              : l.level == 1 ? 0xFFFFC24B
@@ -1365,7 +1383,7 @@ void Shell::draw_console() {
             for (int dx = -2; dx <= 2; ++dx)
                 if (dx * dx + dy * dy <= 5) {
                     const int px = 14 + dx, py = static_cast<int>(cy) + dy;
-                    if (py > y0 && py < win_h_ && px >= 0 && px < win_w_)
+                    if (py > y0 && py < y_end && px >= 0 && px < win_w_)
                         fb_[static_cast<size_t>(py) * win_w_ + px] = dot;
                 }
         float x = 24;
@@ -1385,7 +1403,7 @@ void Shell::repaint() {
             int fw = 0, fh = 0;
             uint8_t* page = reinterpret_cast<uint8_t*>(fb_.data()) +
                             static_cast<size_t>(kUrlH) * win_w_ * 4;
-            const int ph = win_h_ - console_h_ - 20 - kUrlH;
+            const int ph = win_h_ - bottom_h() - kUrlH;
             if (ph > 0)
                 cef::copy_frame(page, win_w_ * 4, win_w_, ph, &fw, &fh);
         }
@@ -1401,7 +1419,7 @@ void Shell::repaint() {
         return;
     }
     const int page_top    = kUrlH;
-    const int page_bottom = win_h_ - console_h_ - 20;
+    const int page_bottom = win_h_ - bottom_h();
 
     // paper
     for (int y = page_top; y < page_bottom; ++y) {
@@ -1451,7 +1469,7 @@ void Shell::repaint() {
 // The status bar: hovered link (or fetch state) on the left, page name on
 // the right.  Sits at the bottom of the page area, above the console.
 void Shell::draw_status() {
-    const int y0 = win_h_ - console_h_ - 20;
+    const int y0 = win_h_ - 20;   // tira fina pegada al borde inferior
     if (y0 < 0) return;
     for (int y = y0; y < y0 + 20; ++y) {
         uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
