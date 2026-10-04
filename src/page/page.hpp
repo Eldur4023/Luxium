@@ -44,6 +44,9 @@ public:
     // Routes a click at a node (hit-tested by the shell) to script handlers.
     void click(const dom::Node* node);
 
+    // Fires due timers (the shell calls it once per frame).
+    void tick() { engine_.tick(); }
+
     // Test/CLI bridge: click the first element with this id.
     void click_by_id(const std::string& id);
 

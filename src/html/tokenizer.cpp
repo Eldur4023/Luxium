@@ -7,6 +7,71 @@ namespace luxium::html {
 
 namespace {
 
+// Entity decoding for text and attribute values (structure is already
+// tokenized, so a decoded '<' cannot open a tag).  Raw-text runs
+// (<script>/<style>) skip this: Lux code with an & stays as written.
+// Unknown entities keep their literal spelling -- the recovery policy of
+// the whole tokenizer.
+void decode_entities(std::string& s) {
+    if (s.find('&') == std::string::npos) return;
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] != '&') { out += s[i++]; continue; }
+        size_t semi = s.find(';', i);
+        if (semi == std::string::npos || semi - i > 10) { out += s[i++]; continue; }
+        std::string name = s.substr(i + 1, semi - i - 1);
+        if (name == "amp")       out += '&';
+        else if (name == "lt")   out += '<';
+        else if (name == "gt")   out += '>';
+        else if (name == "quot") out += '"';
+        else if (name == "apos") out += '\'';
+        else if (name == "nbsp")   out += "\xC2\xA0";
+        else if (name == "middot") out += "\xC2\xB7";
+        else if (name == "mdash")  out += "\xE2\x80\x94";
+        else if (name == "ndash")  out += "\xE2\x80\x93";
+        else if (name == "hellip") out += "\xE2\x80\xA6";
+        else if (name == "laquo")  out += "\xC2\xAB";
+        else if (name == "raquo")  out += "\xC2\xBB";
+        else if (name == "copy")   out += "\xC2\xA9";
+        else if (name == "times")  out += "\xC3\x97";
+        else if (name == "plusmn") out += "\xC2\xB1";
+        else if (name == "deg")    out += "\xC2\xB0";
+        else if (!name.empty() && name[0] == '#') {
+            long cp = -1;
+            try {
+                if (name.size() > 1 && (name[1] == 'x' || name[1] == 'X'))
+                    cp = std::stol(name.substr(2), nullptr, 16);
+                else
+                    cp = std::stol(name.substr(1));
+            } catch (...) {}
+            if (cp > 0 && cp <= 0x10FFFF) {
+                // UTF-8 encode
+                if (cp < 0x80) out += static_cast<char>(cp);
+                else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else if (cp < 0x10000) {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xF0 | (cp >> 18));
+                    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+            } else {
+                out += s.substr(i, semi - i + 1);   // keep the literal
+            }
+        }
+        else out += s.substr(i, semi - i + 1);      // unknown entity: literal
+        i = semi + 1;
+    }
+    s = std::move(out);
+}
+
 bool is_alpha(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
@@ -51,11 +116,13 @@ std::vector<Token> tokenize(std::string_view src) {
 
     std::string text;
     int text_line = 1;
+    bool raw_mode = false;   // inside <script>/<style>: entities stay raw
     auto flush_text = [&] {
         if (!text.empty()) {
             Token t;
             t.type = TokType::Text;
             t.text = std::move(text);
+            if (!raw_mode) decode_entities(t.text);
             t.line = text_line;
             text.clear();
             out.push_back(std::move(t));
@@ -181,6 +248,7 @@ std::vector<Token> tokenize(std::string_view src) {
                         avalue = std::string(src.substr(vstart, i - vstart));
                     }
                 }
+                decode_entities(avalue);
                 bool dup = std::any_of(t.attrs.begin(), t.attrs.end(),
                                        [&](const auto& kv) { return kv.first == aname; });
                 if (!aname.empty() && !dup) t.attrs.emplace_back(std::move(aname), std::move(avalue));
@@ -195,6 +263,7 @@ std::vector<Token> tokenize(std::string_view src) {
             // normal loop above on the next iteration.
             if (!t.self_closing && is_rawtext) {
                 std::string closer = "</" + tag_name;
+                raw_mode = true;
                 size_t r = i;
                 while (true) {
                     size_t hit = ifind(src, r, closer);
@@ -221,6 +290,7 @@ std::vector<Token> tokenize(std::string_view src) {
                     }
                     r = hit + 1;  // e.g. "</scriptx" -- keep looking
                 }
+                raw_mode = false;
             }
             continue;
         }

@@ -6,6 +6,7 @@
 #include <lux_script/emitter.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -359,6 +360,35 @@ void Engine::log(int level, const std::string& msg) {
 
 std::string Engine::document_title() { return page_.page_title(); }
 
+Value Engine::document_create(const std::string& tag) {
+    std::string t = tag;
+    for (char& ch : t) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    auto n = std::make_unique<dom::Node>(dom::NodeType::Element);
+    n->name = t;
+    detached_.push_back(std::move(n));
+    return make_element(detached_.back().get());   // handle works BEFORE it is appended
+}
+
+// Takes a node out of wherever it lives (tree or the detached pool).
+static std::unique_ptr<dom::Node> detach_node(dom::Node* n,
+                                              std::vector<std::unique_ptr<dom::Node>>& detached) {
+    for (auto it = detached.begin(); it != detached.end(); ++it)
+        if (it->get() == n) {
+            auto own = std::move(*it);
+            detached.erase(it);
+            return own;
+        }
+    if (!n->parent) return nullptr;
+    auto& v = n->parent->children;
+    auto it = std::find_if(v.begin(), v.end(),
+                           [n](const auto& u) { return u.get() == n; });
+    if (it == v.end()) return nullptr;
+    auto own = std::move(*it);
+    v.erase(it);
+    own->parent = nullptr;
+    return own;
+}
+
 Value Engine::document_get(const std::string& id) {
     dom::Node* root = page_.page_root();
     if (!root) return Value::null();
@@ -423,6 +453,79 @@ bool Engine::element_set_text(long long h, const std::string& t, std::string& er
     n->append(std::move(tx));
     page_.page_mutated();
     return true;
+}
+
+bool Engine::element_append(long long parent, long long child, std::string& err) {
+    dom::Node* p = node_of(parent);
+    dom::Node* ch = node_of(child);
+    if (!p || !ch) { err = "an element no longer exists"; return false; }
+    if (p == ch) { err = "cannot append an element to itself"; return false; }
+    for (dom::Node* a = p->parent; a; a = a->parent)
+        if (a == ch) { err = "cannot append an element inside its own subtree"; return false; }
+    auto own = detach_node(ch, detached_);
+    if (!own) { err = "the element cannot be moved"; return false; }
+    p->append(std::move(own));
+    page_.page_mutated();
+    return true;
+}
+
+bool Engine::element_remove(long long h, std::string& err) {
+    dom::Node* n = node_of(h);
+    if (!n) { err = "the element no longer exists"; return false; }
+    // Handles of the whole subtree die with it: using one afterwards is a
+    // clean script error, never a dangling pointer.
+    std::vector<dom::Node*> stack{n};
+    while (!stack.empty()) {
+        dom::Node* cur = stack.back();
+        stack.pop_back();
+        for (auto it = nodes_.begin(); it != nodes_.end();) {
+            if (it->second == cur) it = nodes_.erase(it);
+            else ++it;
+        }
+        for (auto& c : cur->children) stack.push_back(c.get());
+    }
+    handlers_.erase(std::remove_if(handlers_.begin(), handlers_.end(),
+                                   [&](const EventHandler& eh) {
+                                       return nodes_.find(eh.handle) == nodes_.end();
+                                   }),
+                    handlers_.end());
+    auto own = detach_node(n, detached_);
+    if (!own) { err = "the element cannot be removed"; return false; }
+    page_.page_mutated();
+    return true;   // own destroyed here: the subtree goes with it
+}
+
+void Engine::page_after(int ms, const Value& fn) {
+    const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    timers_.push_back({now + std::max(0, ms), fn});
+}
+
+void Engine::tick() {
+    if (timers_.empty()) return;
+    const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::vector<size_t> due;
+    for (size_t i = 0; i < timers_.size(); ++i)
+        if (timers_[i].at <= now) due.push_back(i);
+    if (due.empty()) return;
+    // Fire in schedule order; a handler may schedule more timers (they
+    // append, so the collected indices stay valid).
+    for (size_t i : due) {
+        Value fn = timers_[i].fn;
+        if (fn.is_func())
+            run_fn(static_cast<size_t>(fn.as_func_index()), "a timer");
+    }
+    size_t kept = 0;
+    for (size_t i = 0; i < timers_.size(); ++i)
+        if (std::find(due.begin(), due.end(), i) == due.end())
+            timers_[kept++] = std::move(timers_[i]);
+    timers_.resize(kept);
+}
+
+Value Engine::page_clicked() {
+    dom::Node* n = node_of(clicked_handle_);
+    return n ? make_element(n) : Value::null();
 }
 
 bool Engine::element_click(long long h, const Value& fn, std::string& err) {
@@ -512,9 +615,11 @@ bool Engine::fire(const std::string& event, long long handle) {
     for (const auto& h : handlers_) {
         if (h.event != event || h.handle != handle) continue;
         if (!h.fn.is_func()) continue;
+        clicked_handle_ = handle;   // page.clicked() inside the handler
         if (!run_fn(static_cast<size_t>(h.fn.as_func_index()), "a click handler"))
             ok = false;
     }
+    clicked_handle_ = -1;
     return ok;
 }
 

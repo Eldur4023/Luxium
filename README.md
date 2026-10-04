@@ -8,7 +8,7 @@ written in Lux Script. Same language, same grammar, same bytecode VM — the
 reserved objects change (`request`, `app`, `routes` → `document`, `page`),
 because the context is a browser, not a server.
 
-## Status: M0–M2 — usable demo
+## Status: M0–M4 — usable demo
 
 The browser opens a window, renders a page, and **runs its LuxScript**:
 
@@ -23,8 +23,14 @@ The browser opens a window, renders a page, and **runs its LuxScript**:
   set_attr / tag / id / child_count`, `page.get / page.set` (the page-scoped
   store — the browser's `state.*`). Nothing else exists to call: the sandbox
   is the API surface.
-- `element.click(fn)` handlers run on real mouse clicks and mutate the DOM;
-  a mutation relayouts and repaints.
+- `element.click(fn)` handlers run on real mouse clicks and mutate the DOM:
+  `document.create`, `element.append/remove`, attributes, `text-align`,
+  `background-color`, `display:none`, underlined links — a mutation
+  relayouts and repaints.
+- `page.after(ms, fn)` timers drive live pages (the todo demo updates a
+  counter every 400ms).
+- Entities decode (`&middot;` & friends, `&#123;`).
+- `luxium --check dir/` lints every page (exit code for scripts).
 
 The showcase is `examples/counter.html`: two buttons wired in Lux Script,
 state in the page store, the counter updates on screen.

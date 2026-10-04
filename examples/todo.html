@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+    <title>Tareas</title>
+    <style>
+    body { text-align: center; }
+    .sub { color: #8A919B; font-size: 14px; }
+    li {
+        margin: 6px 40px;
+        text-align: left;
+        background-color: #F0F2F5;
+        padding: 8px 12px;
+    }
+    #reloj { color: #2F6FED; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Tareas</h1>
+    <p class="sub">Pulsa una tarea para borrarla &middot; <span id="reloj"></span></p>
+
+    <ul id="lista">
+        <li id="t0">aprender LuxScript</li>
+    </ul>
+
+    <button id="add">añadir tarea</button>
+
+    <script>
+    # El estado vive en la pagina; las funciones solo ven sus parametros.
+    page.set("n", 0)
+
+    fn void borra():
+        # Dentro de un handler, page.clicked() es el elemento pulsado.
+        Element e = page.clicked()
+        log.info("borrando: " + e.text())
+        e.remove()
+
+    fn void reloj():
+        document.get("reloj").set_text("tareas creadas: " + str(page.get("n")))
+        page.after(400, reloj)      # se re-programa: latido de 400ms
+
+    fn void add_tarea():
+        int k = int(page.get("n")) + 1
+        page.set("n", k)
+
+        Element li = document.create("li")
+        li.set_attr("id", "tarea" + str(k))
+        li.set_text("tarea " + str(k) + ": pulsame para borrarme")
+        li.click(borra)
+        document.get("lista").append(li)
+        log.info("tarea " + str(k) + " creada")
+
+    document.get("add").click(add_tarea)
+    document.get("t0").click(borra)
+    page.after(400, reloj)
+    log.info("listo")
+    </script>
+</body>
+</html>

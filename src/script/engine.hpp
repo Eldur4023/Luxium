@@ -99,18 +99,26 @@ public:
     // Shell bridge: the page hit-tested a click on `node`; fire its handlers.
     void click_node(const dom::Node* node);
 
+    // The shell calls this every frame: fires timers whose deadline passed.
+    void tick();
+
     // ── lux_script::Host ─────────────────────────────────────────────────
     void        log(int level, const std::string& msg) override;
     Value       document_get(const std::string& id) override;
     Value       document_query_all(const std::string& tag) override;
     Value       document_root() override;
     std::string document_title() override;
+    Value       document_create(const std::string& tag) override;
     Value       page_get(const std::string& key) override;
     void        page_set(const std::string& key, Value v) override;
+    void        page_after(int ms, const Value& fn) override;
+    Value       page_clicked() override;
 
     Value       element_text(long long handle) override;
     bool        element_set_text(long long h, const std::string& t, std::string& err) override;
     bool        element_click(long long h, const Value& fn, std::string& err) override;
+    bool        element_append(long long parent, long long child, std::string& err) override;
+    bool        element_remove(long long h, std::string& err) override;
     Value       element_attr(long long h, const std::string& name) override;
     bool        element_set_attr(long long h, const std::string& n,
                                  const std::string& v, std::string& err) override;
@@ -138,6 +146,10 @@ private:
     Compiled*                                compiled_ = nullptr;
     std::vector<std::string>                 errors_;
     std::vector<EventHandler>                handlers_;
+    struct Timer { long long at = 0; Value fn; };
+    std::vector<Timer>                       timers_;
+    long long                                clicked_handle_ = -1;
+    std::vector<std::unique_ptr<dom::Node>>  detached_;   // document.create() output
     long long                                next_handle_ = 1;
     std::unordered_map<long long, dom::Node*> nodes_;
     std::unordered_map<std::string, Value>    page_state_;

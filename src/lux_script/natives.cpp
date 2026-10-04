@@ -50,6 +50,41 @@ Value fn_document_root(NativeCtx& ctx, std::vector<Value>&, std::string&) {
     return ctx.host->document_root();
 }
 
+bool element_handle(const Value& recv, long long& out);
+
+Value fn_document_create(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
+    if (!args[0].is_str()) { error = "document.create() expects the tag as a string"; return Value::null(); }
+    return ctx.host->document_create(args[0].as_str());
+}
+
+Value fn_page_after(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
+    if (!args[0].is_int()) { error = "page.after() expects the delay in ms as an int"; return Value::null(); }
+    if (!args[1].is_func()) { error = "page.after() expects a function: page.after(ms, fn)"; return Value::null(); }
+    ctx.host->page_after(static_cast<int>(args[0].as_int()), args[1]);
+    return Value::null();
+}
+
+Value fn_page_clicked(NativeCtx& ctx, std::vector<Value>&, std::string&) {
+    return ctx.host->page_clicked();
+}
+
+Value el_append(NativeCtx& ctx, Value& recv, std::vector<Value>& args, std::string& error) {
+    long long p;
+    if (!element_handle(recv, p)) { error = "internal: lost the element handle"; return Value::null(); }
+    long long ch;
+    if (!element_handle(args[0], ch)) { error = "append() expects an Element to append"; return Value::null(); }
+    std::string err;
+    if (!ctx.host->element_append(p, ch, err)) { error = err; return Value::null(); }
+    return recv;
+}
+Value el_remove(NativeCtx& ctx, Value& recv, std::string& error) {
+    long long h;
+    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
+    std::string err;
+    if (!ctx.host->element_remove(h, err)) { error = err; return Value::null(); }
+    return Value::null();
+}
+
 Value fn_page_get(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
     if (!args[0].is_str()) { error = "page.get() expects the key as a string"; return Value::null(); }
     return ctx.host->page_get(args[0].as_str());
@@ -291,7 +326,7 @@ Value call_func_value(NativeCtx& ctx, const Value& fn, std::vector<Value> args,
 // here is asynchronous: the browser's M-demo has no awaitables, and a page
 // that writes `await` gets a compile error at the call site, not a hang.
 
-const std::array<NativeDef, 14> kNatives = {{
+const std::array<NativeDef, 17> kNatives = {{
     // Utilities (same semantics as the server's)
     {"len",   1, 1, fn_len},
     {"str",   1, 1, fn_str},
@@ -307,6 +342,9 @@ const std::array<NativeDef, 14> kNatives = {{
     {"__document_query_all", 1, 1, fn_document_query_all},
     {"__document_title",     0, 0, fn_document_title},
     {"__document_root",      0, 0, fn_document_root},
+    {"__document_create",    1, 1, fn_document_create},
+    {"__page_after",         2, 2, fn_page_after},
+    {"__page_clicked",       0, 0, fn_page_clicked},
     // page.* -- the page-scoped store
     {"__page_get",           1, 1, fn_page_get},
     {"__page_set",           2, 2, fn_page_set},
@@ -334,6 +372,8 @@ Value call_method(NativeCtx& ctx, Value& recv, const std::string& name,
     if (element_handle(recv, el)) {
         if (name == "text")        return el_text(ctx, recv, error);
         if (name == "set_text")    return el_set_text(ctx, recv, args, error);
+        if (name == "append")      return el_append(ctx, recv, args, error);
+        if (name == "remove")      return el_remove(ctx, recv, error);
         if (name == "click")       return el_click(ctx, recv, args, error);
         if (name == "attr")        return el_attr(ctx, recv, args, error);
         if (name == "set_attr")    return el_set_attr(ctx, recv, args, error);
@@ -782,6 +822,8 @@ const std::vector<BuiltinMethod>* methods_of(const std::string& type) {
     static const std::vector<BuiltinMethod> kElement = {
         {"text",        0, 0, "string"},
         {"set_text",    1, 1, nullptr},
+        {"append",      1, 1, nullptr},
+        {"remove",      0, 0, nullptr},
         {"click",       1, 1, nullptr},
         {"attr",        1, 1, "string"},
         {"set_attr",    2, 2, nullptr},
@@ -837,7 +879,7 @@ struct MemberMap { const char* object; const char* member; const char* native; }
 // The reserved objects of the browser, in full.  The server's table had
 // request/response/session/jwt/state/sse/ws/db/error; a browser page has
 // log and document, and that is the sandbox.
-constexpr std::array<MemberMap, 9> kMembers = {{
+constexpr const MemberMap kMembers[] = {
     {"log",      "info",      "__log_info"},
     {"log",      "warn",      "__log_warn"},
     {"log",      "error",     "__log_error"},
@@ -845,9 +887,12 @@ constexpr std::array<MemberMap, 9> kMembers = {{
     {"document", "query_all", "__document_query_all"},
     {"document", "title",     "__document_title"},
     {"document", "root",      "__document_root"},
+    {"document", "create",    "__document_create"},
     {"page",     "get",       "__page_get"},
     {"page",     "set",       "__page_set"},
-}};
+    {"page",     "after",     "__page_after"},
+    {"page",     "clicked",   "__page_clicked"},
+};
 } // namespace
 
 int member_native_id(const std::string& object, const std::string& member) {

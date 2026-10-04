@@ -187,6 +187,7 @@ int Shell::run() {
             }
         }
 
+        page_.tick();          // timers (page.after) fire here, frame-driven
         if (page_.dirty()) {
             relayout();
             console_scroll_ = 0;   // new output snaps the pane to the tail

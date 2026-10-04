@@ -26,7 +26,7 @@ h3         { font-size: 18px; font-weight: bold; line-height: 1.3;
 p          { margin: 0 0 12px 0; }
 li         { margin: 0 0 7px 26px; }
 b, strong  { font-weight: bold; }
-a          { color: #2F6FED; }
+a          { color: #2F6FED; text-decoration: underline; }
 code       { font-family: monospace; font-size: 13.5px; color: #933B32;
              background-color: #EDEFF3; }
 blockquote { color: #646B76; margin: 10px 0 10px 18px; }
@@ -58,6 +58,7 @@ struct Style {
     uint32_t color = 0xFF232936;
     float    lh    = 1.6f;
     uint32_t pill  = 0;      // inline background (code); painted per word
+    bool     underline = false;
     // boxes
     float    mt = 0, mb = 0, ml = 0;
     float    pt = 0, pr = 0, pb = 0, pl = 0;
@@ -139,6 +140,7 @@ struct StyleResolver {
             else if (v == "right") s.align = 2;
             else s.align = 0;
         }
+        else if (prop == "text-decoration")     s.underline = v.find("underline") != std::string::npos;
         else if (prop == "display")             s.display_none = (v == "none");
         else if (prop == "margin" || prop == "padding") {
             float t, r, b, l;
@@ -209,6 +211,7 @@ struct WordPending {
     uint32_t color = 0;
     uint32_t pill = 0;      // inline background (code)
     float    lh = 0;        // for the pill's height
+    bool     underline = false;
 };
 
 struct Ctx {
@@ -254,6 +257,9 @@ struct Ctx {
             if (p.pill)   // the word's pill shifts WITH the word (and centers with it)
                 out.shapes.push_back({ShapeCmd::Kind::RRect, fx - 3, y + 1.5f,
                                       p.word.width + 6, p.lh - 3, 3, p.pill});
+            if (p.underline)
+                out.shapes.push_back({ShapeCmd::Kind::Rect, fx,
+                                      y + p.lh - 2, p.word.width, 1, p.color});
             out.words.push_back({fx, y, p.color, std::move(p.word)});
         }
         pending.clear();
@@ -268,7 +274,7 @@ struct Ctx {
         // The pill, if any, is emitted at flush() with the word's FINAL x
         // (alignment included) -- emitting it here would paint it at the
         // line-relative x, floating in the page margin.
-        pending.push_back({x_from_left, w, s.color, s.pill, s.size * s.lh});
+        pending.push_back({x_from_left, w, s.color, s.pill, s.size * s.lh, s.underline});
     }
 };
 

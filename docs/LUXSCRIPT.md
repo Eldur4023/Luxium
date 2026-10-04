@@ -53,7 +53,34 @@ The language's reserved objects exist only in the context that defines them
 | `document` | anywhere | — (new) | M2 |
 | `element` handles | returned by `document.get/query_all/root` | — (new) | M2 |
 | `page` | anywhere | `state` (the page-scoped store) | M2 |
-| `event` | inside an event handler | — (new) | M4 |
+| `page.after(ms, fn)` / `page.clicked()` | timers + handler context | — (new) | M4 |
+| `event` | inside an event handler | `page.clicked()` covers the target today | M4+ |
+
+DOM mutation (M4), as shipped:
+
+```lux
+Element li = document.create("li")     # detached node
+li.set_attr("id", "tarea3")
+li.set_text("compra pan")
+li.click(borra)                        # handlers on created nodes work
+document.get("lista").append(li)       # attach; relayout happens by itself
+
+e.remove()                             # subtree gone, handles die loudly
+```
+
+Timers, frame-driven (one shot; re-arm inside the handler):
+
+```lux
+fn void reloj():
+    document.get("reloj").set_text(str(page.get("n")))
+    page.after(400, reloj)
+
+page.after(400, reloj)
+```
+
+Inside a click handler, `page.clicked()` is the element that received the
+event (the minimal `event` of M4; no closures, so this is how a handler
+knows its target).
 
 The M2 surface, as shipped:
 

@@ -10,9 +10,9 @@
 // What a page's script can do, in full:
 //   str/int/float/len/range     -- the stdlib, same semantics as the server
 //   log.info/warn/error         -- the page's console pane
-//   document.get/query_all/title/root
-//   page.get/page.set  -- the page store
-//   <Element>.text/set_text/click/attr/set_attr/tag/id/child_count
+//   document.get/query_all/title/root/create
+//   page.get/page.set (store), page.after (timers), page.clicked (in handlers)
+//   <Element>.text/set_text/click/append/remove/attr/set_attr/tag/id/child_count
 // and nothing else: there is no fs, no net, no db, no state, no session.
 
 #include <string>
@@ -35,6 +35,7 @@ struct Host {
     virtual Value document_get(const std::string& id)                = 0;  // Element or null
     virtual Value document_query_all(const std::string& tag)         = 0;  // List<Element>
     virtual Value document_root()                                    = 0;  // Element
+    virtual Value document_create(const std::string& tag)            = 0;  // detached Element
     virtual std::string document_title()                             = 0;
 
     // The page-scoped store: the browser equivalent of the server's
@@ -42,10 +43,14 @@ struct Host {
     // script's top level is a fn body and its locals die with it.
     virtual Value       page_get(const std::string& key)             = 0;
     virtual void        page_set(const std::string& key, Value v)    = 0;
+    virtual void        page_after(int ms, const Value& fn)          = 0;   // one-shot timer
+    virtual Value       page_clicked()                               = 0;   // Element, inside a handler
 
     virtual Value       element_text(long long handle)               = 0;
     virtual bool        element_set_text(long long h, const std::string& t, std::string& err) = 0;
     virtual bool        element_click(long long h, const Value& fn, std::string& err) = 0;
+    virtual bool        element_append(long long parent, long long child, std::string& err) = 0;
+    virtual bool        element_remove(long long h, std::string& err)  = 0;
     virtual Value       element_attr(long long h, const std::string& name) = 0;
     virtual bool        element_set_attr(long long h, const std::string& n,
                                          const std::string& v, std::string& err) = 0;
