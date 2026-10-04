@@ -99,6 +99,10 @@ Aceptación:
 - UA stylesheet regenerada: en una página sin CSS propio, h1/p/ul difieren
   de Chromium en 0px.
 
+El catálogo COMPLETO de pruebas (ids, qué comprueba cada una, tolerancias
+y veredictos) está definido desde ya en `docs/plan-css-tests.md`: cada
+fase de este plan nace con sus tests ya enumerados.
+
 No en esta fase: automatizar en CI; comparar fuentes a nivel de glifo.
 
 ---
