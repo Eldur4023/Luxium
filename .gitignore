@@ -12,3 +12,4 @@ build/libvk_swiftshader.so
 build/vk_swiftshader_icd.json
 build/chrome-sandbox
 css-tests/out/
+__pycache__/
