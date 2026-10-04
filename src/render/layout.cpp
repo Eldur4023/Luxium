@@ -96,6 +96,15 @@ struct Style {
     // background con degradado (linear/radial-gradient con paradas de color)
     GradDef  bg_grad;
     bool     has_grad = false;
+    // flexbox nivel 1
+    bool     flex = false, dir_column = false, wrap = false;
+    int      justify = 0;      // 0 start, 1 center, 2 end, 3 between, 4 around
+    int      falign = 0;       // 0 stretch, 1 start, 2 center, 3 end (align-items)
+    int      falign_self = -1; // -1 = usar align-items del contenedor
+    int      falign_content = 0; // 0 start/stretch, 3 space-between
+    int      order = 0;
+    float    grow = 0, shrink = 1, gap = 0;
+    bool     basis_set = false; float basis_val = 0; bool basis_pct = false;
 };
 
 uint32_t parse_color(const std::string& v, uint32_t fallback) {
@@ -331,7 +340,66 @@ struct StyleResolver {
             else s.align = 0;
         }
         else if (prop == "text-decoration")     s.underline = v.find("underline") != std::string::npos;
-        else if (prop == "display")             s.display_none = (v == "none");
+        else if (prop == "display") {
+            s.display_none = (v == "none");
+            s.flex = (v.find("flex") != std::string::npos);
+        }
+        else if (prop == "flex-direction") s.dir_column = v.find("column") != std::string::npos;
+        else if (prop == "flex-wrap")      s.wrap = v.find("wrap") != std::string::npos &&
+                                                    v.find("nowrap") == std::string::npos;
+        else if (prop == "gap" || prop == "column-gap") s.gap = parse_len(v, s.size, 0);
+        else if (prop == "row-gap")         s.gap = parse_len(v, s.size, 0);
+        else if (prop == "order")           { try { s.order = std::stoi(v); } catch (...) {} }
+        else if (prop == "justify-content") {
+            if (v.find("center") != std::string::npos)        s.justify = 1;
+            else if (v.find("flex-end") != std::string::npos ||
+                     v.find("end") != std::string::npos)      s.justify = 2;
+            else if (v.find("space-between") != std::string::npos) s.justify = 3;
+            else if (v.find("space-around") != std::string::npos)  s.justify = 4;
+            else s.justify = 0;
+        }
+        else if (prop == "align-items" || prop == "align-self" || prop == "align-content") {
+            int val = 0;
+            if (v.find("center") != std::string::npos)              val = 2;
+            else if (v.find("flex-end") != std::string::npos ||
+                     v.find("end") != std::string::npos)            val = 3;
+            else if (v.find("flex-start") != std::string::npos ||
+                     v.find("start") != std::string::npos)          val = 1;
+            else if (v.find("space-between") != std::string::npos)  val = 3;
+            if (prop == "align-items")  s.falign = val;
+            if (prop == "align-content") s.falign_content = val;
+            if (prop == "align-self")   s.falign_self = val;   // "auto" no llega: -1
+        }
+        else if (prop == "flex-grow")   { try { s.grow = std::stof(v); } catch (...) {} }
+        else if (prop == "flex-shrink") { try { s.shrink = std::stof(v); } catch (...) {} }
+        else if (prop == "flex-basis") {
+            if (v.find("auto") != std::string::npos) { s.basis_set = false; }
+            else {
+                s.basis_set = true;
+                s.basis_pct = v.find('%') != std::string::npos;
+                s.basis_val = std::max(0.f, parse_len(v, s.size, 0));
+            }
+        }
+        else if (prop == "flex") {
+            // flex: grow | grow shrink | grow shrink basis | auto | none
+            s.grow = 1; s.shrink = 1; s.basis_set = false;
+            const auto toks = css_tokens(v);
+            if (toks.size() == 1 && toks[0] == "none") { s.grow = 0; s.shrink = 0; s.basis_set = true; s.basis_val = 0; }
+            else {
+                for (size_t k = 0; k < toks.size() && k < 3; ++k) {
+                    const std::string& t = toks[k];
+                    if (t == "auto") { s.grow = 1; s.shrink = 1; s.basis_set = false; }
+                    else if (t.find('%') != std::string::npos || t.ends_with("px")) {
+                        s.basis_set = true; s.basis_pct = t.find('%') != std::string::npos;
+                        s.basis_val = std::max(0.f, parse_len(t, s.size, 0));
+                    } else {
+                        try { const float f = std::stof(t);
+                              if (k == 0) s.grow = f; else s.shrink = f;
+                        } catch (...) {}
+                    }
+                }
+            }
+        }
         else if (prop == "margin") {
             // con soporte de auto: los dos laterales auto -> centrar
             const auto toks = css_tokens(v);
@@ -556,6 +624,350 @@ void layout_children(Ctx& c, const dom::Node& el, float left, float avail,
     }
 }
 
+// ── flexbox (nivel 1): row/column, wrap, justify, align, gap, order ─────────
+
+// pase en seco: cuanto ocupa el subarbol con ese ancho disponible
+void measure_subtree(Ctx& c, const dom::Node& el, const Style& s,
+                     float avail, float& out_w, float& out_h) {
+    LayoutResult dummy;
+    Ctx m{c.font, dummy};
+    m.res = c.res;
+    m.line_left  = s.pl;
+    m.line_avail = std::max(1.f, avail - s.pl - s.pr);
+    m.y = s.pt;
+    layout_children(m, el, s.pl, m.line_avail, s);
+    m.flush();
+    float right = s.pl;
+    for (const auto& sh : dummy.shapes)
+        right = std::max(right, sh.x + sh.w);
+    for (const auto& wd : dummy.words)
+        right = std::max(right, wd.x + wd.word.width);
+    out_w = right + s.pr;
+    out_h = std::max(s.pt, m.y + std::max(0.f, m.pend)) + s.pb;
+}
+
+void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
+                  const Style& parent);
+
+// render de UN item flex en (x, y) con contenido w y cross fija h_fix (0=auto)
+void layout_flex_item(Ctx& c, const dom::Node& el, const Style& st,
+                      float x, float y, float w, float h_fix) {
+    const size_t bg_mark = c.out.shapes.size();
+    c.y = y + st.pt + st.border_w;
+    c.line_left  = x + st.border_w + st.pl;
+    c.line_avail = std::max(1.f, w);
+    c.align = st.align;
+    c.glue_next = false;
+    layout_children(c, el, c.line_left, c.line_avail, st);
+    c.flush();
+    c.align = 0;
+    float hh = st.h_set ? st.h_val : (c.y + st.pb + st.border_w) - y;
+    if (h_fix > 0) hh = h_fix + st.pt + st.pb + 2 * st.border_w;
+    hh = std::max(hh, 1.f);
+    const float box_w = w + 2 * st.pl + 2 * st.border_w;
+    // fondo/borde del item: encima del fondo del contenedor, bajo los hijos
+    if (st.has_grad && st.bg_grad.stops.size() >= 2) {
+        ShapeCmd bg;
+        bg.kind = ShapeCmd::Kind::Rect;
+        bg.x = x;
+        bg.y = y;
+        bg.w = box_w;
+        bg.h = hh;
+        bg.grad = true;
+        bg.grad_radial = st.bg_grad.radial;
+        for (const auto& gs : st.bg_grad.stops) bg.stops.push_back({gs.first, gs.second});
+        if (!bg.grad_radial) {
+            const float rad = st.bg_grad.angle * 3.14159265f / 180.f;
+            bg.gdx = std::sin(rad);
+            bg.gdy = -std::cos(rad);
+            bg.glen = std::max(1.f, std::fabs(bg.w * bg.gdx) +
+                                    std::fabs(bg.h * bg.gdy));
+        }
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(bg));
+    } else if (st.has_block_bg) {
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+                            {ShapeCmd::Kind::RRect, x, y, box_w, hh, 4,
+                             st.block_bg});
+    }
+    if (st.border_w > 0) {
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y,
+                                box_w, st.border_w, st.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y + hh - st.border_w,
+                                box_w, st.border_w, st.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y,
+                                st.border_w, hh, st.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, x + box_w - st.border_w, y,
+                                st.border_w, hh, st.border_color});
+    }
+    c.y = y + hh;
+}
+
+void layout_flex(Ctx& c, const dom::Node& el, float left, float avail,
+                 const Style& parent) {
+    const Style s = c.res->compute(el, parent);
+    if (s.display_none) return;
+    if (in_list(el.name, kSkipped, std::size(kSkipped))) return;
+
+    const bool trapped = s.pt > 0 || s.border_w > 0 || s.h_set;
+    if (trapped) { c.y += collapse(c.pend, s.mt); c.pend = 0; }
+    else { c.pend = collapse(c.pend, s.mt); }
+    const float box_y = trapped ? c.y : c.y + c.pend;
+
+    c.flush();
+    c.glue_next = false;
+
+    const float inner_left = left + s.ml + s.border_w + s.pl;
+    const float inner_w    = std::max(1.f, avail - s.ml - s.pl - s.pr);
+    const float inner_top  = c.y + s.pt;
+    const bool  cross_fixed = s.h_set;
+    const float cross_h = s.h_set ? std::max(0.f, s.h_val - s.pt - s.pb) : 0.f;
+    const size_t bg_mark = c.out.shapes.size();
+
+    struct Item {
+        const dom::Node* el = nullptr;
+        Style st;
+        float basis = 0, grow = 0, shrink = 1, w = 0, h = 0;
+        int order = 0;
+    };
+    std::vector<Item> items;
+    for (const auto& ch : el.children) {
+        if (!ch->is_element()) continue;
+        if (in_list(ch->name, kSkipped, std::size(kSkipped))) continue;
+        Item it;
+        it.el = ch.get();
+        it.st = c.res->compute(*ch, s);
+        if (it.st.display_none) continue;
+        it.grow = it.st.grow;
+        it.shrink = it.st.shrink;
+        it.order = it.st.order;
+        items.push_back(std::move(it));
+    }
+    std::stable_sort(items.begin(), items.end(),
+                     [](const Item& a, const Item& b) { return a.order < b.order; });
+    const int n = static_cast<int>(items.size());
+
+    if (!s.dir_column) {
+        for (auto& it : items) {
+            if (it.st.basis_set)
+                it.basis = it.st.basis_pct ? it.st.basis_val / 100.f * inner_w
+                                           : it.st.basis_val;
+            else if (it.st.w_set)
+                it.basis = it.st.w_pct ? it.st.w_val / 100.f * inner_w : it.st.w_val;
+            else {
+                float mw = 0, mh = 0;
+                measure_subtree(c, *it.el, it.st, inner_w, mw, mh);
+                it.basis = std::max(1.f, mw);
+            }
+            it.basis = std::max(1.f, it.basis);
+        }
+    } else {
+        for (auto& it : items) {
+            const int eff = it.st.falign_self >= 0 ? it.st.falign_self : s.falign;
+            const bool stretch = eff == 0;
+            float witem = inner_w;
+            if (!stretch) {
+                float mw = 0, mh = 0;
+                measure_subtree(c, *it.el, it.st, inner_w, mw, mh);
+                witem = std::max(1.f, mw);
+            }
+            it.w = witem;
+            float mw = 0, mh = 0;
+            measure_subtree(c, *it.el, it.st, witem, mw, mh);
+            if (it.st.h_set)          it.basis = it.st.h_val;
+            else if (it.st.basis_set) it.basis = it.st.basis_pct
+                                              ? it.st.basis_val / 100.f * std::max(1.f, cross_h)
+                                              : it.st.basis_val;
+            else                      it.basis = std::max(1.f, mh);
+        }
+    }
+
+    if (!s.dir_column) {
+        // ── lineas (row): una o varias con wrap ──
+        std::vector<std::vector<int>> lines(1);
+        {
+            float used = 0;
+            for (int i = 0; i < n; ++i) {
+                if (s.wrap && !lines.back().empty() &&
+                    used + items[i].basis > inner_w + 0.5f) {
+                    lines.push_back({});
+                    used = 0;
+                }
+                lines.back().push_back(i);
+                used += items[i].basis + s.gap;
+            }
+        }
+
+        // 1) anchuras por linea (grow/shrink, min/max) ...
+        std::vector<float> line_crosses(lines.size(), 0.f);
+        std::vector<float> line_tops(lines.size(), inner_top);
+        for (size_t li = 0; li < lines.size(); ++li) {
+            const auto& line = lines[li];
+            const int cnt = static_cast<int>(line.size());
+            float sum_basis = 0, sum_grow = 0, sum_sb = 0;
+            for (int i : line) {
+                sum_basis += items[i].basis;
+                sum_grow += items[i].grow;
+                sum_sb += items[i].shrink * items[i].basis;
+            }
+            float free = inner_w - sum_basis - s.gap * std::max(0, cnt - 1);
+            for (int i : line) {
+                float wi = items[i].basis;
+                if (free > 0 && sum_grow > 0 && items[i].grow > 0)
+                    wi = items[i].basis + free * items[i].grow / sum_grow;
+                else if (free < 0 && sum_sb > 0 && items[i].shrink > 0)
+                    wi = items[i].basis + free * (items[i].shrink * items[i].basis) / sum_sb;
+                if (items[i].st.minw_set)
+                    wi = std::max(wi, items[i].st.minw_pct
+                                       ? items[i].st.minw_val / 100.f * inner_w
+                                       : items[i].st.minw_val);
+                if (items[i].st.maxw_set)
+                    wi = std::min(wi, items[i].st.maxw_pct
+                                       ? items[i].st.maxw_val / 100.f * inner_w
+                                       : items[i].st.maxw_val);
+                items[i].w = std::max(1.f, wi);
+            }
+        }
+        // 2) alturas al ancho final + posiciones de linea (align-content)
+        for (size_t li = 0; li < lines.size(); ++li) {
+            for (const int i : lines[li]) {
+                float mw = 0, mh = 0;
+                measure_subtree(c, *items[i].el, items[i].st, items[i].w, mw, mh);
+                items[i].h = mh;
+                line_crosses[li] = std::max(line_crosses[li], mh);
+            }
+            if (cross_fixed && lines.size() == 1) line_crosses[li] = cross_h;
+        }
+        if (cross_fixed && lines.size() > 1) {
+            float used_c = s.gap * static_cast<float>(lines.size() - 1);
+            for (float lc : line_crosses) used_c += lc;
+            const float free_c = std::max(0.f, cross_h - used_c);
+            if (s.falign_content == 3) {
+                for (size_t li = 1; li < lines.size(); ++li)
+                    line_tops[li] = line_tops[li - 1] + line_crosses[li - 1] +
+                                    s.gap + free_c / static_cast<float>(lines.size() - 1);
+            }
+        }
+
+        // 3) justify + render
+        for (size_t li = 0; li < lines.size(); ++li) {
+            const auto& line = lines[li];
+            const int cnt = static_cast<int>(line.size());
+            const float line_top = line_tops[li];
+            const float line_cross = line_crosses[li];
+            float used2 = s.gap * std::max(0, cnt - 1);
+            for (int i : line) used2 += items[i].w;
+            float free2 = std::max(0.f, inner_w - used2);
+            float cur = inner_left;
+            if (s.justify == 1) cur += free2 / 2.f;
+            else if (s.justify == 2) cur += free2;
+            else if (s.justify == 4) cur += free2 / (cnt + 1);
+            float between = 0.f;
+            if (s.justify == 3 && cnt > 1) between = free2 / (cnt - 1);
+            if (s.justify == 4) between = free2 / (cnt + 1) * 2.f;
+
+            for (int k = 0; k < cnt; ++k) {
+                const int i = line[k];
+                const int eff = items[i].st.falign_self >= 0
+                                  ? items[i].st.falign_self : s.falign;
+                float y_i = line_top;
+                float h_fix = 0;
+                if (cross_fixed) {
+                    if (eff == 0 && !items[i].st.h_set) h_fix = cross_h;
+                    if (eff == 2) y_i = line_top + (cross_h - items[i].h) / 2.f;
+                    else if (eff == 3) y_i = line_top + cross_h - items[i].h;
+                } else {
+                    if (eff == 2) y_i = line_top + (line_cross - items[i].h) / 2.f;
+                    else if (eff == 3) y_i = line_top + line_cross - items[i].h;
+                }
+                layout_flex_item(c, *items[i].el, items[i].st, cur, y_i,
+                                 items[i].w, h_fix);
+                cur += items[i].w + s.gap + between;
+            }
+        }
+        float rows_sum = s.gap * static_cast<float>(std::max(0, static_cast<int>(lines.size()) - 1));
+        for (float lc : line_crosses) rows_sum += lc;
+        c.y = inner_top + (cross_fixed ? cross_h : rows_sum);
+    } else {
+        // ── column: el eje principal es vertical ──
+        float total = 0;
+        for (const auto& it : items) total += it.basis;
+        total += s.gap * std::max(0, n - 1);
+        const float target = cross_fixed ? cross_h : total;
+        float free = target - total;
+        float sum_grow = 0;
+        for (const auto& it : items) sum_grow += it.grow;
+        if (free > 0 && sum_grow > 0)
+            for (auto& it : items)
+                if (it.grow > 0) it.basis += free * it.grow / sum_grow;
+
+        float used = 0;
+        for (const auto& it : items) used += it.basis;
+        used += s.gap * std::max(0, n - 1);
+        float free2 = std::max(0.f, target - used);
+        float cur = inner_top;
+        if (s.justify == 1) cur += free2 / 2.f;
+        else if (s.justify == 2) cur += free2;
+        float between = 0.f;
+        if (s.justify == 3 && n > 1) between = free2 / (n - 1);
+        if (s.justify == 4) between = free2 / (n + 1) * 2.f;
+
+        for (int k = 0; k < n; ++k) {
+            auto& it = items[k];
+            const int eff = it.st.falign_self >= 0 ? it.st.falign_self : s.falign;
+            float x_i = inner_left;
+            if (eff == 2) x_i = inner_left + (inner_w - it.w) / 2.f;
+            else if (eff == 3) x_i = inner_left + inner_w - it.w;
+            const bool stretch = eff == 0;
+            const bool fixed_h = it.st.h_set || it.st.basis_set ||
+                                 (free > 0 && it.grow > 0);
+            layout_flex_item(c, *it.el, it.st, x_i, cur,
+                             stretch ? inner_w : it.w,
+                             fixed_h ? it.basis : 0.f);
+            cur += (fixed_h ? it.basis : it.h) + s.gap + between;
+        }
+        c.y = inner_top + target;
+    }
+
+    // ── fondo/borde del contenedor: ANTES de las formas de los items
+    const float box_left  = left + s.ml;
+    const float box_width = avail - s.ml;
+    const float box_h = (c.y + s.pb + s.border_w) - box_y;
+    if (s.has_grad && s.bg_grad.stops.size() >= 2) {
+        ShapeCmd g;
+        g.kind = ShapeCmd::Kind::Rect;
+        g.x = box_left; g.y = box_y; g.w = box_width; g.h = box_h;
+        g.grad = true;
+        g.grad_radial = s.bg_grad.radial;
+        for (const auto& gs : s.bg_grad.stops) g.stops.push_back({gs.first, gs.second});
+        if (!g.grad_radial) {
+            const float rad = s.bg_grad.angle * 3.14159265f / 180.f;
+            g.gdx = std::sin(rad);
+            g.gdy = -std::cos(rad);
+            g.glen = std::max(1.f, std::fabs(box_width * g.gdx) +
+                                   std::fabs(box_h * g.gdy));
+        }
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark, std::move(g));
+    } else if (s.has_block_bg) {
+        c.out.shapes.insert(c.out.shapes.begin() + bg_mark,
+                            {ShapeCmd::Kind::RRect, box_left, box_y,
+                             box_width, box_h, 4, s.block_bg});
+    }
+    if (s.border_w > 0) {
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
+                                box_width, s.border_w, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left,
+                                box_y + box_h - s.border_w, box_width,
+                                s.border_w, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
+                                s.border_w, box_h, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left + box_width - s.border_w,
+                                box_y, s.border_w, box_h, s.border_color});
+    }
+
+    c.y += s.mb;
+    c.y += s.pb + s.border_w;
+}
+
 void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                   const Style& parent) {
     if (el.type != dom::NodeType::Element) return;
@@ -565,6 +977,11 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     const std::string& tag = el.name;
     if (in_list(tag, kSkipped, std::size(kSkipped))) return;
     c.font.set_size(s.size);
+
+    if (s.flex) {   // contenedor flex: motor propio (nivel 1)
+        layout_flex(c, el, left, avail, parent);
+        return;
+    }
 
     if (tag == "br") {
         c.y += c.pend;
