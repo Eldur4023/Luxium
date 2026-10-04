@@ -15,25 +15,32 @@ namespace {
 // specificity, no special cases.  Properties that inherit (color, size,
 // line-height, family, align) are deliberately absent from the tags that
 // should inherit them.
+// Hoja UA = los defaults de Blink (html.css), para que una pagina sin CSS
+// se VEA IGUAL que en Chromium.  Desviaciones conscientes: los botones
+// mantienen un aspecto propio (en Chromium son widgets nativos) y no
+// modelamos font-style: italic (no hay cara oblicua cargada).
 constexpr std::string_view kUAStylesheet = R"css(
-body       { font-size: 15.5px; line-height: 1.6; color: #232936; }
-h1         { font-size: 31px; font-weight: bold; line-height: 1.25;
-             color: #141926; margin: 6px 0 16px 0; }
-h2         { font-size: 22px; font-weight: bold; line-height: 1.3;
-             color: #141926; margin: 26px 0 10px 0; }
-h3         { font-size: 18px; font-weight: bold; line-height: 1.3;
-             color: #141926; margin: 20px 0 8px 0; }
-p          { margin: 0 0 12px 0; }
-li         { margin: 0 0 7px 26px; }
+body       { margin: 8px; font-size: 16px; line-height: normal;
+             color: #000000; background-color: #ffffff; }
+h1 { font-size: 2em;    font-weight: bold; margin: 0.67em 0; }
+h2 { font-size: 1.5em;  font-weight: bold; margin: 0.83em 0; }
+h3 { font-size: 1.17em; font-weight: bold; margin: 1em 0; }
+h4 { font-size: 1em;    font-weight: bold; margin: 1.33em 0; }
+h5 { font-size: 0.83em; font-weight: bold; margin: 1.67em 0; }
+h6 { font-size: 0.67em; font-weight: bold; margin: 2.33em 0; }
+p          { margin: 1em 0; }
+blockquote { margin: 1em 40px; }
+ul, ol     { margin: 1em 0; padding-left: 40px; }
+li         { margin: 0; }
+th         { font-weight: bold; text-align: center; }
+pre        { font-family: monospace; font-size: 13px; margin: 1em 0; }
+code, kbd, samp, tt { font-family: monospace; font-size: 13px; }
+a          { color: #0000EE; text-decoration: underline; }
 b, strong  { font-weight: bold; }
-a          { color: #2F6FED; text-decoration: underline; }
-code       { font-family: monospace; font-size: 13.5px; color: #933B32;
-             background-color: #EDEFF3; }
-blockquote { color: #646B76; margin: 10px 0 10px 18px; }
-button     { font-size: 14.5px; font-weight: bold; line-height: 1.2;
-             color: #FFFFFF; }
-pre        { font-family: monospace; font-size: 13px; line-height: 1.5;
-             color: #37424E; }
+u          { text-decoration: underline; }
+small      { font-size: 0.83em; }
+big        { font-size: 1.17em; }
+button     { font-size: 13.33px; color: #000000; }
 )css";
 
 constexpr std::string_view kSkipped[] = {
@@ -52,11 +59,11 @@ bool in_list(std::string_view name, const std::string_view* list, size_t n) {
 
 struct Style {
     // text face (what a word needs)
-    float    size  = 15.5f;
+    float    size  = 16.f;
     bool     bold  = false;
     bool     mono  = false;
-    uint32_t color = 0xFF232936;
-    float    lh    = 1.6f;
+    uint32_t color = 0xFF000000;
+    float    lh    = 1.17f;  // "normal" de DejaVu, como Blink
     uint32_t pill  = 0;      // inline background (code); painted per word
     bool     underline = false;
     // boxes
@@ -101,7 +108,7 @@ float parse_len(const std::string& v, float parent_size, float fallback) {
     try {
         if (s.ends_with("px"))  return std::stof(s);
         if (s.ends_with("em"))  return std::stof(s) * parent_size;
-        if (s.ends_with("rem")) return std::stof(s) * 15.5f;
+        if (s.ends_with("rem")) return std::stof(s) * 16.f;
         if (s.ends_with("%"))   return std::stof(s) / 100.f * parent_size;
         if (!s.empty() && (std::isdigit(s[0]) || s[0] == '.' || s[0] == '-'))
             return std::stof(s);
@@ -122,17 +129,23 @@ struct StyleResolver {
     void apply(Style& s, const Style& parent, const std::string& prop,
                const std::string& v) const {
         if (prop == "color")                    s.color = parse_color(v, s.color);
-        else if (prop == "background-color") {
-            s.block_bg = parse_color(v, s.block_bg);
-            s.has_block_bg = true;
-            if (!s.mono) s.pill = s.block_bg;   // inline pills, too (code)
+        else if (prop == "background-color" || prop == "background") {
+            // shorthand: solo cuando el valor es un color plano (gradientes,
+            // url(...) y demas se ignoran por ahora)
+            const uint32_t c = parse_color(v, 0);
+            if (c) {
+                s.block_bg = c;
+                s.has_block_bg = true;
+                if (!s.mono) s.pill = c;   // inline pills, too (code)
+            }
         }
         else if (prop == "font-size")           s.size = std::max(6.f, parse_len(v, parent.size, s.size));
         else if (prop == "font-weight")         s.bold = (v.find("bold") != std::string::npos ||
                                                           v == "700" || v == "800" || v == "900");
         else if (prop == "font-family")         s.mono = v.find("mono") != std::string::npos;
         else if (prop == "line-height") {
-            if (v.find("px") != std::string::npos) s.lh = parse_len(v, s.size, s.lh) / s.size;
+            if (v == "normal")                  s.lh = 1.17f;   // metrica DejaVu
+            else if (v.find("px") != std::string::npos) s.lh = parse_len(v, s.size, s.lh) / s.size;
             else { try { s.lh = std::stof(v); } catch (...) {} }
         }
         else if (prop == "text-align") {
@@ -144,7 +157,7 @@ struct StyleResolver {
         else if (prop == "display")             s.display_none = (v == "none");
         else if (prop == "margin" || prop == "padding") {
             float t, r, b, l;
-            if (!sides(v, t, r, b, l)) return;
+            if (!sides(v, s.size, t, r, b, l)) return;   // em contra el propio size
             if (prop == "margin") { s.mt = t; s.mb = b; s.ml = l; }
             else                  { s.pt = t; s.pr = r; s.pb = b; s.pl = l; }
         }
@@ -158,16 +171,19 @@ struct StyleResolver {
         else if (prop == "padding-right")  s.pr = parse_len(v, s.size, s.pr);
     }
 
-    // `1px` / `1px 2px` / `1px 2px 3px` / `1px 2px 3px 4px` -> t r b l
-    static bool sides(const std::string& v, float& t, float& r, float& b, float& l) {
+    // `1px` / `1px 2px` / ... -> t r b l.  `base` resuelve los em (margins y
+    // paddings en em van contra el font-size DEL PROPIO elemento, como Blink).
+    // `auto` aun no: se queda en 0.
+    static bool sides(const std::string& v, float base, float& t, float& r,
+                      float& b, float& l) {
         std::vector<float> vals;
         std::string cur;
         for (char ch : v) {
             if (std::isspace(static_cast<unsigned char>(ch))) {
-                if (!cur.empty()) { vals.push_back(parse_len(cur, 0, 0)); cur.clear(); }
+                if (!cur.empty()) { vals.push_back(parse_len(cur, base, 0)); cur.clear(); }
             } else cur += ch;
         }
-        if (!cur.empty()) vals.push_back(parse_len(cur, 0, 0));
+        if (!cur.empty()) vals.push_back(parse_len(cur, base, 0));
         if (vals.empty() || vals.size() > 4) return false;
         t = vals[0];
         r = vals.size() > 1 ? vals[1] : t;
@@ -223,9 +239,6 @@ struct Ctx {
     float line_w = 0;
     float line_h = 0;
     bool  line_has_atom = false;   // a button made the line not centerable
-
-    float body_pad = 26;
-    float measure  = 720;
 
     // The line being built belongs to ONE block: its left edge (margins
     // included) and its available width.  flush() needs both -- without
@@ -385,7 +398,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
         const float by = c.y;
 
         c.out.shapes.push_back({ShapeCmd::Kind::RRect, bx, by, bw, bh, 7,
-                                s.has_block_bg ? s.block_bg : 0xFF2F6FED});
+                                s.has_block_bg ? s.block_bg : 0xFFEFEFEF});
         float wx = bx + padx;
         for (const auto& w : words) {
             c.out.words.push_back({wx, by + pady, s.color, w});
@@ -411,14 +424,6 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     c.y += s.mt;
     c.line_left  = left + s.ml + s.pl;
     c.line_avail = avail - s.ml - s.pl - s.pr;
-
-    const bool quote = tag == "blockquote";
-    size_t quote_bar = 0;
-    if (quote) {   // the accent bar, grown to the content height below
-        quote_bar = c.out.shapes.size();
-        c.out.shapes.push_back({ShapeCmd::Kind::RRect,
-                                left + s.ml + 0, c.y + 2, 3, 10, 1.5f, 0xFFC9CDD4});
-    }
 
     const float box_y = c.y;
     const float inner_left  = left + s.ml + s.pl;
@@ -457,10 +462,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
             if (nl == std::string::npos) break;
             start = nl + 1;
         }
-        c.out.shapes.push_back({ShapeCmd::Kind::RRect, left, box_y,
-                                std::min(avail, max_w + 2 * pad + s.pl + s.pr),
-                                c.y - box_y + pad, 6,
-                                s.has_block_bg ? s.block_bg : 0xFFF3F4F6});
+        if (s.has_block_bg)
+            c.out.shapes.push_back({ShapeCmd::Kind::RRect, left, box_y,
+                                    std::min(avail, max_w + 2 * pad + s.pl + s.pr),
+                                    c.y - box_y + pad, 6, s.block_bg});
         c.y += std::max(s.mb, 2.f);
         return;
     }
@@ -478,8 +483,6 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     if (s.has_block_bg)   // the box paints before every word, whatever the order
         c.out.shapes.push_back({ShapeCmd::Kind::RRect, left, box_y, avail,
                                 c.y + s.pb - box_y, 4, s.block_bg});
-    if (quote && quote_bar < c.out.shapes.size())
-        c.out.shapes[quote_bar].h = std::max(10.f, c.y - c.out.shapes[quote_bar].y - 4);
 
     c.y += std::max(s.mb, 2.f);
     c.y += s.pb;
@@ -494,18 +497,19 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
     StyleResolver res(page_css);
     c.res = &res;
 
-    c.measure = std::min(viewport_w - 2 * c.body_pad, 720.f);
-    const float left0 = (viewport_w - c.measure) / 2.f;
-    c.line_left  = left0;
-    c.line_avail = c.measure;
+    // Chromium: el body aporta el margen (8px por defecto) y el contenido
+    // mide el ancho completo menos esos margenes.  Fuera la columna de
+    // lectura disenada: la paridad manda.
+    c.line_left  = 0.f;
+    c.line_avail = viewport_w;
 
     Style root_style;   // the inherited-defaults root: browser defaults
-    root_style.size = 16; root_style.color = 0xFF232936; root_style.lh = 1.6f;
+    root_style.size = 16; root_style.color = 0xFF000000; root_style.lh = 1.17f;
 
-    layout_children(c, root, left0, c.measure, root_style);
+    layout_children(c, root, 0.f, viewport_w, root_style);
     c.flush();
 
-    out.content_height = c.y + c.body_pad + 30;
+    out.content_height = c.y + 8.f;
     return out;
 }
 
