@@ -110,6 +110,8 @@ struct Style {
     bool    r_set = false; float r_val = 0; bool r_pct = false;
     bool    b_set = false; float b_val = 0; bool b_pct = false;
     int     z = 0;
+    int     float_side = 0;  // 0 none, 1 left, 2 right
+    int     clear = 0;       // 0 none, 1 left, 2 right, 3 both
     // flexbox nivel 1
     bool     flex = false, dir_column = false, wrap = false;
     int      justify = 0;      // 0 start, 1 center, 2 end, 3 between, 4 around
@@ -382,6 +384,17 @@ struct StyleResolver {
                 try { s.z = std::stoi(v); } catch (...) { s.z = 0; }
             } else s.z = 0;
         }
+        else if (prop == "float") {
+            if (v.find("left") != std::string::npos) s.float_side = 1;
+            else if (v.find("right") != std::string::npos) s.float_side = 2;
+            else s.float_side = 0;
+        }
+        else if (prop == "clear") {
+            if (v.find("both") != std::string::npos || v.find("all") != std::string::npos) s.clear = 3;
+            else if (v.find("left") != std::string::npos) s.clear = 1;
+            else if (v.find("right") != std::string::npos) s.clear = 2;
+            else s.clear = 0;
+        }
         else if (prop == "width" || prop == "min-width" || prop == "max-width") {
             bool* set; float* val; bool* pct;
             if (prop == "width")        { set = &s.w_set;   val = &s.w_val;   pct = &s.w_pct; }
@@ -422,8 +435,9 @@ struct StyleResolver {
             else { try { s.lh = std::stof(v); } catch (...) {} }
         }
         else if (prop == "text-align") {
-            if (v == "center") s.align = 1;
-            else if (v == "right") s.align = 2;
+            if (v.find("center") != std::string::npos)        s.align = 1;
+            else if (v.find("right") != std::string::npos)    s.align = 2;
+            else if (v.find("justify") != std::string::npos)  s.align = 4;  // distribuye
             else s.align = 0;
         }
         else if (prop == "text-decoration")     s.underline = v.find("underline") != std::string::npos;
@@ -616,6 +630,22 @@ struct Ctx {
     std::vector<Deferred>* defer = nullptr;   // lista del padre actual
     int defer_seq = 0;
 
+    // floats activos (left/right) para el rodeo del texto
+    struct FloatBox { bool left; float x0, x1, top, bottom; };
+    std::vector<FloatBox> floats;
+    bool justify_wrap = false;   // la linea actual cerro por desborde
+
+    // ancho disponible para una linea en y..y+h, descontando floats
+    float eff_avail(float y, float h) const {
+        float a = line_avail;
+        for (const auto& f : floats) {
+            if (y + h <= f.top + 0.5f || y >= f.bottom - 0.5f) continue;
+            if (f.left) a = std::min(a, std::max(0.f, f.x1 - line_left));
+            else        a = std::min(a, std::max(0.f, f.x0 - line_left));
+        }
+        return a;
+    }
+
     int   align = 0;               // of the block being laid out
     std::vector<WordPending> pending;
 
@@ -627,6 +657,14 @@ struct Ctx {
     bool  glue_next   = false;
 
     void flush() {
+        const int np = static_cast<int>(pending.size());
+        float per = 0;
+        if (align == 4 && justify_wrap && np >= 2) {
+            // justificar: el hueco sobrante se reparte entre los huecos
+            const float extra = std::max(0.f, line_avail - (line_w - last_space));
+            per = extra / float(np - 1);
+            line_w = line_avail;
+        }
         const float off = (align == 1 && !line_has_atom) ? std::max(0.f, (line_avail - line_w) / 2.f)
                         : (align == 2 && !line_has_atom) ? std::max(0.f, line_avail - line_w)
                                                          : 0.f;
@@ -634,8 +672,9 @@ struct Ctx {
             for (const auto& p : pending)
                 std::fprintf(stderr, "word '%s' w=%.1f x=%.1f\n", p.word.text.c_str(),
                              p.word.width, p.x);
-        for (auto& p : pending) {
-            const float fx = line_left + p.x + off;
+        for (int i = 0; i < np; ++i) {
+            auto& p = pending[static_cast<size_t>(i)];
+            const float fx = line_left + p.x + off + float(i) * per;
             if (p.pill)   // the word's pill shifts WITH the word (and centers with it)
                 out.shapes.push_back({ShapeCmd::Kind::RRect, fx - 3, y + 1.5f,
                                       p.word.width + 6, p.lh - 3, 3, p.pill});
@@ -649,6 +688,7 @@ struct Ctx {
         line_w = 0;
         line_h = 0;
         line_has_atom = false;
+        justify_wrap = false;
     }
 
     void emit(const Word& w, float x_from_left, const Style& s) {
@@ -662,7 +702,11 @@ struct Ctx {
 
 void emit_word(Ctx& c, const Word& w, float left, float avail, const Style& s) {
     const float space = s.size * 0.30f;
-    if (c.line_w > 0 && c.line_w + w.width > avail) c.flush();
+    const float eff = c.eff_avail(c.y, std::max(c.line_h, s.size * s.lh));
+    if (c.line_w > 0 && c.line_w + w.width > eff) {
+        c.justify_wrap = true;   // cerro por desborde: linea justificable
+        c.flush();
+    }
     const float x = c.line_w == 0 ? 0 : c.line_w;
     c.line_w = x + w.width + space;
     c.line_h = std::max(c.line_h, s.size * s.lh);
@@ -1151,6 +1195,82 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
         layout_block(sub, el, x, w + s.ml + s.pl + s.pr, parent);
         c.defer->back().res = std::move(sub.out);
         return;   // fuera de flujo: no toca y ni pend
+    }
+
+    // ── float: fuera de flujo; las lineas siguientes lo rodean ─────────────
+    if (s.float_side) {
+        c.y += collapse(c.pend, s.mt);
+        if (s.clear) {
+            for (const auto& f : c.floats) {
+                if ((s.clear == 1 || s.clear == 3) && f.left)
+                    c.y = std::max(c.y, f.bottom);
+                if ((s.clear == 2 || s.clear == 3) && !f.left)
+                    c.y = std::max(c.y, f.bottom);
+            }
+        }
+        c.pend = 0;
+        float w;
+        if (s.w_set) w = s.w_pct ? s.w_val / 100.f * avail : s.w_val;
+        else {
+            float mw = 0, mh = 0;
+            measure_subtree(c, el, s, std::max(1.f, avail / 2.f), mw, mh);
+            w = std::clamp(mw, 1.f, avail);
+        }
+        const bool is_left = s.float_side == 1;
+        const float y = c.y;
+        float x;
+        if (is_left) {
+            x = c.line_left + c.line_w;
+            for (const auto& fl : c.floats)
+                if (fl.left && y < fl.bottom && y + 40 > fl.top)
+                    x = std::max(x, fl.x1);
+        } else {
+            x = c.line_left + c.eff_avail(y, 60.f) - w;
+        }
+        // contenido del float en un pase aparte (offset al final)
+        LayoutResult scratch;
+        Ctx sub{c.font, scratch};
+        sub.res = c.res;
+        sub.base_dir = c.base_dir;
+        sub.y = s.border_w + s.pt;
+        sub.line_left = s.border_w + s.pl;
+        sub.line_avail = std::max(1.f, w - s.pl - s.pr);
+        layout_children(sub, el, sub.line_left, sub.line_avail, s);
+        sub.flush();
+        const float hh = s.h_set ? s.h_val
+                                 : std::max(1.f, sub.y + s.pb + s.border_w);
+        const float bw2 = w + s.pl + s.pr;
+        const size_t fmark = c.out.shapes.size();
+        for (auto& sh : scratch.shapes) { sh.x += x; sh.y += y; }
+        for (auto& wd : scratch.words) { wd.x += x; wd.y += y; }
+        for (auto& ht : scratch.hits) { ht.x += x; ht.y += y; }
+        c.out.shapes.insert(c.out.shapes.end(), scratch.shapes.begin(),
+                            scratch.shapes.end());
+        c.out.words.insert(c.out.words.end(), scratch.words.begin(),
+                           scratch.words.end());
+        c.out.hits.insert(c.out.hits.end(), scratch.hits.begin(),
+                          scratch.hits.end());
+        if (s.has_block_bg)
+            c.out.shapes.insert(c.out.shapes.begin() + fmark,
+                                {ShapeCmd::Kind::RRect, x, y, bw2, hh, 4,
+                                 s.block_bg});
+        if (s.border_w > 0) {
+            c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y,
+                                    bw2, s.border_w, s.border_color});
+            c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y + hh - s.border_w,
+                                    bw2, s.border_w, s.border_color});
+            c.out.shapes.push_back({ShapeCmd::Kind::Rect, x, y,
+                                    s.border_w, hh, s.border_color});
+            c.out.shapes.push_back({ShapeCmd::Kind::Rect, x + bw2 - s.border_w, y,
+                                    s.border_w, hh, s.border_color});
+        }
+        c.floats.push_back({is_left, x, x + bw2, y, y + hh});
+        if (is_left) c.line_w = (x - c.line_left) + bw2;
+        c.line_h = std::max(c.line_h, hh);
+        c.line_has_atom = true;
+        c.y = y;   // la linea sigue: el texto rodea al float
+        c.justify_wrap = false;
+        return;
     }
 
     if (tag == "br") {
