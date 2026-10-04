@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 
 namespace luxium::render {
 
@@ -203,9 +204,11 @@ struct StyleResolver {
 // ── layout context ──────────────────────────────────────────────────────────
 
 struct WordPending {
-    float x = 0;            // from the column's left edge (alignment shifts it)
+    float x = 0;            // from the line's left edge (alignment shifts it)
     Word  word;
     uint32_t color = 0;
+    uint32_t pill = 0;      // inline background (code)
+    float    lh = 0;        // for the pill's height
 };
 
 struct Ctx {
@@ -220,17 +223,39 @@ struct Ctx {
 
     float body_pad = 26;
     float measure  = 720;
-    float left0    = 0;
+
+    // The line being built belongs to ONE block: its left edge (margins
+    // included) and its available width.  flush() needs both -- without
+    // line_left, every margin-left in the document silently disappears and
+    // list bullets land on top of their first letter.
+    float line_left  = 0;
+    float line_avail = 0;
 
     int   align = 0;               // of the block being laid out
     std::vector<WordPending> pending;
 
+    // Runs glued together: `<i>Lux</i>,` is ONE word visually -- there is no
+    // space in the source between the i's text and the comma, so no word gap
+    // may appear at that boundary.  last_space is the gap the previous word
+    // added; glue_next takes it back off the line for the first glued word.
+    float last_space  = 0;
+    bool  glue_next   = false;
+
     void flush() {
-        const float off = (align == 1 && !line_has_atom) ? std::max(0.f, (measure - line_w) / 2.f)
-                        : (align == 2 && !line_has_atom) ? std::max(0.f, measure - line_w)
+        const float off = (align == 1 && !line_has_atom) ? std::max(0.f, (line_avail - line_w) / 2.f)
+                        : (align == 2 && !line_has_atom) ? std::max(0.f, line_avail - line_w)
                                                          : 0.f;
-        for (auto& p : pending)
-            out.words.push_back({left0 + p.x + off, y, p.color, std::move(p.word)});
+        if (std::getenv("LUXIUM_DEBUG_WORDS"))
+            for (const auto& p : pending)
+                std::fprintf(stderr, "word '%s' w=%.1f x=%.1f\n", p.word.text.c_str(),
+                             p.word.width, p.x);
+        for (auto& p : pending) {
+            const float fx = line_left + p.x + off;
+            if (p.pill)   // the word's pill shifts WITH the word (and centers with it)
+                out.shapes.push_back({ShapeCmd::Kind::RRect, fx - 3, y + 1.5f,
+                                      p.word.width + 6, p.lh - 3, 3, p.pill});
+            out.words.push_back({fx, y, p.color, std::move(p.word)});
+        }
         pending.clear();
         y += line_h;
         line_w = 0;
@@ -240,14 +265,10 @@ struct Ctx {
 
     void emit(const Word& w, float x_from_left, const Style& s) {
         if (line_w == 0) line_h = s.size * s.lh;
-        pending.push_back({x_from_left, w, s.color});
-        if (s.pill) {
-            // inline pill: a shape, painted under every word no matter when
-            // it was emitted
-            out.shapes.push_back({ShapeCmd::Kind::RRect,
-                                  x_from_left - 3, y + 1.5f,
-                                  w.width + 6, s.size * s.lh - 3, 3, s.pill});
-        }
+        // The pill, if any, is emitted at flush() with the word's FINAL x
+        // (alignment included) -- emitting it here would paint it at the
+        // line-relative x, floating in the page margin.
+        pending.push_back({x_from_left, w, s.color, s.pill, s.size * s.lh});
     }
 };
 
@@ -257,14 +278,20 @@ void emit_word(Ctx& c, const Word& w, float left, float avail, const Style& s) {
     const float x = c.line_w == 0 ? 0 : c.line_w;
     c.line_w = x + w.width + space;
     c.line_h = std::max(c.line_h, s.size * s.lh);
+    c.last_space = space;
     c.emit(w, x, s);
 }
 
 void inline_text(Ctx& c, std::string_view text, const Style& s, float left, float avail) {
     if (text.empty()) return;
     c.font.set_size(s.size);
+    // A new run whose first character is not a space GLUES to the previous
+    // run's last word: take the pending word gap back off the line.
+    const bool first_glues = c.glue_next && c.line_w > 0 && text.front() != ' ';
+    if (first_glues) c.line_w = std::max(0.f, c.line_w - c.last_space);
     for (const Word& w : shape_words(c.font, text, s.bold, s.mono))
         emit_word(c, w, left, avail, s);
+    c.glue_next = !std::isspace(static_cast<unsigned char>(text.back()));
 }
 
 // Inline subtree (b/i/code/a/span): flows with the open line, each element
@@ -374,7 +401,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     // ── plain block, with the box model subset: background + padding ─────
     c.flush();
     c.align = s.align;
+    c.glue_next = false;
     c.y += s.mt;
+    c.line_left  = left + s.ml + s.pl;
+    c.line_avail = avail - s.ml - s.pl - s.pr;
 
     const bool quote = tag == "blockquote";
     size_t quote_bar = 0;
@@ -394,8 +424,8 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 
     if (li) {
         c.out.shapes.push_back({ShapeCmd::Kind::Circle,
-                                inner_left - 15, c.y + s.size * s.lh * 0.5f - 2.5f,
-                                5, 5, 2.5f, 0xFF9AA3AE});
+                                inner_left - 13, c.y + s.size * s.lh * 0.5f - 0.5f,
+                                7, 7, 3.5f, 0xFF6B7280});
     }
 
     if (tag == "pre") {
@@ -459,12 +489,14 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
     c.res = &res;
 
     c.measure = std::min(viewport_w - 2 * c.body_pad, 720.f);
-    c.left0   = (viewport_w - c.measure) / 2.f;
+    const float left0 = (viewport_w - c.measure) / 2.f;
+    c.line_left  = left0;
+    c.line_avail = c.measure;
 
     Style root_style;   // the inherited-defaults root: browser defaults
     root_style.size = 16; root_style.color = 0xFF232936; root_style.lh = 1.6f;
 
-    layout_children(c, root, c.left0, c.measure, root_style);
+    layout_children(c, root, left0, c.measure, root_style);
     c.flush();
 
     out.content_height = c.y + c.body_pad + 30;

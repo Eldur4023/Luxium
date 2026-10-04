@@ -52,8 +52,18 @@ Font::Face* Font::face(bool bold, bool mono) const {
 
 void Font::set_size(float px) {
     size_ = px;
-    for (Face* f : {regular_.get(), bold_.get(), mono_.get()})
-        FT_Set_Pixel_Sizes(f->ft, 0, static_cast<FT_UInt>(px));
+    for (Face* f : {regular_.get(), bold_.get(), mono_.get()}) {
+        // 26.6 fixed point at 72dpi: the em becomes exactly px PIXELS,
+        // fractions included (15.5 stays 15.5 -- FT_Set_Pixel_Sizes would
+        // truncate it to 15 and every advance would lie by 3%).
+        FT_Set_Char_Size(f->ft, static_cast<FT_F26Dot6>(std::lround(px * 64)),
+                         static_cast<FT_F26Dot6>(std::lround(px * 64)), 0, 0);
+        // HarfBuzz copied the face's scale at create() and never looks at it
+        // again: without this, advances come out scaled by whatever size the
+        // face had when some earlier word was shaped (80 vs 95 vs 117px for
+        // the same word at the same size, depending on history).
+        hb_ft_font_changed(f->hb);
+    }
 }
 
 float Font::ascent() const {
@@ -100,11 +110,18 @@ const Glyph& Font::glyph(uint32_t glyph_index, bool bold, bool mono, float size)
     if (it != cache_.end()) return it->second;
 
     // Rasterize at THIS word's em: the face's current size is whatever the
-    // last shaped word had, so set it explicitly (cheap metric update).
-    FT_Set_Pixel_Sizes(face(bold, mono)->ft, 0, static_cast<FT_UInt>(size));
+    // last shaped word had, so set it explicitly (cheap metric update), in
+    // 26.6 so fractional ems stay fractional.
+    FT_Set_Char_Size(face(bold, mono)->ft,
+                     static_cast<FT_F26Dot6>(std::lround(size * 64)),
+                     static_cast<FT_F26Dot6>(std::lround(size * 64)), 0, 0);
     Face* f = face(bold, mono);
     Glyph g;
-    if (!FT_Load_Glyph(f->ft, glyph_index, FT_LOAD_DEFAULT) &&
+    // No hinting: the advances are fractional (HarfBuzz, unhinted linear
+        // metrics) and hinted bitmaps snap to a grid those advances never
+        // touch -- that mismatch is "letters glued, then huge gaps".  Gray
+        // AA at fractional sizes is what every browser renders at.
+        if (!FT_Load_Glyph(f->ft, glyph_index, FT_LOAD_NO_HINTING) &&
         !FT_Render_Glyph(f->ft->glyph, FT_RENDER_MODE_NORMAL)) {
         FT_Bitmap& bm = f->ft->glyph->bitmap;
         g.width    = static_cast<int>(bm.width);
