@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <utility>
 
 namespace luxium::shell {
@@ -66,11 +67,11 @@ static inline float rrect_sdf(float px, float py, float x, float y, float w,
 }
 
 static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
-                       const ShapeCmd& s, float scroll, float alpha_mult) {
+                       const ShapeCmd& s, float scroll, int yoff, float alpha_mult) {
     const int x0 = std::max(0, static_cast<int>(s.x) - 1);
-    const int y0 = std::max(0, static_cast<int>(s.y - scroll) - 1);
+    const int y0 = std::max(0, static_cast<int>(s.y - scroll) - 1 + yoff);
     const int x1 = std::min(fb_w, static_cast<int>(s.x + s.w) + 2);
-    const int y1 = std::min(fb_h, static_cast<int>(s.y - scroll + s.h) + 2);
+    const int y1 = std::min(fb_h, static_cast<int>(s.y - scroll + s.h) + 2 + yoff);
     if (x0 >= x1 || y0 >= y1) return;
 
     for (int y = y0; y < y1; ++y) {
@@ -83,11 +84,11 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
                 break;
             case ShapeCmd::Kind::RRect:
                 d = rrect_sdf(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f,
-                              s.x, s.y - scroll, s.w, s.h, s.r);
+                              s.x, s.y - scroll + yoff, s.w, s.h, s.r);
                 break;
             case ShapeCmd::Kind::Circle:
                 d = std::sqrt((x + 0.5f - s.x) * (x + 0.5f - s.x) +
-                              (y + 0.5f - s.y - scroll) * (y + 0.5f - s.y - scroll)) -
+                              (y + 0.5f - s.y - scroll + yoff) * (y + 0.5f - s.y - scroll + yoff)) -
                     s.r;
                 break;
             }
@@ -281,6 +282,173 @@ void Shell::toggle_view_source() {
     }
 }
 
+// ── home + address bar ──────────────────────────────────────────────────────
+
+constexpr const char* kHomeHTML = R"html(<!doctype html>
+<html>
+<head><title>Luxium</title>
+<style>
+body { text-align: center; }
+h1 { font-size: 44px; margin-top: 40px; }
+.sub { color: #8A919B; font-size: 15px; }
+h2 { font-size: 18px; }
+.a { font-size: 16px; }
+.caja {
+    background-color: #EFF3F9; margin: 24px 60px; padding: 16px 24px;
+    text-align: left;
+}
+code { font-size: 13px; }
+</style>
+</head>
+<body>
+    <h1>Luxium</h1>
+    <p class="sub">Un navegador que renderiza HTML + CSS + <b>Lux Script</b>, en lugar de JavaScript.</p>
+
+    <div class="caja">
+        <p><b>Escribe una URI en la barra de arriba</b> y pulsa Enter:</p>
+        <p><code>http://example.com</code> &middot; una pagina web &middot;
+           <code>/ruta/al/archivo.html</code> &middot; un archivo local &middot;
+           <code>carpeta/pagina.html</code> &middot; relativo al directorio actual</p>
+    </div>
+
+    <h2>Ejemplos de este repositorio (si ejecutas desde la raiz)</h2>
+    <p class="a">
+        <a href="examples/css.html">prueba de CSS</a> &middot;
+        <a href="examples/todo.html">tareas (DOM + timers)</a> &middot;
+        <a href="examples/counter.html">contador</a> &middot;
+        <a href="examples/script-demo.html">demo LuxScript</a>
+    </p>
+
+    <p class="sub">Ctrl+U ve el fuente &middot; Alt+Left vuelve &middot; Ctrl+R recarga</p>
+</body>
+</html>)html";
+
+void Shell::load_home() {
+    page_.load_string(kHomeHTML, "luxium:inicio");
+    after_load();
+}
+
+void Shell::navigate_address(std::string addr, bool push_history) {
+    // trim
+    while (!addr.empty() && (addr.front() == ' ' || addr.front() == '\t')) addr.erase(addr.begin());
+    while (!addr.empty() && (addr.back() == ' ' || addr.back() == '\t')) addr.pop_back();
+    if (addr.empty()) return;
+
+    if (addr == "luxium:inicio" || addr == "luxium:home") {
+        if (push_history) {
+            hist_.resize(hist_idx_ + 1);
+            hist_.push_back("luxium:inicio");
+            hist_idx_ = hist_.size() - 1;
+        }
+        load_home();
+        return;
+    }
+    // Files that exist win (relative to the CWD and to the current page):
+    const std::string& cur = page_.name();
+    size_t slash = cur.find_last_of('/');
+    std::string base = (slash == std::string::npos || cur.rfind("luxium:", 0) == 0)
+                           ? std::string()
+                           : cur.substr(0, slash + 1);
+    if (std::filesystem::exists(base + addr)) {
+        navigate_to(base + addr, push_history);
+        return;
+    }
+    if (std::filesystem::exists(addr)) {
+        navigate_to(addr, push_history);
+        return;
+    }
+    // Domain-looking input gets the https prefix (localhost speaks http).
+    const bool domainish = addr.find(' ') == std::string::npos &&
+                           (addr.rfind("localhost", 0) == 0 ||
+                            addr.rfind("127.0.0.1", 0) == 0 ||
+                            addr.find('.') != std::string::npos);
+    if (domainish) {
+        const std::string scheme =
+            (addr.rfind("localhost", 0) == 0 || addr.rfind("127.0.0.1", 0) == 0)
+                ? "http://" : "https://";
+        navigate_to(scheme + addr, push_history);
+        return;
+    }
+    navigate_to(addr, push_history);   // will show the error page: honest
+}
+
+// ── the URL bar itself ──────────────────────────────────────────────────────
+
+void Shell::draw_url_bar() {
+    constexpr int H = kUrlH;
+    // field background + focus ring
+    const uint32_t bg      = url_focus_ ? 0xFFFFFFFFu : 0xFFF1F2F4;
+    const uint32_t ring    = url_focus_ ? 0xFF2F6FEDu : 0xFFD9DCDF;
+    for (int y = 0; y < H; ++y) {
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        for (int x = 0; x < win_w_; ++x) row[x] = 0xFFE8EAED;
+    }
+    const int fx = 8, fy = 6, fw = win_w_ - 16, fh = H - 12;
+    for (int y = fy; y < fy + fh; ++y) {
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        for (int x = fx; x < fx + fw; ++x) row[x] = bg;
+    }
+    for (int x = fx; x < fx + fw; ++x) {
+        fb_[static_cast<size_t>(fy) * win_w_ + x] = ring;
+        fb_[static_cast<size_t>(fy + fh - 1) * win_w_ + x] = ring;
+    }
+    for (int y = fy; y < fy + fh; ++y) {
+        fb_[static_cast<size_t>(y) * win_w_ + fx] = ring;
+        fb_[static_cast<size_t>(y) * win_w_ + fx + fw - 1] = ring;
+    }
+
+    // label -- only when it adds information (a luxium: address already
+    // says it)
+    const std::string shown_addr = url_focus_ ? url_edit_ : page_.name();
+    font_->set_size(12.5f);
+    if (shown_addr.rfind("luxium:", 0) != 0) {
+        float lx = fx + 10;
+        for (const auto& w : render::shape_words(*font_, "luxium:", true, false)) {
+            render::draw_word(fb_, win_w_, win_h_, *font_, w, lx,
+                              fy + (fh - font_->line_height()) / 2.f, 0xFF8A919B);
+            lx += w.width + 12.5f * 0.3f;
+        }
+    }
+
+    // the address: editing text, or the current page
+    font_->set_size(14);
+    float tx = fx + 74;
+    const float ty = fy + (fh - font_->line_height()) / 2.f;
+    std::string visible = url_focus_ ? url_edit_ : page_.name();
+    if (visible.empty()) visible = "escribe una uri...";
+    // keep the tail that fits (utf-8 sequences dropped whole from the front)
+    const float avail = fx + fw - tx - 12;
+    while (visible.size() > 4 &&
+           font_->shape(visible, false, false).width > avail) {
+        size_t n = 1;
+        while (n < visible.size() && (visible[n] & 0xC0) == 0x80) ++n;
+        visible.erase(0, n);
+    }
+    if (url_focus_) {
+        render::Word visible_word;
+        visible_word.text   = visible;
+        visible_word.shaped = font_->shape(visible, false, false);
+        visible_word.width  = visible_word.shaped.width;
+        visible_word.size   = 14;
+        visible_word.ascent = font_->ascent();
+        render::draw_word(fb_, win_w_, win_h_, *font_, visible_word, tx, ty, 0xFF232936);
+        // caret at the END of the text (editing is append/backspace style)
+        const float cx = tx + visible_word.width + 2;
+        if ((frames_ / 30) % 2 == 0)
+            for (int yy = fy + 5; yy < fy + fh - 5; ++yy)
+                for (int xx = static_cast<int>(cx); xx < static_cast<int>(cx) + 2; ++xx)
+                    if (xx < win_w_) fb_[static_cast<size_t>(yy) * win_w_ + xx] = 0xFF2F6FED;
+    } else {
+        render::Word shown_word;
+        shown_word.text   = visible;
+        shown_word.shaped = font_->shape(visible, false, false);
+        shown_word.width  = shown_word.shaped.width;
+        shown_word.size   = 14;
+        shown_word.ascent = font_->ascent();
+        render::draw_word(fb_, win_w_, win_h_, *font_, shown_word, tx, ty, 0xFF5A6270);
+    }
+}
+
 int Shell::run() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -331,6 +499,9 @@ int Shell::run() {
                 mouse_x_ = e.motion.x;
                 mouse_y_ = e.motion.y;
                 break;
+            case SDL_TEXTINPUT:
+                if (url_focus_) { url_edit_ += e.text.text; url_caret_ = static_cast<int>(url_edit_.size()); }
+                break;
             case SDL_MOUSEWHEEL: {
                 const float lines = static_cast<float>(-e.wheel.y) * 3;
                 if (mouse_y_ > win_h_ - console_h_) {
@@ -353,6 +524,36 @@ int Shell::run() {
                 }
                 break;
             case SDL_KEYDOWN:
+                if (url_focus_) {
+                    switch (e.key.keysym.sym) {
+                    case SDLK_RETURN: case SDLK_KP_ENTER: {
+                        const std::string addr = url_edit_;
+                        url_focus_ = false;
+                        navigate_address(addr, true);
+                        break;
+                    }
+                    case SDLK_ESCAPE:
+                        url_focus_ = false;
+                        break;
+                    case SDLK_BACKSPACE: {
+                        if (!url_edit_.empty()) {
+                            size_t n = 1;
+                            while (n < url_edit_.size() &&
+                                   (url_edit_[url_edit_.size() - n] & 0xC0) == 0x80)
+                                ++n;
+                            url_edit_.erase(url_edit_.size() - n);
+                        }
+                        break;
+                    }
+                    default: break;
+                    }
+                    break;   // focused: the page does not see keys
+                }
+                if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_l) {
+                    url_focus_ = true;
+                    url_edit_  = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+                    break;
+                }
                 if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_r) {
                     navigate_to(hist_[hist_idx_], false);   // reload
                     break;
@@ -455,7 +656,7 @@ int Shell::screenshot(const std::string& ppm_path) {
     return 0;
 }
 
-float Shell::page_h() const { return static_cast<float>(win_h_ - console_h_); }
+float Shell::page_h() const { return static_cast<float>(win_h_ - console_h_ - 20 - kUrlH); }
 
 void Shell::relayout() {
     if (win_w_ == 0 || !page_.page_root()) return;   // http pages start empty
@@ -472,9 +673,15 @@ void Shell::relayout() {
 }
 
 bool Shell::handle_click(int mx, int my) {
-    if (my > win_h_ - console_h_) return false;   // the console is not clickable yet
+    if (my < kUrlH) {   // the address strip
+        url_focus_ = true;
+        url_edit_   = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+        return true;
+    }
+    if (my > win_h_ - console_h_ - 20) return false;   // console: not clickable yet
+    url_focus_ = false;
     const float doc_x = static_cast<float>(mx);
-    const float doc_y = static_cast<float>(my) + scroll_;
+    const float doc_y = static_cast<float>(my - kUrlH) + scroll_;
     if (const dom::Node* n = render::hit_test(layout_, doc_x, doc_y)) {
         page_.click(n);
         return true;
@@ -489,9 +696,9 @@ void Shell::draw_scrollbar() {
     const float bar_y = scroll_ / (content_h_ - page) * (page - bar_h);
     // the thumb only -- no track gutter, the page edge stays clean
     const int   gx   = win_w_ - 8;
-    for (float yy = bar_y; yy < bar_y + bar_h; yy += 1) {
+    for (float yy = bar_y + kUrlH; yy < bar_y + bar_h + kUrlH; yy += 1) {
         const int iy = static_cast<int>(yy);
-        if (iy < 0 || iy >= static_cast<int>(page)) continue;
+        if (iy < kUrlH || iy >= kUrlH + static_cast<int>(page)) continue;
         for (int x = gx; x < gx + 5; ++x) {
             // rounded ends on the thumb
             const int ex = x - gx;
@@ -573,20 +780,24 @@ void Shell::draw_console() {
 }
 
 void Shell::repaint() {
-    if (win_w_ == 0 || !page_.page_root()) return;
-    const int page_bottom = win_h_ - console_h_;
+    if (win_w_ == 0 || !page_.page_root()) {
+        draw_url_bar();
+        return;
+    }
+    const int page_top    = kUrlH;
+    const int page_bottom = win_h_ - console_h_ - 20;
 
     // paper
-    for (int y = 0; y < page_bottom; ++y) {
+    for (int y = page_top; y < page_bottom; ++y) {
         uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFFFAFAF7;
     }
 
     // hover state: which button is under the cursor (document coords)
     const render::HitBox* hover = nullptr;
-    if (mouse_y_ < page_bottom) {
+    if (mouse_y_ >= page_top && mouse_y_ < page_bottom && !url_focus_) {
         const float dx = static_cast<float>(mouse_x_);
-        const float dy = static_cast<float>(mouse_y_) + scroll_;
+        const float dy = static_cast<float>(mouse_y_ - page_top) + scroll_;
         for (const auto& h : layout_.hits)
             if (h.button && dx >= h.x && dx <= h.x + h.w && dy >= h.y && dy <= h.y + h.h)
                 hover = &h;
@@ -597,23 +808,28 @@ void Shell::repaint() {
     }
 
     // shapes first (button boxes, pills, bars), then words over them.
-    for (const auto& s : layout_.shapes) fill_shape(fb_, win_w_, win_h_, s, scroll_, 1.f);
+    for (const auto& s : layout_.shapes) {
+        if (s.y - scroll_ > page_h() + kUrlH || s.y + s.h - scroll_ < kUrlH) continue;
+        fill_shape(fb_, win_w_, win_h_, s, scroll_, page_top, 1.f);
+    }
     if (hover) {   // the hovered button lightens: an overlay over the box,
                    // before the words, so the text stays crisp
         fill_shape(fb_, win_w_, win_h_,
                    {ShapeCmd::Kind::RRect, hover->x, hover->y, hover->w, hover->h, 7,
                     0x22FFFFFF},
-                   scroll_, 1.f);
+                   scroll_, page_top, 1.f);
     }
     for (const auto& w : layout_.words) {
-        if (w.y - scroll_ > page_bottom || w.y + 40 - scroll_ < 0) continue;
-        render::draw_word(fb_, win_w_, win_h_, *font_, w.word, w.x, w.y - scroll_,
-                          w.color);
+        if (w.y - scroll_ > page_h() || w.y + 40 - scroll_ < 0) continue;
+        render::draw_word(fb_, win_w_, win_h_, *font_, w.word, w.x,
+                          w.y - scroll_ + page_top, w.color);
     }
 
     draw_status();
     draw_scrollbar();
     draw_console();
+    draw_url_bar();
+    ++frames_;
 }
 
 // The status bar: hovered link (or fetch state) on the left, page name on

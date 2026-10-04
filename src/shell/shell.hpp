@@ -29,12 +29,15 @@ struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Texture;
 struct SDL_Cursor;
+typedef int SDL_Keycode;   // sdl.h defines it; the shell only stores keys it handles
 
 namespace luxium::net {
 class Fetch;
 }
 
 namespace luxium::shell {
+
+constexpr int kUrlH = 38;              // the address strip's height
 
 struct ShellConfig {
     int  width      = 1180;
@@ -58,9 +61,14 @@ public:
     // stealing anyone's screen.
     int screenshot(const std::string& ppm_path);
 
-    // Navigates (file path, http(s) URL, #anchor).  Public because main()
-    // starts URL arguments through here.
+    // Navigates (file path, http(s) URL, #anchor, luxium:inicio).  Public
+    // because main() starts URL arguments through here.
     void navigate_to(const std::string& href, bool push_history);
+
+    // Navigates to whatever a human typed in the URL bar: files that exist,
+    // domains, "luxium:inicio"...
+    void navigate_address(std::string addr, bool push_history);
+    void load_home();
 
 private:
     void poll_fetch();                  // worker thread -> page, once per frame
@@ -108,6 +116,14 @@ private:
 
     int    mouse_x_ = 0, mouse_y_ = 0;
     bool   cursor_over_clickable_ = false;
+
+    // The URL bar (top strip, always visible).
+    std::string url_edit_;
+    bool        url_focus_ = false;
+    int         url_caret_ = 0;      // caret position in BYTES (utf-8)
+    uint64_t    frames_ = 0;         // caret blink
+    void        draw_url_bar();
+    
 
     // history + network
     std::vector<std::string> hist_;

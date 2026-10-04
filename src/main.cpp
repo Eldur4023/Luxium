@@ -80,17 +80,17 @@ int main(int argc, char** argv) {
             return 0;
         } else paths.push_back(a);
     }
-    if (paths.empty()) {
-        std::fprintf(stderr, "uso: luxium <page.html|dir> [--check] [--headless]\n");
+    if (check && paths.empty()) {
+        std::fprintf(stderr, "uso: luxium --check <dir|pages...>\n");
         return 2;
     }
 
     if (check) return run_check(paths);
 
-    const std::string path = paths[0];
+    const std::string path = paths.empty() ? "luxium:inicio" : paths[0];
     const bool is_url = path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
     luxium::page::Page page;
-    if (!is_url && !page.load_file(path)) {
+    if (!is_url && path != "luxium:inicio" && !page.load_file(path)) {
         std::fprintf(stderr, "luxium: cannot read '%s'\n", path.c_str());
         return 1;
     }
@@ -109,9 +109,10 @@ int main(int argc, char** argv) {
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
                                       title});
-    // http(s):// starts the navigation flow (fetch on a worker thread); the
-    // rest of the pipeline is exactly the windowed one.
+    // http(s):// goes through the navigation flow (fetch on a worker thread);
+    // sin argumentos, la pantalla de inicio; el resto, carga directa.
     if (is_url) shell.navigate_to(path, true);
+    else if (path == "luxium:inicio") shell.navigate_address(path, true);
     for (const auto& id : clicks) page.click_by_id(id);
     if (shot) return shell.screenshot(shot);   // SDL dummy driver, one frame
     return shell.run();
