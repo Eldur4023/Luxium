@@ -244,7 +244,8 @@ ParseResult parse(std::string_view source) {
                     b.error(t.line, "duplicate <body> ignored");
                     break;
                 }
-                b.ensure_body(t.line);
+                Node* body = b.ensure_body(t.line);
+                body->attrs = t.attrs;   // <body style=...> conserva su estilo
                 break;
             }
 

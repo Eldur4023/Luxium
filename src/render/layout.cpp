@@ -73,6 +73,16 @@ struct Style {
     bool     has_block_bg = false;
     int      align = 0;      // 0 left, 1 center, 2 right
     bool     display_none = false;
+    // width/min/max: contenido (content-box salvo box-sizing:border-box);
+    // los % se resuelven en layout contra el containing block
+    bool     w_set = false;    float w_val = 0;    bool w_pct = false;
+    bool     minw_set = false; float minw_val = 0; bool minw_pct = false;
+    bool     maxw_set = false; float maxw_val = 0; bool maxw_pct = false;
+    bool     ml_auto = false, mr_auto = false;
+    // borde uniforme (subset: solo el estilo solid se pinta)
+    float    border_w = 0;
+    uint32_t border_color = 0xFF000000;
+    bool     border_box = false;
 };
 
 uint32_t parse_color(const std::string& v, uint32_t fallback) {
@@ -116,6 +126,46 @@ float parse_len(const std::string& v, float parent_size, float fallback) {
     return fallback;
 }
 
+// tokeniza "1px auto 2px" en minusculas y sin espacios
+std::vector<std::string> css_tokens(const std::string& v) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char ch : v) {
+        if (std::isspace(static_cast<unsigned char>(ch))) {
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+        } else cur += static_cast<char>(std::tolower(ch));
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+// border / border-width: <width> | <style> | <color> en cualquier orden.
+// Solo pintamos solid; los demas estilos se aceptan y se dibujan igual.
+void parse_border(Style& s, const std::string& v, bool shorthand) {
+    for (const auto& t : css_tokens(v)) {
+        if (t == "solid" || t == "none" || t == "hidden" || t == "dotted" ||
+            t == "dashed" || t == "double" || t == "groove" || t == "ridge" ||
+            t == "inset" || t == "outset" || t == "thin" || t == "medium" ||
+            t == "thick")
+            continue;   // el estilo del borde: lo pintamos como solid
+        if (shorthand) {
+            if (const uint32_t c = parse_color(t, 0); c) {
+                s.border_color = c;
+                continue;
+            }
+        }
+        const float w = parse_len(t, s.size, -1);
+        if (w > 0) s.border_w = w;
+    }
+}
+
+// colapso de margenes CSS2.1: max(positivos) + min(negativos)
+float collapse(float a, float b) {
+    if (a >= 0 && b >= 0) return std::max(a, b);
+    if (a <= 0 && b <= 0) return std::min(a, b);
+    return std::max(a, b) + std::min(a, b);
+}
+
 struct StyleResolver {
     std::vector<css::Rule> ua;
     std::vector<css::Rule> page;
@@ -139,6 +189,29 @@ struct StyleResolver {
                 if (!s.mono) s.pill = c;   // inline pills, too (code)
             }
         }
+        else if (prop == "width" || prop == "min-width" || prop == "max-width") {
+            bool* set; float* val; bool* pct;
+            if (prop == "width")        { set = &s.w_set;   val = &s.w_val;   pct = &s.w_pct; }
+            else if (prop == "min-width") { set = &s.minw_set; val = &s.minw_val; pct = &s.minw_pct; }
+            else                          { set = &s.maxw_set; val = &s.maxw_val; pct = &s.maxw_pct; }
+            std::string k;
+            for (char ch : v)
+                if (!std::isspace(static_cast<unsigned char>(ch)))
+                    k += static_cast<char>(std::tolower(ch));
+            if (k == "auto") { *set = false; }   // width:auto = llenar
+            else if (k.size() && k.back() == '%') {
+                k.pop_back();
+                *set = true; *pct = true; *val = std::max(0.f, parse_len(k, s.size, 0));
+            } else { *set = true; *pct = false; *val = parse_len(k, s.size, 0); }
+        }
+        else if (prop == "box-sizing")
+            s.border_box = v.find("border") != std::string::npos;
+        else if (prop == "border" || prop == "border-width")
+            parse_border(s, v, prop == "border");
+        else if (prop == "border-color") {
+            const uint32_t c = parse_color(v, 0);
+            if (c) s.border_color = c;
+        }
         else if (prop == "font-size")           s.size = std::max(6.f, parse_len(v, parent.size, s.size));
         else if (prop == "font-weight")         s.bold = (v.find("bold") != std::string::npos ||
                                                           v == "700" || v == "800" || v == "900");
@@ -155,11 +228,30 @@ struct StyleResolver {
         }
         else if (prop == "text-decoration")     s.underline = v.find("underline") != std::string::npos;
         else if (prop == "display")             s.display_none = (v == "none");
-        else if (prop == "margin" || prop == "padding") {
+        else if (prop == "margin") {
+            // con soporte de auto: los dos laterales auto -> centrar
+            const auto toks = css_tokens(v);
+            if (toks.empty() || toks.size() > 4) return;
+            float vals[4] = {0, 0, 0, 0};
+            bool autos[4] = {false, false, false, false};
+            for (int i = 0; i < static_cast<int>(toks.size()); ++i) {
+                if (toks[i] == "auto") autos[i] = true;
+                else vals[i] = parse_len(toks[i], s.size, 0);
+            }
+            const float t_ = vals[0];
+            const float r_ = toks.size() > 1 ? vals[1] : t_;
+            const float b_ = toks.size() > 2 ? vals[2] : t_;
+            const float l_ = toks.size() > 3 ? vals[3] : r_;
+            const bool rA = toks.size() > 1 ? autos[1] : autos[0];
+            const bool lA = toks.size() > 3 ? autos[3]
+                                            : (toks.size() > 1 ? autos[1] : autos[0]);
+            s.mt = t_; s.mb = b_; s.ml = l_;
+            s.ml_auto = lA; s.mr_auto = rA;
+        }
+        else if (prop == "padding") {
             float t, r, b, l;
             if (!sides(v, s.size, t, r, b, l)) return;   // em contra el propio size
-            if (prop == "margin") { s.mt = t; s.mb = b; s.ml = l; }
-            else                  { s.pt = t; s.pr = r; s.pb = b; s.pl = l; }
+            s.pt = t; s.pr = r; s.pb = b; s.pl = l;
         }
         else if (prop == "margin-top")    s.mt = parse_len(v, s.size, s.mt);
         else if (prop == "margin-bottom") s.mb = parse_len(v, s.size, s.mb);
@@ -236,6 +328,7 @@ struct Ctx {
     const StyleResolver* res = nullptr;
 
     float y      = 0;
+    float pend   = 0;   // margen inferior pendiente de colapsar (CSS collapsing)
     float line_w = 0;
     float line_h = 0;
     bool  line_has_atom = false;   // a button made the line not centerable
@@ -348,6 +441,8 @@ void layout_children(Ctx& c, const dom::Node& el, float left, float avail,
                      const Style& el_style) {
     for (const auto& child : el.children) {
         if (child->type == dom::NodeType::Text) {
+            c.y += c.pend;   // texto real: el margen pendiente se aplica
+            c.pend = 0;
             inline_text(c, child->text, el_style, left, avail);
         } else if (child->is_element()) {
             layout_block(c, *child, left, avail, el_style);
@@ -366,11 +461,15 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     c.font.set_size(s.size);
 
     if (tag == "br") {
+        c.y += c.pend;
+        c.pend = 0;
         c.flush();
         c.y += s.size * 0.35f;
         return;
     }
     if (tag == "hr") {
+        c.y += c.pend;
+        c.pend = 0;
         c.flush();
         c.y += 10;
         c.out.shapes.push_back({ShapeCmd::Kind::RRect, left, c.y, avail, 1, 0.5f,
@@ -383,6 +482,8 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 
     // ── button: an inline-block atom ─────────────────────────────────────
     if (tag == "button") {
+        c.y += c.pend;
+        c.pend = 0;
         const float padx = 16, pady = 9;
         c.font.set_size(s.size);
         auto words = shape_words(c.font, flatten_text(el), s.bold, s.mono);
@@ -417,18 +518,54 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
         return;
     }
 
-    // ── plain block, with the box model subset: background + padding ─────
+    // ── plain block: width, min/max, margenes auto, padding, borde
+    //    uniforme y background (el subset del box model que hoy pintamos) ──
+    // TOP: mi margin-top colapsa con lo pendiente; sin padding/border arriba
+    // el margen de mi primer hijo ESCAPA a traves de mi (y el mio con el de
+    // fuera: el body con margin 8 y un h1 de 21.44 arrancan a 21.44, como
+    // Chromium).
+    const bool trapped = s.pt > 0 || s.border_w > 0;
+    if (trapped) {
+        c.y += collapse(c.pend, s.mt);
+        c.pend = 0;
+    } else {
+        c.pend = collapse(c.pend, s.mt);
+    }
+    const float box_y = trapped ? c.y : c.y + c.pend;
+
     c.flush();
     c.align = s.align;
     c.glue_next = false;
-    c.y += s.mt;
-    c.line_left  = left + s.ml + s.pl;
-    c.line_avail = avail - s.ml - s.pl - s.pr;
 
-    const float box_y = c.y;
-    const float inner_left  = left + s.ml + s.pl;
-    const float inner_avail = avail - s.ml - s.pl - s.pr;
-    c.y += s.pt;
+    const float avail_content = avail - s.ml - s.pl - s.pr;
+    float w = avail_content;
+    auto resolve_w = [&](bool set, float v, bool pct) {
+        if (!set) return;
+        w = pct ? v / 100.f * avail : v;   // % del containing block
+    };
+    resolve_w(s.w_set, s.w_val, s.w_pct);
+    if (s.minw_set)
+        w = std::max(w, s.minw_pct ? s.minw_val / 100.f * avail : s.minw_val);
+    if (s.maxw_set)
+        w = std::min(w, s.maxw_pct ? s.maxw_val / 100.f * avail : s.maxw_val);
+    if (s.border_box) w -= 2 * s.pl + 2 * s.border_w;
+    w = std::max(1.f, w);
+
+    // margenes auto: los dos -> centrar; solo el izquierdo -> absorbe el hueco
+    float ml = s.ml;
+    if (s.ml_auto || s.mr_auto) {
+        const float free = std::max(0.f, avail - (s.pl + w + s.pr));
+        ml = (s.ml_auto && s.mr_auto) ? free / 2.f : (s.ml_auto ? free : s.ml);
+    }
+
+    const float box_left  = left + ml;
+    const float box_width = w + 2 * s.pl + 2 * s.border_w;
+    const float inner_left  = box_left + s.border_w + s.pl;
+    const float inner_avail = w;
+    c.y += s.pt + s.border_w;
+    // las lineas de este bloque se miden y pintan DENTRO de su caja
+    c.line_left  = inner_left;
+    c.line_avail = inner_avail;
 
     const bool li        = tag == "li";
     const bool clickable = el.has_attr("id") || tag == "a";
@@ -440,7 +577,6 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     }
 
     if (tag == "pre") {
-        const float pad = 10;
         const float lh  = s.size * s.lh;
         float max_w = 0;
         const std::string text = el.text_content();
@@ -453,8 +589,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                 line.pop_back();
             float lw = 0;
             for (const Word& w : shape_words(c.font, line, s.bold, s.mono)) {
-                c.out.words.push_back({inner_left + pad + lw, c.y + pad * 0.5f,
-                                       s.color, w});
+                c.out.words.push_back({inner_left + lw, c.y, s.color, w});
                 lw += w.width + s.size * 0.30f;
             }
             max_w = std::max(max_w, lw);
@@ -463,10 +598,14 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
             start = nl + 1;
         }
         if (s.has_block_bg)
-            c.out.shapes.push_back({ShapeCmd::Kind::RRect, left, box_y,
-                                    std::min(avail, max_w + 2 * pad + s.pl + s.pr),
-                                    c.y - box_y + pad, 6, s.block_bg});
-        c.y += std::max(s.mb, 2.f);
+            c.out.shapes.push_back({ShapeCmd::Kind::RRect, box_left, box_y,
+                                    box_width, c.y - box_y, 6, s.block_bg});
+        if (s.pb > 0 || s.border_w > 0) {
+            c.y += c.pend;
+            c.pend = s.mb;
+        } else {
+            c.pend = collapse(c.pend, s.mb);
+        }
         return;
     }
 
@@ -480,12 +619,29 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     if (clickable && !c.out.hits.empty() && c.out.hits.back().node == &el)
         c.out.hits.back().h = std::max(c.y - c.out.hits.back().y, s.size * 1.2f);
 
+    const float box_h = (c.y + s.pb + s.border_w) - box_y;
     if (s.has_block_bg)   // the box paints before every word, whatever the order
-        c.out.shapes.push_back({ShapeCmd::Kind::RRect, left, box_y, avail,
-                                c.y + s.pb - box_y, 4, s.block_bg});
+        c.out.shapes.push_back({ShapeCmd::Kind::RRect, box_left, box_y,
+                                box_width, box_h, 4, s.block_bg});
+    if (s.border_w > 0) {   // los 4 lados, solid
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
+                                box_width, s.border_w, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left,
+                                box_y + box_h - s.border_w, box_width,
+                                s.border_w, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect, box_left, box_y,
+                                s.border_w, box_h, s.border_color});
+        c.out.shapes.push_back({ShapeCmd::Kind::Rect,
+                                box_left + box_width - s.border_w, box_y,
+                                s.border_w, box_h, s.border_color});
+    }
 
-    c.y += std::max(s.mb, 2.f);
-    c.y += s.pb;
+    if (s.pb > 0 || s.border_w > 0) {
+        c.y += c.pend;      // lo pendiente de los hijos no atraviesa el padding
+        c.pend = s.mb;
+    } else {
+        c.pend = collapse(c.pend, s.mb);   // escapa hacia abajo
+    }
 }
 
 } // namespace
@@ -508,6 +664,7 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
 
     layout_children(c, root, 0.f, viewport_w, root_style);
     c.flush();
+    c.y += std::max(c.pend, 0.f);
 
     out.content_height = c.y + 8.f;
     return out;

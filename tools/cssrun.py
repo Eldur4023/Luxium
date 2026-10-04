@@ -41,6 +41,25 @@ PCT_THRESHOLD = 2.0  # % de píxeles distintos permitido (por defecto)
 SOLID_WIN = 9        # ventana de "region solida": 9x9
 SOLID_FRAC = 0.8     # >=80% de la ventana con diff = interior de un blob
 SOLID_MAX = 50       # pixeles "solidos" permitidos (elementos ausentes)
+BLOCK = 8            # rejilla del detector de tinta
+INK_MAX = 80         # bloques con contenido claro en un motor y vacio en el otro
+
+
+def ink_mismatch(a: Image.Image, b: Image.Image):
+    """Bloques 8x8 con contenido en UN motor y vacios en el otro: caza
+    texto o elementos desplazados/ausentes; ignora el ruido de rasterizado
+    (misma tinta, distinto anti-aliasing)."""
+    aa = np.asarray(a).astype(float).mean(axis=2)
+    bb = np.asarray(b).astype(float).mean(axis=2)
+    h = min(aa.shape[0], bb.shape[0])
+    w = min(aa.shape[1], bb.shape[1])
+    h -= h % BLOCK
+    w -= w % BLOCK
+    A = aa[:h, :w].reshape(h // BLOCK, BLOCK, w // BLOCK, BLOCK).mean(axis=(1, 3))
+    B = bb[:h, :w].reshape(h // BLOCK, BLOCK, w // BLOCK, BLOCK).mean(axis=(1, 3))
+    A_ink, A_blank = A < 232, A > 248      # histéresis: los ambiguos no cuentan
+    B_ink, B_blank = B < 232, B > 248
+    return int(((A_ink & B_blank) | (A_blank & B_ink)).sum())
 
 
 def test_options(html: Path):
@@ -126,15 +145,19 @@ def run_one(rel: str, bless: bool) -> str:
         img.save(OUT / (rel[:-len(".html")] + ".png"))
         return "PENDIENTE"
     th, solid_max = test_options(html)
-    pct, bad = pixel_diff(img, Image.open(golden).convert("RGB"))
-    solid = solid_dirty(img, Image.open(golden).convert("RGB"))
-    if pct <= th and solid <= solid_max:
-        return f"PASS ({pct:.2f}% solido={solid})"
+    golden_img = Image.open(golden).convert("RGB")
+    pct, bad = pixel_diff(img, golden_img)
+    solid = solid_dirty(img, golden_img)
+    ink = ink_mismatch(img, golden_img)
+    if pct <= th and solid <= solid_max and ink <= INK_MAX:
+        return f"PASS ({pct:.2f}% tinta={ink})"
     motivo = []
     if pct > th:
         motivo.append(f"{pct:.2f}%>{th}%")
     if solid > solid_max:
         motivo.append(f"solido={solid}>{solid_max:.0f}")
+    if ink > INK_MAX:
+        motivo.append(f"tinta={ink}>{INK_MAX}")
     return f"FAIL ({', '.join(motivo)})"
 
 
