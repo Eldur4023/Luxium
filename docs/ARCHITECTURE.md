@@ -203,7 +203,10 @@ One deliberate divergence from the vendored engine: `render()`/templates are
 stubbed to a compile-time diagnostic — a page renders its own DOM, it does
 not render templates.
 
-Two debug envs exist for the pipelines: `LUXIUM_DEBUG_WRAP` (dumps the
-wrapped script source the compiler sees) and `LUXIUM_DEBUG_LAYOUT` (dumps the
-box list). They are how the wrapping and layout bugs were found and how the
-next ones will be.
+Debug envs for every pipeline — each one found a real bug already:
+`LUXIUM_DEBUG_WRAP` (the wrapped script source the compiler sees),
+`LUXIUM_DEBUG_LAYOUT` (the box list), and `LUXIUM_DUMP_FRAME=out.ppm` (dumps
+the windowed loop's framebuffer at frame 30: the black-window bug — surface
+creation waiting on a SIZE_CHANGED event that never came — was invisible to
+`--shot` until the dump existed, which is why `--shot` and the window now
+share one startup path).

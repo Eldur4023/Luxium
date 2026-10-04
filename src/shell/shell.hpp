@@ -47,6 +47,7 @@ public:
     int screenshot(const std::string& ppm_path);
 
 private:
+    void ensure_surface();
     void relayout();                    // DOM -> boxes (page dirty or resize)
     void repaint();                     // boxes -> framebuffer -> screen
     void draw_console();

@@ -21,20 +21,21 @@ Shell::~Shell() {
 }
 
 int Shell::screenshot(const std::string& ppm_path) {
+    // The SAME startup the windowed run does, on the dummy driver: if this
+    // path renders, the windowed path renders -- they share ensure_surface(),
+    // relayout and repaint now.  (They did not, and the window was black
+    // while --shot looked fine: two code paths is how that happens.)
     SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
-    win_w_ = cfg_.width;
-    win_h_ = cfg_.height;
-    console_h_ = std::max(120, win_h_ * 28 / 100);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    window_ = SDL_CreateWindow("", 0, 0, win_w_, win_h_, 0);
+    window_ = SDL_CreateWindow(cfg_.title.c_str(), SDL_WINDOWPOS_CENTERED,
+                               SDL_WINDOWPOS_CENTERED, cfg_.width, cfg_.height, 0);
     renderer_ = SDL_CreateRenderer(window_, -1, 0);
     font_ = render::Font::load(cfg_.font_regular, cfg_.font_bold);
     if (!font_) return 1;
-    fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFFFFFFu);
-    relayout();
+    ensure_surface();
     repaint();
 
     FILE* f = std::fopen(ppm_path.c_str(), "wb");
@@ -47,6 +48,23 @@ int Shell::screenshot(const std::string& ppm_path) {
     std::fclose(f);
     std::printf("wrote %s (%dx%d)\n", ppm_path.c_str(), win_w_, win_h_);
     return 0;
+}
+
+void Shell::ensure_surface() {
+    int w = 0, h = 0;
+    SDL_GetWindowSize(window_, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    bool resized = w != win_w_ || h != win_h_;
+    win_w_ = w;
+    win_h_ = h;
+    if (resized) {
+        console_h_ = std::max(120, win_h_ * 28 / 100);
+        fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFFFFFFu);
+        if (texture_) SDL_DestroyTexture(texture_);
+        texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
+                                     SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_);
+        relayout();
+    }
 }
 
 int Shell::run() {
@@ -71,6 +89,11 @@ int Shell::run() {
         return 1;
     }
 
+    // Do not wait for a SIZE_CHANGED event that may never come: measure the
+    // window as it is right now.  (A window whose framebuffer is never
+    // allocated is a black window, and no SDL error says why.)
+    ensure_surface();
+
     bool quit = false;
     while (!quit) {
         SDL_Event e;
@@ -80,18 +103,9 @@ int Shell::run() {
                 quit = true;
                 break;
             case SDL_WINDOWEVENT:
-                if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                    SDL_GetWindowSize(window_, &win_w_, &win_h_);
-                    console_h_ = std::max(120, win_h_ * 28 / 100);
-                    fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFFFFFFu);
-                    if (texture_) SDL_DestroyTexture(texture_);
-                    texture_ = SDL_CreateTexture(renderer_,
-                                                 SDL_PIXELFORMAT_ARGB8888,
-                                                 SDL_TEXTUREACCESS_STREAMING,
-                                                 win_w_, win_h_);
-                    scroll_ = std::min(scroll_, std::max(0.f, content_h_ - page_h()));
-                    relayout();
-                }
+                if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                    e.window.event == SDL_WINDOWEVENT_RESIZED)
+                    ensure_surface();
                 break;
             case SDL_MOUSEWHEEL: {
                 int mx, my;
@@ -132,9 +146,29 @@ int Shell::run() {
         }
         repaint();
 
-        SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
-        SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+        if (texture_ && !fb_.empty()) {
+            SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
+            SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+        }
         SDL_RenderPresent(renderer_);
+
+        // Debug hook: dump the real windowed loop's framebuffer (what the
+        // user's screen gets) -- LUXIUM_DUMP_FRAME=/path/out.ppm
+        if (const char* dump = std::getenv("LUXIUM_DUMP_FRAME")) {
+            static int frames = 0;
+            if (++frames == 30) {   // half a second in, past any warmup
+                FILE* f = std::fopen(dump, "wb");
+                if (f) {
+                    std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
+                    for (size_t i = 0; i < fb_.size(); ++i) {
+                        uint8_t rgb[3] = {uint8_t(fb_[i] >> 16), uint8_t(fb_[i] >> 8), uint8_t(fb_[i])};
+                        std::fwrite(rgb, 1, 3, f);
+                    }
+                    std::fclose(f);
+                    std::printf("dumped frame %d to %s\n", frames, dump);
+                }
+            }
+        }
         SDL_Delay(8);   // ~120fps cap; the CPU is idle at this size anyway
     }
     return 0;
