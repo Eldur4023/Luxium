@@ -38,6 +38,7 @@ class Fetch;
 namespace luxium::shell {
 
 constexpr int kUrlH = 38;              // the address strip's height
+constexpr float kUrlTextX = 82.f;      // text origin in the field (8 + 74)
 
 struct ShellConfig {
     int  width      = 1180;
@@ -90,7 +91,7 @@ private:
     void draw_console();
     void draw_status();
     void draw_scrollbar();
-    bool handle_click(int mx, int my);  // page coords -> hit test -> page
+    bool handle_click(int mx, int my, int clicks = 1);  // page coords -> hit test
     float page_h() const;
 
     // Navigation (M5).
@@ -121,11 +122,17 @@ private:
     std::string url_edit_;
     bool        url_focus_ = false;
     int         url_caret_ = 0;      // caret position in BYTES (utf-8)
-    bool        url_selected_ = false;   // select-all state in the bar
+    int         url_anchor_ = 0;     // selection anchor (== caret = no selection)
+    float       url_scroll_ = 0;     // horizontal scroll of the field text
+    bool        url_drag_ = false;   // dragging a selection with the mouse
     uint64_t    frames_ = 0;         // caret blink
     void        draw_url_bar();
-    void        copy_url();
-    void        paste_url();
+    // url-bar editing (caret is byte-based, utf-8 aware)
+    int  url_caret_at(int mx) const;           // window x -> byte position
+    void url_insert(const std::string& utf8);  // insert at caret
+    bool url_delete_selection();               // false when nothing selected
+    void url_copy() const;                     // Ctrl+C in the bar
+    void url_paste();                          // Ctrl+V in the bar
 
     // Text selection over the page's words (indices into layout_.words).
     int    sel_start_ = -1, sel_end_ = -1;   // inclusive word range, -1 = none

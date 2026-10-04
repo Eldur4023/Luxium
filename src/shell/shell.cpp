@@ -491,6 +491,101 @@ void Shell::maybe_cef_handoff() {
 
 // ── the URL bar itself ──────────────────────────────────────────────────────
 
+// ── url-bar editing ─────────────────────────────────────────────────────────
+// Byte boundaries (utf-8): the caret lives in BYTES but only ever moves
+// between characters, so a backspace can never split a sequence.
+static int u8_next(const std::string& s, int i) {
+    if (i >= static_cast<int>(s.size())) return static_cast<int>(s.size());
+    ++i;
+    while (i < static_cast<int>(s.size()) && (s[i] & 0xC0) == 0x80) ++i;
+    return i;
+}
+static int u8_prev(const std::string& s, int i) {
+    if (i <= 0) return 0;
+    --i;
+    while (i > 0 && (s[i] & 0xC0) == 0x80) --i;
+    return i;
+}
+// Ctrl+Left/Right: skip spaces, then the word (spaces = separators).
+static int url_word_left(const std::string& s, int i) {
+    while (i > 0 && (s[i - 1] == ' ' || s[i - 1] == '\t')) i = u8_prev(s, i);
+    while (i > 0 && !(s[i - 1] == ' ' || s[i - 1] == '\t')) i = u8_prev(s, i);
+    return i;
+}
+static int url_word_right(const std::string& s, int i) {
+    const int n = static_cast<int>(s.size());
+    while (i < n && (s[i] == ' ' || s[i] == '\t')) i = u8_next(s, i);
+    while (i < n && !(s[i] == ' ' || s[i] == '\t')) i = u8_next(s, i);
+    return i;
+}
+
+// Window x -> byte position, by shaping the field text and testing each
+// glyph's half (left half = caret before it, right half = after it).
+int Shell::url_caret_at(int mx) const {
+    if (url_edit_.empty()) return 0;
+    font_->set_size(14);
+    const float local = static_cast<float>(mx) - kUrlTextX + url_scroll_;
+    if (local <= 0) return 0;
+    const auto run = font_->shape(url_edit_, false, false);
+    const int n = static_cast<int>(run.positions.size());
+    const int len = static_cast<int>(url_edit_.size());
+    for (int gi = 0; gi < n; ++gi) {
+        const auto& p = run.positions[gi];
+        const float x1 = (gi + 1 < n) ? run.positions[gi + 1].x : run.width;
+        if (local < p.x) break;
+        if (local < p.x + (x1 - p.x) * 0.5f) return static_cast<int>(p.cluster);
+        int end = len;   // right half: the caret goes AFTER this cluster
+        for (int g2 = gi + 1; g2 < n; ++g2)
+            if (static_cast<int>(run.positions[g2].cluster) > static_cast<int>(p.cluster)) {
+                end = static_cast<int>(run.positions[g2].cluster);
+                break;
+            }
+        if (local < x1) return end;
+    }
+    return len;
+}
+
+bool Shell::url_delete_selection() {
+    const int a = std::min(url_anchor_, url_caret_);
+    const int b = std::max(url_anchor_, url_caret_);
+    if (a >= b) return false;
+    url_edit_.erase(a, b - a);
+    url_caret_ = url_anchor_ = a;
+    return true;
+}
+
+void Shell::url_insert(const std::string& utf8) {
+    std::string t;
+    t.reserve(utf8.size());
+    for (char c : utf8)
+        if (c != '\r' && c != '\n' && c != '\t') t += c;
+    if (t.size() > 1) {   // a paste: drop the stray spaces around it
+        const size_t b = t.find_first_not_of(' ');
+        const size_t e = t.find_last_not_of(' ');
+        t = (b == std::string::npos) ? std::string() : t.substr(b, e - b + 1);
+    }
+    if (t.empty()) return;
+    url_delete_selection();
+    url_caret_ = std::clamp(url_caret_, 0, static_cast<int>(url_edit_.size()));
+    url_edit_.insert(url_edit_.begin() + url_caret_, t.begin(), t.end());
+    url_caret_ += static_cast<int>(t.size());
+    url_anchor_ = url_caret_;
+}
+
+void Shell::url_copy() const {
+    const int a = std::min(url_anchor_, url_caret_);
+    const int b = std::max(url_anchor_, url_caret_);
+    if (a < b) SDL_SetClipboardText(url_edit_.substr(a, b - a).c_str());
+}
+
+void Shell::url_paste() {
+    char* t = SDL_GetClipboardText();
+    if (t) {
+        if (*t) url_insert(t);
+        SDL_free(t);
+    }
+}
+
 void Shell::draw_url_bar() {
     constexpr int H = kUrlH;
     // field background + focus ring
@@ -529,41 +624,105 @@ void Shell::draw_url_bar() {
 
     // the address: editing text, or the current page
     font_->set_size(14);
-    float tx = fx + 74;
+    const float tx = kUrlTextX;
     const float ty = fy + (fh - font_->line_height()) / 2.f;
-    std::string visible = url_focus_ ? url_edit_
-                        : (engine_cef_ ? cef::url() : page_.name());
-    if (visible.empty()) visible = "escribe una uri...";
-    // keep the tail that fits (utf-8 sequences dropped whole from the front)
     const float avail = fx + fw - tx - 12;
-    while (visible.size() > 4 &&
-           font_->shape(visible, false, false).width > avail) {
-        size_t n = 1;
-        while (n < visible.size() && (visible[n] & 0xC0) == 0x80) ++n;
-        visible.erase(0, n);
-    }
+
     if (url_focus_) {
-        render::Word visible_word;
-        visible_word.text   = visible;
-        visible_word.shaped = font_->shape(visible, false, false);
-        visible_word.width  = visible_word.shaped.width;
-        visible_word.size   = 14;
-        visible_word.ascent = font_->ascent();
-        render::draw_word(fb_, win_w_, win_h_, *font_, visible_word, tx, ty, 0xFF232936);
-        // caret at the END of the text (editing is append/backspace style)
-        const float cx = tx + visible_word.width + 2;
-        if ((frames_ / 30) % 2 == 0)
+        // ── edición de verdad: caret en cualquier sitio, selección con
+        //    Arrastrar con el ratón y scroll horizontal cuando no cabe ──
+        const int len = static_cast<int>(url_edit_.size());
+        url_caret_  = std::clamp(url_caret_, 0, len);
+        url_anchor_ = std::clamp(url_anchor_, 0, len);
+
+        auto width_upto = [&](int byte) -> float {
+            if (byte <= 0) return 0.f;
+            return font_->shape(std::string_view(url_edit_).substr(0, byte),
+                                false, false).width;
+        };
+        const float full_w = url_edit_.empty() ? 0.f
+                            : font_->shape(url_edit_, false, false).width;
+        const float caret_local = width_upto(url_caret_);
+        // el caret siempre visible dentro del campo
+        if (caret_local - url_scroll_ > avail - 2)
+            url_scroll_ = caret_local - avail + 2;
+        if (caret_local < url_scroll_) url_scroll_ = caret_local;
+        url_scroll_ = std::clamp(url_scroll_, 0.f,
+                                 std::max(0.f, full_w - avail + 2));
+
+        // subcadena visible: glifos enteros dentro de [scroll, scroll+avail]
+        std::string sub;
+        float sub_x = tx;
+        if (!url_edit_.empty()) {
+            const auto run = font_->shape(url_edit_, false, false);
+            const int n = static_cast<int>(run.positions.size());
+            int b0 = 0, b1 = len;
+            float px0 = 0.f;
+            for (int gi = 0; gi < n; ++gi) {
+                const auto& p = run.positions[gi];
+                if (p.x >= url_scroll_) { b0 = static_cast<int>(p.cluster); px0 = p.x; break; }
+            }
+            for (int gi = 0; gi < n; ++gi) {
+                const auto& p = run.positions[gi];
+                const float x1 = (gi + 1 < n) ? run.positions[gi + 1].x : run.width;
+                if (x1 > url_scroll_ + avail) { b1 = static_cast<int>(p.cluster); break; }
+            }
+            if (b1 < b0) b1 = b0;
+            sub  = url_edit_.substr(b0, b1 - b0);
+            sub_x = tx + px0 - url_scroll_;
+        }
+
+        // selección (bajo el texto)
+        if (url_anchor_ != url_caret_) {
+            const int sa = std::min(url_anchor_, url_caret_);
+            const int sb = std::max(url_anchor_, url_caret_);
+            int px_a = static_cast<int>(tx + width_upto(sa) - url_scroll_);
+            int px_b = static_cast<int>(tx + width_upto(sb) - url_scroll_);
+            px_a = std::max(px_a, static_cast<int>(tx));
+            px_b = std::min(px_b, static_cast<int>(tx + avail));
+            for (int yy = fy + 3; yy < fy + fh - 3; ++yy)
+                for (int xx = px_a; xx < px_b; ++xx)
+                    if (xx >= 0 && xx < win_w_)
+                        blend_px(fb_[static_cast<size_t>(yy) * win_w_ + xx],
+                                 0x662F6FEDu);
+        }
+
+        if (!sub.empty()) {
+            render::Word w;
+            w.text   = sub;
+            w.shaped = font_->shape(sub, false, false);
+            w.width  = w.shaped.width;
+            w.size   = 14;
+            w.ascent = font_->ascent();
+            render::draw_word(fb_, win_w_, win_h_, *font_, w, sub_x, ty,
+                              0xFF232936);
+        }
+
+        // caret (parpadea)
+        const float cx = tx + caret_local - url_scroll_;
+        if (cx >= tx - 1 && cx <= tx + avail && (frames_ / 30) % 2 == 0)
             for (int yy = fy + 5; yy < fy + fh - 5; ++yy)
                 for (int xx = static_cast<int>(cx); xx < static_cast<int>(cx) + 2; ++xx)
-                    if (xx < win_w_) fb_[static_cast<size_t>(yy) * win_w_ + xx] = 0xFF2F6FED;
+                    if (xx >= 0 && xx < win_w_)
+                        fb_[static_cast<size_t>(yy) * win_w_ + xx] = 0xFF2F6FED;
     } else {
+        std::string visible = engine_cef_ ? cef::url() : page_.name();
+        if (visible.empty()) visible = "escribe una uri...";
+        // keep the tail that fits (utf-8 sequences dropped whole from the front)
+        while (visible.size() > 4 &&
+               font_->shape(visible, false, false).width > avail) {
+            size_t n = 1;
+            while (n < visible.size() && (visible[n] & 0xC0) == 0x80) ++n;
+            visible.erase(0, n);
+        }
         render::Word shown_word;
         shown_word.text   = visible;
         shown_word.shaped = font_->shape(visible, false, false);
         shown_word.width  = shown_word.shaped.width;
         shown_word.size   = 14;
         shown_word.ascent = font_->ascent();
-        render::draw_word(fb_, win_w_, win_h_, *font_, shown_word, tx, ty, 0xFF5A6270);
+        render::draw_word(fb_, win_w_, win_h_, *font_, shown_word, tx, ty,
+                          0xFF5A6270);
     }
 }
 
@@ -732,6 +891,10 @@ int Shell::run() {
             case SDL_MOUSEMOTION:
                 mouse_x_ = e.motion.x;
                 mouse_y_ = e.motion.y;
+                // arrastrar dentro de la barra: la selección crece
+                if (url_drag_ && url_focus_ &&
+                    (e.motion.state & SDL_BUTTON_LMASK))
+                    url_caret_ = url_caret_at(e.motion.x);
 #ifdef LUXIUM_CEF
                 if (engine_cef_) {
                     const bool inside =
@@ -744,7 +907,7 @@ int Shell::run() {
 #endif
                 break;
             case SDL_TEXTINPUT:
-                if (url_focus_) { url_edit_ += e.text.text; url_caret_ = static_cast<int>(url_edit_.size()); }
+                if (url_focus_) url_insert(e.text.text);
 #ifdef LUXIUM_CEF
                 else if (engine_cef_)
                     cef::key(2, cef_mods_flags(SDL_GetModState(), false), 0, 0,
@@ -785,6 +948,7 @@ int Shell::run() {
                     e.button.y < win_h_ - console_h_ - 20) {
                     // click dentro del area de pagina: el chrome no la toca
                     url_focus_ = false;
+                    url_drag_  = false;
                     const int btn = e.button.button == SDL_BUTTON_LEFT ? 0
                                   : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
                     cef::mouse_button(e.button.x, e.button.y - kUrlH, btn, false,
@@ -794,7 +958,7 @@ int Shell::run() {
                 }
 #endif
                 if (e.button.button == SDL_BUTTON_LEFT)
-                    handle_click(e.button.x, e.button.y);
+                    handle_click(e.button.x, e.button.y, e.button.clicks);
                 else if (e.button.button == 3) navigate_to(hist_[hist_idx_], false);      // X1 = back
                 else if (e.button.button == 4 && hist_idx_ + 1 < hist_.size()) {          // X2 = forward
                     ++hist_idx_;
@@ -802,6 +966,7 @@ int Shell::run() {
                 }
                 break;
             case SDL_MOUSEBUTTONUP:
+                if (e.button.button == SDL_BUTTON_LEFT) url_drag_ = false;
 #ifdef LUXIUM_CEF
                 if (engine_cef_ && e.button.y >= kUrlH &&
                     e.button.y < win_h_ - console_h_ - 20) {
@@ -815,6 +980,10 @@ int Shell::run() {
                 break;
             case SDL_KEYDOWN:
                 if (url_focus_) {
+                    const uint16_t mods = e.key.keysym.mod;
+                    const bool ctrl  = (mods & KMOD_CTRL) != 0;
+                    const bool shift = (mods & KMOD_SHIFT) != 0;
+                    const int  len   = static_cast<int>(url_edit_.size());
                     switch (e.key.keysym.sym) {
                     case SDLK_RETURN: case SDLK_KP_ENTER: {
                         const std::string addr = url_edit_;
@@ -825,23 +994,79 @@ int Shell::run() {
                     case SDLK_ESCAPE:
                         url_focus_ = false;
                         break;
-                    case SDLK_BACKSPACE: {
-                        if (!url_edit_.empty()) {
-                            size_t n = 1;
-                            while (n < url_edit_.size() &&
-                                   (url_edit_[url_edit_.size() - n] & 0xC0) == 0x80)
-                                ++n;
-                            url_edit_.erase(url_edit_.size() - n);
+                    case SDLK_BACKSPACE:
+                        if (!url_delete_selection()) {
+                            const int p = u8_prev(url_edit_, url_caret_);
+                            if (p < url_caret_) {
+                                url_edit_.erase(p, url_caret_ - p);
+                                url_caret_ = url_anchor_ = p;
+                            }
                         }
                         break;
+                    case SDLK_DELETE:
+                        if (!url_delete_selection()) {
+                            const int p = u8_next(url_edit_, url_caret_);
+                            if (p > url_caret_) {
+                                url_edit_.erase(url_caret_, p - url_caret_);
+                                url_anchor_ = url_caret_;
+                            }
+                        }
+                        break;
+                    case SDLK_LEFT: case SDLK_RIGHT: {
+                        const bool left = e.key.keysym.sym == SDLK_LEFT;
+                        int target;
+                        if (ctrl)
+                            target = left ? url_word_left(url_edit_, url_caret_)
+                                          : url_word_right(url_edit_, url_caret_);
+                        else
+                            target = left ? u8_prev(url_edit_, url_caret_)
+                                          : u8_next(url_edit_, url_caret_);
+                        // sin shift: una selección existente colapsa a su borde
+                        if (!shift && url_anchor_ != url_caret_)
+                            target = left ? std::min(url_anchor_, url_caret_)
+                                          : std::max(url_anchor_, url_caret_);
+                        url_caret_ = std::clamp(target, 0, len);
+                        if (!shift) url_anchor_ = url_caret_;
+                        break;
                     }
-                    default: break;
+                    case SDLK_HOME:
+                        url_caret_ = 0;
+                        if (!shift) url_anchor_ = url_caret_;
+                        break;
+                    case SDLK_END:
+                        url_caret_ = len;
+                        if (!shift) url_anchor_ = url_caret_;
+                        break;
+                    default:
+                        if (ctrl) {
+                            switch (e.key.keysym.sym) {
+                            case SDLK_a:   // seleccionar todo
+                            case SDLK_l:   // Ctrl+L: la dirección queda marcada
+                                url_caret_  = len;
+                                url_anchor_ = 0;
+                                break;
+                            case SDLK_c: url_copy(); break;
+                            case SDLK_x: url_copy(); url_delete_selection(); break;
+                            case SDLK_v: url_paste(); break;
+                            default: break;
+                            }
+                        }
+                        break;
                     }
                     break;   // focused: the page does not see keys
                 }
                 if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_l) {
                     url_focus_ = true;
-                    url_edit_  = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+                    std::string shown;
+#ifdef LUXIUM_CEF
+                    if (engine_cef_ && !cef::url().empty()) shown = cef::url();
+#endif
+                    if (shown.empty())
+                        shown = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+                    url_edit_  = shown;
+                    url_caret_  = static_cast<int>(url_edit_.size());
+                    url_anchor_ = 0;   // como Chrome: la dirección queda marcada
+                    url_scroll_ = 0;
                     break;
                 }
                 if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_r) {
@@ -932,12 +1157,21 @@ int Shell::run() {
         SDL_RenderPresent(renderer_);
 
         // Debug hook: dump the real windowed loop's framebuffer (what the
-        // user's screen gets) -- LUXIUM_DUMP_FRAME=/path/out.ppm
+        // user's screen gets) -- LUXIUM_DUMP_FRAME=/path/out.ppm.  Dumps
+        // itself at 0.25s and then every ~3s; LUXIUM_DUMP_TRIGGER names a
+        // file that, when it exists, forces a dump and is consumed --
+        // that makes interactive tests deterministic.
         if (const char* dump = std::getenv("LUXIUM_DUMP_FRAME")) {
             static int frames = 0;
-            // volcado en frio a los 0,25s y luego cada 3s (el ultimo
-            // sobrevive al kill: sirve para verificar tras entrada simulada)
-            if (++frames == 30 || frames % 360 == 0) {
+            bool want = (++frames == 30 || frames % 360 == 0);
+            if (!want)
+                if (const char* trig = std::getenv("LUXIUM_DUMP_TRIGGER"))
+                    if (FILE* tf = std::fopen(trig, "rb")) {
+                        std::fclose(tf);
+                        std::remove(trig);
+                        want = true;
+                    }
+            if (want) {
                 FILE* f = std::fopen(dump, "wb");
                 if (f) {
                     std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
@@ -1008,14 +1242,41 @@ void Shell::relayout() {
                         (int)d.kind, d.y, d.x, d.w, d.h);
 }
 
-bool Shell::handle_click(int mx, int my) {
-    if (my < kUrlH) {   // the address strip
-        url_focus_ = true;
-        url_edit_   = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+bool Shell::handle_click(int mx, int my, int clicks) {
+    if (my < kUrlH) {   // the address strip: caret placement + selection
+        if (!url_focus_) {
+            url_focus_  = true;
+            std::string shown;
+#ifdef LUXIUM_CEF
+            if (engine_cef_ && !cef::url().empty()) shown = cef::url();
+#endif
+            if (shown.empty())
+                shown = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+            url_edit_   = shown;
+            url_caret_  = static_cast<int>(url_edit_.size());
+            url_anchor_ = url_caret_;
+            url_scroll_ = 0;
+        }
+        const int pos = url_caret_at(mx);
+        if (clicks >= 3) {                     // triple: todo el texto
+            url_anchor_ = 0;
+            url_caret_  = static_cast<int>(url_edit_.size());
+        } else if (clicks == 2) {              // doble: la palabra
+            const int wl = url_word_left(url_edit_, pos);
+            url_anchor_ = wl;
+            url_caret_  = url_word_right(url_edit_, wl);
+        } else if (!(SDL_GetModState() & KMOD_SHIFT)) {   // simple: caret
+            url_caret_ = pos;
+            url_anchor_ = pos;
+        } else {                               // shift+click: extiende
+            url_caret_ = pos;
+        }
+        url_drag_ = true;
         return true;
     }
     if (my > win_h_ - console_h_ - 20) return false;   // console: not clickable yet
     url_focus_ = false;
+    url_drag_  = false;
     const float doc_x = static_cast<float>(mx);
     const float doc_y = static_cast<float>(my - kUrlH) + scroll_;
     if (const dom::Node* n = render::hit_test(layout_, doc_x, doc_y)) {

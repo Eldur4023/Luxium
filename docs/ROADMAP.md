@@ -173,6 +173,15 @@ Shipped:
       `exchange`s — the first comparison short-circuited the second, the
       height stayed at its initial 1 and Chromium painted a 1px strip
       (the "blank screen" report).
+- [x] The URL bar is a real text field: caret placed by clicking (word on
+      double-click, all on triple), arrows/Home/End with shift-selection,
+      Ctrl+A/C/X/V through the SDL clipboard (paste strips CR/LF and
+      stray edge spaces), horizontal scroll so long addresses stay
+      reachable, selection painted under the text, blinking caret.
+      Verified deterministically with on-demand frame dumps
+      (`LUXIUM_DUMP_TRIGGER`): click→caret pixel, mid-text insert,
+      selection paint, an exact 32-char clipboard roundtrip, Enter
+      navigation.
 
 Acceptance (verified visually through framebuffer dumps + xdotool input):
 - [x] `examples/js-test.html` (`type="text/javascript"`) renders through
