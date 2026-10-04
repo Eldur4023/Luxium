@@ -937,7 +937,7 @@ void layout_flex_item(Ctx& c, const dom::Node& el, const Style& st,
     c.flush();
     c.align = 0;
     float hh = st.h_set ? st.h_val : (c.y + st.pb + st.border_w) - y;
-    if (h_fix > 0) hh = h_fix + st.pt + st.pb + 2 * st.border_w;
+    if (h_fix > 0) hh = h_fix;   // h_fix llega como altura BORDER-BOX
     hh = std::max(hh, 1.f);
     const float box_w = w + 2 * st.pl + 2 * st.border_w;
     // fondo/borde del item: encima del fondo del contenedor, bajo los hijos
@@ -1165,7 +1165,8 @@ void layout_flex(Ctx& c, const dom::Node& el, float left, float avail,
     } else {
         // ── column: el eje principal es vertical ──
         float total = 0;
-        for (const auto& it : items) total += it.basis;
+        for (const auto& it : items)
+            total += it.basis + it.st.pt + it.st.pb + 2 * it.st.border_w;
         total += s.gap * std::max(0, n - 1);
         const float target = cross_fixed ? cross_h : total;
         float free = target - total;
@@ -1176,7 +1177,8 @@ void layout_flex(Ctx& c, const dom::Node& el, float left, float avail,
                 if (it.grow > 0) it.basis += free * it.grow / sum_grow;
 
         float used = 0;
-        for (const auto& it : items) used += it.basis;
+        for (const auto& it : items)
+            used += it.basis + it.st.pt + it.st.pb + 2 * it.st.border_w;
         used += s.gap * std::max(0, n - 1);
         float free2 = std::max(0.f, target - used);
         float cur = inner_top;
@@ -1195,10 +1197,13 @@ void layout_flex(Ctx& c, const dom::Node& el, float left, float avail,
             const bool stretch = eff == 0;
             const bool fixed_h = it.st.h_set || it.st.basis_set ||
                                  (free > 0 && it.grow > 0);
+            // basis es altura content-box: el item ocupa su border-box
+            const float h_fix_i = fixed_h
+               ? it.basis + it.st.pt + it.st.pb + 2 * it.st.border_w
+               : 0.f;
             layout_flex_item(c, *it.el, it.st, x_i, cur,
-                             stretch ? inner_w : it.w,
-                             fixed_h ? it.basis : 0.f);
-            cur += (fixed_h ? it.basis : it.h) + s.gap + between;
+                             stretch ? inner_w : it.w, h_fix_i);
+            cur += (fixed_h ? h_fix_i : it.h) + s.gap + between;
         }
         c.y = inner_top + target;
     }
@@ -1895,6 +1900,9 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                     g.grx = std::max(g.grx, std::fabs(xx - g.gcx));
                     g.gry = std::max(g.gry, std::fabs(yy - g.gcy));
                 }
+            if (std::getenv("LUXIUM_DEBUG_LAYOUT"))
+                std::fprintf(stderr, "radial: gcx=%.1f gcy=%.1f grx=%.1f gry=%.1f stops=%zu\n",
+                             g.gcx, g.gcy, g.grx, g.gry, g.stops.size());
         }
         c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()), std::move(g));
     } else if (s.has_block_bg) {   // the box paints before every word
@@ -1997,7 +2005,10 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     c.first_box_top = saved_first_top;   // restaurar el del padre
 }
 
-} // namespace
+}   // layout_block
+} // namespace (helpers internos)
+
+namespace luxium::render {
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::string& page_css, const std::string& base_dir,
