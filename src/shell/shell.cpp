@@ -143,7 +143,7 @@ static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
                 float t;
                 if (s.grad_radial) {
                     const float ddx = (px - s.gcx) / s.grx;
-                    const float ddy = (py - s.gcy) / s.gry;
+                    const float ddy = (py - (s.gcy - scroll + yoff)) / s.gry;
                     t = std::sqrt(ddx * ddx + ddy * ddy);
                 } else {
                     const float cxm = s.x + s.w / 2.f;
