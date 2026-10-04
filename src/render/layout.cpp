@@ -72,7 +72,7 @@ struct Style {
     bool     bold  = false;
     bool     mono  = false;
     uint32_t color = 0xFF000000;
-    float    lh    = 1.17f;  // "normal" de DejaVu, como Blink
+    float    lh    = 1.1640625f;  // "normal" de DejaVu: (1901+483)/2048, como Blink
     uint32_t pill  = 0;      // inline background (code); painted per word
     bool     underline = false;
     // boxes
@@ -466,7 +466,7 @@ struct StyleResolver {
                                                           v == "700" || v == "800" || v == "900");
         else if (prop == "font-family")         s.mono = v.find("mono") != std::string::npos;
         else if (prop == "line-height") {
-            if (v == "normal")                  s.lh = 1.17f;   // metrica DejaVu
+            if (v == "normal")                  s.lh = 1.1640625f;   // metrica DejaVu
             else if (v.find("px") != std::string::npos) s.lh = parse_len(v, s.size, s.lh) / s.size;
             else { try { s.lh = std::stof(v); } catch (...) {} }
         }
@@ -682,6 +682,7 @@ struct Ctx {
     // viewport para fixed (top = bajo la barra de url)
     float vp_w = 1180.f, vp_y = 38.f, vp_h = 762.f;
     bool  pos_pass = false;   // pase interno de un elemento posicionado
+    float first_box_top = -1; // y del primer contenido (para el bg del escape)
     struct Deferred {
         int z = 0;
         size_t seq = 0;
@@ -740,7 +741,8 @@ struct Ctx {
                                       p.word.width + 6, p.lh - 3, 3, p.pill});
             if (p.underline)
                 out.shapes.push_back({ShapeCmd::Kind::Rect, fx,
-                                      y + p.lh - 2, p.word.width, 1, p.color});
+                                      y + p.word.ascent + 2.f, p.word.width, 1,
+                                      p.color});
             out.words.push_back({fx, y, p.color, std::move(p.word)});
         }
         pending.clear();
@@ -825,6 +827,7 @@ void layout_children(Ctx& c, const dom::Node& el, float left, float avail,
     c.defer = &def;
     for (const auto& child : el.children) {
         if (child->type == dom::NodeType::Text) {
+            if (c.first_box_top < 0.f) c.first_box_top = c.y + c.pend;
             c.y += c.pend;   // texto real: el margen pendiente se aplica
             c.pend = 0;
             inline_text(c, child->text, el_style, left, avail);
@@ -1674,6 +1677,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
         c.pend = collapse(c.pend, s.mt);
     }
     const float box_y = trapped ? c.y : c.y + c.pend;
+    if (trapped && c.first_box_top < 0.f) c.first_box_top = box_y;   // el bg del escape empieza aqui
 
     c.flush();
     c.align = s.align;
@@ -1723,6 +1727,8 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
     const size_t bg_mark = c.out.shapes.size();
     const size_t word_mark = c.out.words.size();
     const size_t hit_mark = c.out.hits.size();
+    const float saved_first_top = c.first_box_top;
+    c.first_box_top = -1.f;
     // un elemento posicionado se convierte en containing block de sus hijos
     const float old_cb_x = c.cb_x, old_cb_y = c.cb_y;
     const float old_cb_w = c.cb_w, old_cb_h = c.cb_h;
@@ -1785,13 +1791,16 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
 
     if (s.h_set)   // altura fija: el contenido que sobra se pinta igual pero
         c.y = y_content_top + s.h_val;   // la caja no crece
-    const float box_h = (c.y + s.pb + s.border_w) - box_y;
+    // en el caso escape (sin padding/border) el fondo empieza donde empieza
+    // el primer contenido: el margen escapado queda FUERA de la caja
+    const float bg_top = c.first_box_top >= 0.f ? c.first_box_top : box_y;
+    const float box_h = (c.y + s.pb + s.border_w) - bg_top;
     if (s.has_grad && s.bg_grad.stops.size() >= 2) {
         // degradado: Rect relleno por pixel (el recorte de esquinas, luego)
         ShapeCmd g;
         g.kind = ShapeCmd::Kind::Rect;
         g.x = box_left;
-        g.y = box_y;
+        g.y = bg_top;
         g.w = box_width;
         g.h = box_h;
         g.grad = true;
@@ -1805,7 +1814,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                                    std::fabs(box_h * g.gdy));
         } else {
             g.gcx = box_left + s.bg_grad.cx * box_width;
-            g.gcy = box_y + s.bg_grad.cy * box_h;
+            g.gcy = bg_top + s.bg_grad.cy * box_h;
             g.grx = 1.f;
             g.gry = 1.f;
             const float xs[2] = {box_left, box_left + box_width};
@@ -1819,7 +1828,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
         c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()), std::move(g));
     } else if (s.has_block_bg) {   // the box paints before every word
         c.out.shapes.insert(c.out.shapes.begin() + std::min<size_t>(bg_mark, c.out.shapes.size()),
-                            {ShapeCmd::Kind::RRect, box_left, box_y,
+                            {ShapeCmd::Kind::RRect, box_left, bg_top,
                              box_width, box_h, 4, s.block_bg});
     }
     if (!s.bg_image.empty()) {   // tiles de background-image bajo los hijos
@@ -1861,7 +1870,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
                     ShapeCmd g;
                     g.kind = ShapeCmd::Kind::Image;
                     g.x = box_left + ix * tw + ox;
-                    g.y = box_y + iy * th + oy;
+                    g.y = bg_top + iy * th + oy;
                     g.w = tw;
                     g.h = th;
                     g.img = std::shared_ptr<const ImageBitmap>(bm,
@@ -1914,6 +1923,7 @@ void layout_block(Ctx& c, const dom::Node& el, float left, float avail,
             c.out.hits[k].y += dy;
         }
     }
+    c.first_box_top = saved_first_top;   // restaurar el del padre
 }
 
 } // namespace
@@ -1941,7 +1951,7 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
     c.line_avail = viewport_w;
 
     Style root_style;   // the inherited-defaults root: browser defaults
-    root_style.size = 16; root_style.color = 0xFF000000; root_style.lh = 1.17f;
+    root_style.size = 16; root_style.color = 0xFF000000; root_style.lh = 1.1640625f;
 
     layout_children(c, root, 0.f, viewport_w, root_style);
     c.flush();
