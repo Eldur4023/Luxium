@@ -108,6 +108,11 @@ class Engine {
 | `value, vm, diagnostic, type` | ✅ | execution + errors |
 | `tiny_regex`                | ✅ (if the frontend depends on it) | vendored dependency of the above |
 | `project, template, autotest` | later, maybe | multi-file projects, templating — page model first |
+| `browser_api.inc` | ✅ | the page's API as data: Lux compiles against it, Luxium implements it |
+| `src/luxp/` (DOM, HTML/CSS parsers, codecs, verifier, translator) | ✅ into `src/{dom,html,style,page,script,util}` | the .luxp format: Lux produces it, Luxium opens it (docs/LUXP.md) |
+
+`tools/sync_from_lux.sh` copies all of it (`--check` fails when the copies
+drift); `natives.*` and `template.cpp` stay Luxium's own.
 | `db*, auth, crypto, sqlite_replica` | ❌ never | server capabilities |
 | `native_*` (AOT to C++)     | ❌ | AOT makes no sense at page-load time |
 
@@ -166,6 +171,10 @@ Every recovery records a diagnostic with line number. Goal: a page either
 renders as its author intended, or the devtools say exactly what was dropped.
 
 ## 6. Rendering pipeline (M1+)
+
+> **Superseded by [RENDERING.md](RENDERING.md)**: the layout engine, painting
+> order, text stack and the Chromium-oracle tests are described there.  What
+> follows is the original M1 sketch.
 
 Software first, GPU maybe later:
 

@@ -1,5 +1,8 @@
 # plan-css.md — acercar el render propio a Chromium, por partes
 
+> **Histórico.** El plan se ejecutó con otro orden: ver `docs/RENDERING.md` (estado actual del motor y de los tests).
+
+
 Objetivo: que el **renderer propio** (sin CEF) pinta CSS tan parecido a
 Chromium como sea razonable para un motor en espacio de usuario: cajas,
 texto, color, imágenes y los dos grandes sistemas de layout modernos

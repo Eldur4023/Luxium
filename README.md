@@ -31,6 +31,7 @@ The browser opens a window, renders a page, and **runs its LuxScript**:
   counter every 400ms).
 - Entities decode (`&middot;` & friends, `&#123;`).
 - `luxium --check dir/` lints every page (exit code for scripts).
+- `.luxp`, Luxium's own app format (DOM + parsed stylesheets + verified bytecode), produced by Lux: `lux pack page.html app.luxp`, or any Lux `render()` route when Luxium asks for it (`Accept: application/x-luxp`). `luxium app.luxp` / `luxium http://…` run it with no HTML/CSS parsing or compiling; `luxium --inspect app.luxp` lists what it can do. See `docs/LUXP.md`.
 - **Navigation**: `<a href>` between local pages and real http(s):// URLs
   (libcurl on a worker thread, error pages on failure), history
   (Alt+Left/Right, mouse buttons), reload (Ctrl+R), `#anchors`,
@@ -82,4 +83,20 @@ examples/           demo pages
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, components, engine strategy, sandbox model |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M6 with scope and acceptance criteria |
+| [docs/RENDERING.md](docs/RENDERING.md) | The rendering engine, the Chromium oracle and the test harness |
 | [docs/LUXSCRIPT.md](docs/LUXSCRIPT.md) | How Lux Script embeds in a page and what changes vs. the server |
+
+## Tests against Chromium
+
+`css-tests/` holds 113 cases (one CSS feature per page, plus responsive,
+real-page and LuxScript-mutation cases).  Each is rendered by Luxium's own
+engine and by Chromium (CEF) and compared on box rects (±1px), computed styles,
+pixels and colour:
+
+```sh
+python3 tools/cssrun.py                 # all of them
+python3 tools/cssrun.py -v flex         # per-element detail
+python3 tools/cssrun.py --check-baseline
+```
+
+See [docs/RENDERING.md](docs/RENDERING.md).

@@ -1,5 +1,8 @@
 # plan-css-tests.md — el catálogo de pruebas CSS (definido desde el día 0)
 
+> **Histórico.** La mecánica real de los tests está en `docs/RENDERING.md`; este catálogo sigue siendo la lista de intenciones.
+
+
 Complemento de `docs/plan-css.md`: AQUÍ están los tests. Se definen antes
 de escribir código de layout, así cada fase nace con su vara de medir.
 
