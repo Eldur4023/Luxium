@@ -12,6 +12,8 @@
 #   tools/sync_from_lux.sh --check   only compare; exit 1 if anything differs
 #
 # LUX_DIR overrides where Lux is (default: ../Lux next to this repo).
+# What is vendored is Lux's `luxium` branch (the frontend LuxScript and .luxp work);
+# `dev`/`main` of Lux are parked and do not have it.  Check it out before syncing.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 LUX=${LUX_DIR:-$HERE/../Lux}
