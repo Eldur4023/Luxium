@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Lumen — panel interactivo</title>
+<style>
+/* ── tokens ─────────────────────────────────────────────────────────── */
+.app.light { --bg: #f2f4fa; --panel: #ffffff; --ink: #1c2233; --muted: #6b7388; --line: #e4e8f1; --soft: #eef1f8; --side: #ffffff; --shadow: rgba(30, 40, 90, 0.10); }
+.app.dark  { --bg: #0f121c; --panel: #181c2a; --ink: #eceff8; --muted: #8b93ab; --line: #272c40; --soft: #20253a; --side: #131726; --shadow: rgba(0, 0, 0, 0.45); }
+.app.acc-blue   { --accent: #4f7cff; --accent2: #7a5cff; }
+.app.acc-green  { --accent: #12b886; --accent2: #3fd0a2; }
+.app.acc-violet { --accent: #9b5cff; --accent2: #ff5fa2; }
+.app.acc-orange { --accent: #ff8a3d; --accent2: #ffc13d; }
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; }
+.app { min-height: 100vh; background: var(--bg); color: var(--ink); display: flex; }
+
+/* ── sidebar ────────────────────────────────────────────────────────── */
+.side { flex: 0 0 232px; background: var(--side); border-right: 1px solid var(--line); padding: 22px 16px; display: flex; flex-direction: column; gap: 6px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 22px; font-size: 20px; font-weight: 700; letter-spacing: -0.4px; }
+.logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; text-align: center; line-height: 34px; font-size: 18px; box-shadow: 0 4px 12px var(--shadow); }
+.nav { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; color: var(--muted); font-weight: 600; }
+.nav:hover { background: var(--soft); color: var(--ink); }
+.nav.active { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; box-shadow: 0 6px 16px var(--shadow); }
+.nav .ico { width: 20px; text-align: center; font-size: 16px; }
+.nav .pill { margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--soft); color: var(--muted); }
+.nav.active .pill { background: rgba(255, 255, 255, 0.25); color: #fff; }
+.side .space { flex: 1; min-height: 20px; }
+.plan { border-radius: 14px; padding: 16px; background: var(--soft); border: 1px solid var(--line); }
+.plan b { display: block; margin-bottom: 4px; }
+.plan small { color: var(--muted); }
+.meter { height: 6px; border-radius: 3px; background: var(--line); margin-top: 10px; overflow: hidden; }
+.meter i { display: block; height: 6px; width: 68%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+
+/* ── main ───────────────────────────────────────────────────────────── */
+.main { flex: 1 1 auto; min-width: 0; padding: 22px 30px 40px; }
+.top { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+.crumb { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+.crumb-sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.top .grow { flex: 1; }
+.search { padding: 9px 16px; width: 240px; border-radius: 22px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+.avatar { width: 38px; height: 38px; border-radius: 19px; color: #fff; text-align: center; line-height: 38px; font-weight: 700; font-size: 14px; background: linear-gradient(135deg, #ff7a8a, #ffb36b); border: 2px solid var(--panel); box-shadow: 0 0 0 2px var(--accent); }
+.btn { display: inline-block; padding: 9px 16px; border-radius: 10px; font-weight: 600; font-size: 14px; background: var(--accent); color: #fff; border: 0; cursor: pointer; box-shadow: 0 4px 12px var(--shadow); }
+.btn:hover { opacity: 0.88; }
+.btn.ghost { background: var(--panel); color: var(--ink); border: 1px solid var(--line); box-shadow: none; }
+.btn.small { padding: 5px 11px; font-size: 13px; border-radius: 8px; }
+
+.view { display: none; }
+.view.on { display: block; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px; box-shadow: 0 2px 10px var(--shadow); }
+.card h3 { margin: 0 0 4px; font-size: 16px; }
+.muted { color: var(--muted); }
+
+/* dashboard */
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 18px; }
+.kpi .label { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; }
+.kpi .value { font-size: 32px; font-weight: 700; letter-spacing: -1px; margin: 6px 0 4px; }
+.kpi .delta { font-size: 13px; font-weight: 700; color: #12b886; }
+.kpi .delta.down { color: #ff5d6c; }
+.row2 { display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }
+.chart-head { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.chart-head .grow { flex: 1; }
+.tabs { display: flex; gap: 4px; padding: 4px; background: var(--soft); border-radius: 10px; }
+.tab { padding: 5px 14px; border-radius: 7px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.tab.on { background: var(--panel); color: var(--ink); box-shadow: 0 1px 4px var(--shadow); }
+.bars { display: flex; align-items: flex-end; gap: 14px; height: 200px; padding: 0 4px; border-bottom: 1px dashed var(--line); }
+.col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 200px; }
+.bar { border-radius: 8px 8px 3px 3px; background: linear-gradient(180deg, var(--accent), var(--accent2)); color: #fff; font-size: 11px; font-weight: 700; text-align: center; padding-top: 4px; height: 40%; }
+.days { display: flex; gap: 14px; padding: 8px 4px 0; color: var(--muted); font-size: 12px; text-align: center; }
+.days span { flex: 1; }
+.feed { list-style: none; margin: 0; padding: 0; }
+.feed li { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.feed li:last-child { border-bottom: 0; }
+.dot { flex: 0 0 34px; height: 34px; border-radius: 17px; text-align: center; line-height: 34px; color: #fff; font-size: 14px; }
+.d1 { background: #4f7cff; } .d2 { background: #12b886; } .d3 { background: #ff8a3d; } .d4 { background: #9b5cff; }
+.feed b { display: block; font-size: 14px; }
+.feed small { color: var(--muted); }
+
+/* tasks */
+.prog { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+.prog .bar2 { flex: 1; height: 10px; border-radius: 5px; background: var(--soft); overflow: hidden; }
+.prog .bar2 i { display: block; height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--accent), var(--accent2)); width: 33%; }
+.tasks { list-style: none; margin: 0; padding: 0; }
+.task { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 8px; border-radius: 12px; background: var(--soft); border: 1px solid var(--line); }
+.task:hover { border-color: var(--accent); }
+.task .check { flex: 0 0 22px; height: 22px; border-radius: 7px; border: 2px solid var(--muted); text-align: center; line-height: 18px; color: #fff; font-size: 13px; font-weight: 700; }
+.task .label { flex: 1; font-weight: 600; }
+.task.done .check { background: var(--accent); border-color: var(--accent); }
+.task.done .label { color: var(--muted); text-decoration: line-through; }
+.task .x { padding: 2px 9px; border-radius: 8px; background: transparent; border: 0; color: var(--muted); font-size: 15px; cursor: pointer; }
+.task .x:hover { background: #ff5d6c; color: #fff; }
+
+/* team */
+.team { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.member { text-align: center; padding: 26px 18px 20px; }
+.member .big { width: 68px; height: 68px; border-radius: 34px; margin: 0 auto 12px; line-height: 68px; font-size: 24px; font-weight: 700; color: #fff; box-shadow: 0 6px 16px var(--shadow); }
+.member .role { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+.member:hover { box-shadow: 0 10px 28px var(--shadow); }
+.btn.following { background: var(--soft); color: var(--muted); box-shadow: none; border: 1px solid var(--line); }
+
+/* settings */
+.rows .set { display: flex; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.rows .set:last-child { border-bottom: 0; }
+.set .txt { flex: 1; }
+.set .txt b { display: block; }
+.sw { width: 46px; height: 26px; border-radius: 13px; background: var(--line); padding: 3px; }
+.sw i { display: block; width: 20px; height: 20px; border-radius: 10px; background: #fff; box-shadow: 0 1px 4px var(--shadow); }
+.sw.on { background: var(--accent); }
+.sw.on i { margin-left: 20px; }
+.swatches { display: flex; gap: 10px; }
+.swatch { width: 28px; height: 28px; border-radius: 14px; border: 3px solid var(--panel); box-shadow: 0 0 0 2px var(--line); }
+.swatch.sel { box-shadow: 0 0 0 2px var(--ink); }
+.s-blue { background: #4f7cff; } .s-green { background: #12b886; } .s-violet { background: #9b5cff; } .s-orange { background: #ff8a3d; }
+.seg { display: flex; gap: 4px; padding: 4px; background: var(--soft); border-radius: 10px; }
+
+/* toast */
+.toast { position: fixed; right: 24px; bottom: 24px; padding: 12px 18px; border-radius: 12px; background: var(--ink); color: var(--bg); font-weight: 600; box-shadow: 0 10px 30px var(--shadow); display: none; }
+.toast.show { display: block; }
+
+.app.dense .card { padding: 14px; }
+.app.dense .task { padding: 7px 12px; margin-bottom: 5px; }
+.app.dense .kpi .value { font-size: 26px; }
+</style>
+</head>
+<body>
+<div id="app" class="app light acc-blue">
+
+  <aside class="side">
+    <div class="brand"><span class="logo">&#10022;</span>Lumen</div>
+    <div id="nav-dashboard" class="nav active"><span class="ico">&#9638;</span>Resumen</div>
+    <div id="nav-tasks" class="nav"><span class="ico">&#10003;</span>Tareas<span id="pill" class="pill">3</span></div>
+    <div id="nav-team" class="nav"><span class="ico">&#9786;</span>Equipo</div>
+    <div id="nav-settings" class="nav"><span class="ico">&#9881;</span>Ajustes</div>
+    <div class="space"></div>
+    <div class="plan"><b>Plan Pro</b><small>68% del almacenamiento usado</small><div class="meter"><i></i></div></div>
+  </aside>
+
+  <main class="main">
+    <div class="top">
+      <div><div id="crumb" class="crumb">Resumen</div><div id="crumb-sub" class="crumb-sub">Todo lo importante de un vistazo</div></div>
+      <div class="grow"></div>
+      <div class="search">&#9906; Buscar&hellip;</div>
+      <div id="avatar" class="avatar">AL</div>
+    </div>
+
+    <!-- ── resumen ── -->
+    <section id="view-dashboard" class="view on">
+      <div class="kpis">
+        <div class="card kpi"><div class="label">Ingresos</div><div id="k0" class="value">24.580 &euro;</div><div class="delta">&#9650; 12,4% vs. mes anterior</div></div>
+        <div class="card kpi"><div class="label">Usuarios activos</div><div id="k1" class="value">1.284</div><div class="delta">&#9650; 3,1% esta semana</div></div>
+        <div class="card kpi"><div class="label">Conversion</div><div id="k2" class="value">4,8%</div><div class="delta down">&#9660; 0,6% hoy</div></div>
+      </div>
+      <div class="row2">
+        <div class="card">
+          <div class="chart-head">
+            <div><h3>Actividad</h3><span class="muted">Visitas por periodo</span></div>
+            <div class="grow"></div>
+            <div class="tabs"><span id="tab-semana" class="tab on">Semana</span><span id="tab-mes" class="tab">Mes</span></div>
+            <div id="live-btn" class="btn ghost small">&#9654; En vivo</div>
+          </div>
+          <div class="bars">
+            <div class="col"><div id="bar0" class="bar">40</div></div>
+            <div class="col"><div id="bar1" class="bar">65</div></div>
+            <div class="col"><div id="bar2" class="bar">52</div></div>
+            <div class="col"><div id="bar3" class="bar">80</div></div>
+            <div class="col"><div id="bar4" class="bar">58</div></div>
+            <div class="col"><div id="bar5" class="bar">90</div></div>
+            <div class="col"><div id="bar6" class="bar">72</div></div>
+          </div>
+          <div id="days" class="days"><span>L</span><span>M</span><span>X</span><span>J</span><span>V</span><span>S</span><span>D</span></div>
+        </div>
+        <div class="card">
+          <h3>Actividad reciente</h3>
+          <ul class="feed">
+            <li><span class="dot d1">&#9873;</span><div><b>Nuevo registro</b><small>Marta se unio al equipo</small></div></li>
+            <li><span class="dot d2">&#10003;</span><div><b>Tarea completada</b><small>Revisar el presupuesto</small></div></li>
+            <li><span class="dot d3">&#9993;</span><div><b>Mensaje recibido</b><small>3 respuestas sin leer</small></div></li>
+            <li><span class="dot d4">&#9733;</span><div><b>Hito alcanzado</b><small>1.000 usuarios activos</small></div></li>
+          </ul>
+          <div style="margin-top: 14px;"><div id="boost" class="btn small">Impulsar metricas</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── tareas ── -->
+    <section id="view-tasks" class="view">
+      <div class="card">
+        <div class="prog">
+          <div><h3>Progreso</h3><span id="prog-text" class="muted">0 de 3 completadas</span></div>
+          <div class="bar2"><i id="prog-bar"></i></div>
+          <div id="add" class="btn">+ Nueva tarea</div>
+        </div>
+        <ul id="lista" class="tasks">
+          <li id="task-1" class="task"><span class="check"></span><span class="label">Disenar la pantalla de inicio</span><button id="del-1" class="x">&#10005;</button></li>
+          <li id="task-2" class="task"><span class="check"></span><span class="label">Revisar el presupuesto del trimestre</span><button id="del-2" class="x">&#10005;</button></li>
+          <li id="task-3" class="task"><span class="check"></span><span class="label">Preparar la demo para el cliente</span><button id="del-3" class="x">&#10005;</button></li>
+        </ul>
+        <div class="muted" style="font-size: 13px; margin-top: 8px;">Pulsa una tarea para marcarla; la &#10005; la elimina.</div>
+      </div>
+    </section>
+
+    <!-- ── equipo ── -->
+    <section id="view-team" class="view">
+      <div class="card" style="margin-bottom: 18px; display: flex; align-items: center; gap: 12px;">
+        <div><h3>Tu red</h3><span class="muted">Sigue a las personas con las que colaboras</span></div>
+        <div style="flex: 1;"></div>
+        <div id="foll" style="font-size: 28px; font-weight: 700;">0</div><span class="muted">seguidos</span>
+      </div>
+      <div class="team">
+        <div class="card member"><div class="big" style="background: linear-gradient(135deg, #4f7cff, #7a5cff);">MA</div><b>Marta Alonso</b><div class="role">Diseno de producto</div><div id="f0" class="btn small">Seguir</div></div>
+        <div class="card member"><div class="big" style="background: linear-gradient(135deg, #12b886, #3fd0a2);">JR</div><b>Jorge Ruiz</b><div class="role">Ingenieria</div><div id="f1" class="btn small">Seguir</div></div>
+        <div class="card member"><div class="big" style="background: linear-gradient(135deg, #ff8a3d, #ffc13d);">LP</div><b>Lucia Perez</b><div class="role">Marketing</div><div id="f2" class="btn small">Seguir</div></div>
+        <div class="card member"><div class="big" style="background: linear-gradient(135deg, #9b5cff, #ff5fa2);">DS</div><b>Diego Santos</b><div class="role">Datos</div><div id="f3" class="btn small">Seguir</div></div>
+        <div class="card member"><div class="big" style="background: linear-gradient(135deg, #ff5d6c, #ff9a8b);">CN</div><b>Clara Navarro</b><div class="role">Soporte</div><div id="f4" class="btn small">Seguir</div></div>
+        <div class="card member"><div class="big" style="background: linear-gradient(135deg, #2bb3d6, #4f7cff);">PG</div><b>Pablo Gil</b><div class="role">Operaciones</div><div id="f5" class="btn small">Seguir</div></div>
+      </div>
+    </section>
+
+    <!-- ── ajustes ── -->
+    <section id="view-settings" class="view">
+      <div class="card rows">
+        <div class="set"><div class="txt"><b>Tema</b><span class="muted">Claro u oscuro, al instante</span></div>
+          <div class="seg"><span id="th-light" class="tab on">Claro</span><span id="th-dark" class="tab">Oscuro</span></div></div>
+        <div class="set"><div class="txt"><b>Color de acento</b><span class="muted">Botones, graficos y detalles</span></div>
+          <div class="swatches"><div id="acc-blue" class="swatch s-blue sel"></div><div id="acc-green" class="swatch s-green"></div><div id="acc-violet" class="swatch s-violet"></div><div id="acc-orange" class="swatch s-orange"></div></div></div>
+        <div class="set"><div class="txt"><b>Modo compacto</b><span class="muted">Menos relleno, mas informacion</span></div><div id="sw-dense" class="sw"><i></i></div></div>
+        <div class="set"><div class="txt"><b>Notificaciones</b><span class="muted">Avisos de actividad del equipo</span></div><div id="sw-notif" class="sw on"><i></i></div></div>
+        <div class="set"><div class="txt"><b>Resumen semanal</b><span class="muted">Un correo cada lunes</span></div><div id="sw-mail" class="sw"><i></i></div></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast">Hecho</div>
+</div>
+
+<script>
+# ─── estado: vive en page.* (los locales del top level mueren antes del primer click) ───
+page.set("view", "dashboard")
+page.set("theme", "light")
+page.set("accent", "blue")
+page.set("dense", 0)
+page.set("tp", 0)
+page.set("modo", "semana")
+page.set("live", 0)
+page.set("seed", 7)
+page.set("next", 4)
+page.set("done", 0)
+page.set("total", 3)
+page.set("foll", 0)
+page.set("boosts", 0)
+
+# ─── utilidades ────────────────────────────────────────────────────────
+fn void toast(string msg):
+    Element t = document.get("toast")
+    t.set_text(msg)
+    t.set_attr("class", "toast show")
+    page.set("tp", int(page.get("tp")) + 1)
+    page.after(1900, hide_toast)
+
+fn void hide_toast():
+    int p = int(page.get("tp")) - 1
+    page.set("tp", p)
+    if p <= 0:
+        document.get("toast").set_attr("class", "toast")
+
+fn string title_of(string v):
+    if v == "dashboard":
+        return "Resumen"
+    if v == "tasks":
+        return "Tareas"
+    if v == "team":
+        return "Equipo"
+    return "Ajustes"
+
+fn string sub_of(string v):
+    if v == "dashboard":
+        return "Todo lo importante de un vistazo"
+    if v == "tasks":
+        return "Lo que queda por hacer"
+    if v == "team":
+        return "Las personas detras del producto"
+    return "Personaliza tu espacio"
+
+# ─── navegacion (SPA: una sola pagina, vistas que se muestran y ocultan) ───
+fn void show(string v):
+    List<string> views = ["dashboard", "tasks", "team", "settings"]
+    for string name in views:
+        if name == v:
+            document.get("view-" + name).set_attr("class", "view on")
+            document.get("nav-" + name).set_attr("class", "nav active")
+        else:
+            document.get("view-" + name).set_attr("class", "view")
+            document.get("nav-" + name).set_attr("class", "nav")
+    page.set("view", v)
+    document.get("crumb").set_text(title_of(v))
+    document.get("crumb-sub").set_text(sub_of(v))
+
+fn void go():
+    Element e = page.clicked()
+    show(e.id().slice(4))
+
+# ─── resumen: grafico y metricas ───────────────────────────────────────
+fn List<int> datos(string modo):
+    if modo == "semana":
+        return [40, 65, 52, 80, 58, 90, 72]
+    return [72, 48, 85, 60, 95, 55, 78]
+
+fn void pinta_barras(List<int> v):
+    int i = 0
+    for int x in v:
+        Element b = document.get("bar" + str(i))
+        b.set_attr("style", "height: " + str(x) + "%;")
+        b.set_text(str(x))
+        i = i + 1
+
+fn void tab_semana():
+    page.set("modo", "semana")
+    document.get("tab-semana").set_attr("class", "tab on")
+    document.get("tab-mes").set_attr("class", "tab")
+    pinta_barras(datos("semana"))
+
+fn void tab_mes():
+    page.set("modo", "mes")
+    document.get("tab-semana").set_attr("class", "tab")
+    document.get("tab-mes").set_attr("class", "tab on")
+    pinta_barras(datos("mes"))
+
+fn void tick():
+    if int(page.get("live")) == 1:
+        int s = int(page.get("seed"))
+        int i = 0
+        while i < 7:
+            s = (s * 73 + 41) % 997
+            Element b = document.get("bar" + str(i))
+            int h = 25 + s % 70
+            b.set_attr("style", "height: " + str(h) + "%;")
+            b.set_text(str(h))
+            i = i + 1
+        page.set("seed", s)
+        document.get("k1").set_text(str(1200 + s % 180))
+        page.after(450, tick)
+
+fn void toggle_live():
+    Element b = document.get("live-btn")
+    if int(page.get("live")) == 0:
+        page.set("live", 1)
+        b.set_text("Detener")
+        b.set_attr("class", "btn small")
+        toast("Datos en vivo activados")
+        page.after(450, tick)
+    else:
+        page.set("live", 0)
+        b.set_text("En vivo")
+        b.set_attr("class", "btn ghost small")
+        toast("Datos en vivo detenidos")
+
+fn void boost():
+    int n = int(page.get("boosts")) + 1
+    page.set("boosts", n)
+    document.get("k0").set_text(str(24580 + n * 1250))
+    document.get("k2").set_text(str(48 + n) + "")
+    toast("Metricas impulsadas x" + str(n))
+
+# ─── tareas ────────────────────────────────────────────────────────────
+fn void refresca_tareas():
+    int total = int(page.get("total"))
+    int done = int(page.get("done"))
+    document.get("prog-text").set_text(str(done) + " de " + str(total) + " completadas")
+    int pct = 0
+    if total > 0:
+        pct = done * 100 / total
+    document.get("prog-bar").set_attr("style", "width: " + str(pct) + "%;")
+    document.get("pill").set_text(str(total - done))
+
+fn void toggle_task():
+    Element t = page.clicked()
+    string cls = t.attr("class")
+    int done = int(page.get("done"))
+    if cls.contains("done"):
+        t.set_attr("class", "task")
+        page.set("done", done - 1)
+    else:
+        t.set_attr("class", "task done")
+        page.set("done", done + 1)
+    refresca_tareas()
+
+fn void borra_task():
+    Element b = page.clicked()
+    string k = b.id().slice(4)
+    Element t = document.get("task-" + k)
+    if t.attr("class").contains("done"):
+        page.set("done", int(page.get("done")) - 1)
+    page.set("total", int(page.get("total")) - 1)
+    t.remove()
+    refresca_tareas()
+    toast("Tarea eliminada")
+
+fn string nombre(int k):
+    List<string> n = ["Escribir las notas de la version", "Llamar a Lucia por el presupuesto", "Ordenar el backlog", "Actualizar la documentacion", "Probar el nuevo flujo de alta", "Reunion de cierre de sprint"]
+    return n[k % 6]
+
+fn void nueva_task():
+    int k = int(page.get("next"))
+    page.set("next", k + 1)
+    page.set("total", int(page.get("total")) + 1)
+    Element li = document.create("li")
+    li.set_attr("id", "task-" + str(k))
+    li.set_attr("class", "task")
+    Element chk = document.create("span")
+    chk.set_attr("class", "check")
+    Element lab = document.create("span")
+    lab.set_attr("class", "label")
+    lab.set_text(nombre(k))
+    Element x = document.create("button")
+    x.set_attr("id", "del-" + str(k))
+    x.set_attr("class", "x")
+    x.set_text("✕")
+    x.click(borra_task)
+    li.append(chk)
+    li.append(lab)
+    li.append(x)
+    li.click(toggle_task)
+    document.get("lista").append(li)
+    refresca_tareas()
+    toast("Tarea creada")
+
+# ─── equipo ────────────────────────────────────────────────────────────
+fn void follow():
+    Element b = page.clicked()
+    int n = int(page.get("foll"))
+    if b.attr("class").contains("following"):
+        b.set_attr("class", "btn small")
+        b.set_text("Seguir")
+        n = n - 1
+    else:
+        b.set_attr("class", "btn small following")
+        b.set_text("Siguiendo")
+        n = n + 1
+    page.set("foll", n)
+    document.get("foll").set_text(str(n))
+
+# ─── ajustes: tema, acento, interruptores ──────────────────────────────
+fn void aplica():
+    string cls = "app " + str(page.get("theme")) + " acc-" + str(page.get("accent"))
+    if int(page.get("dense")) == 1:
+        cls = cls + " dense"
+    document.get("app").set_attr("class", cls)
+
+fn void tema_claro():
+    page.set("theme", "light")
+    document.get("th-light").set_attr("class", "tab on")
+    document.get("th-dark").set_attr("class", "tab")
+    aplica()
+
+fn void tema_oscuro():
+    page.set("theme", "dark")
+    document.get("th-light").set_attr("class", "tab")
+    document.get("th-dark").set_attr("class", "tab on")
+    aplica()
+
+fn void acento():
+    Element e = page.clicked()
+    string c = e.id().slice(4)
+    page.set("accent", c)
+    List<string> todos = ["blue", "green", "violet", "orange"]
+    for string name in todos:
+        if name == c:
+            document.get("acc-" + name).set_attr("class", "swatch s-" + name + " sel")
+        else:
+            document.get("acc-" + name).set_attr("class", "swatch s-" + name)
+    aplica()
+    toast("Acento: " + c)
+
+fn void interruptor():
+    Element s = page.clicked()
+    if s.attr("class").contains("on"):
+        s.set_attr("class", "sw")
+    else:
+        s.set_attr("class", "sw on")
+    if s.id() == "sw-dense":
+        if int(page.get("dense")) == 0:
+            page.set("dense", 1)
+        else:
+            page.set("dense", 0)
+        aplica()
+
+# ─── cableado ──────────────────────────────────────────────────────────
+for string v in ["dashboard", "tasks", "team", "settings"]:
+    document.get("nav-" + v).click(go)
+document.get("tab-semana").click(tab_semana)
+document.get("tab-mes").click(tab_mes)
+document.get("live-btn").click(toggle_live)
+document.get("boost").click(boost)
+document.get("add").click(nueva_task)
+for string k in ["1", "2", "3"]:
+    document.get("task-" + k).click(toggle_task)
+    document.get("del-" + k).click(borra_task)
+for string k in ["0", "1", "2", "3", "4", "5"]:
+    document.get("f" + k).click(follow)
+document.get("th-light").click(tema_claro)
+document.get("th-dark").click(tema_oscuro)
+for string c in ["blue", "green", "violet", "orange"]:
+    document.get("acc-" + c).click(acento)
+for string s in ["dense", "notif", "mail"]:
+    document.get("sw-" + s).click(interruptor)
+pinta_barras(datos("semana"))
+log.info("Lumen listo")
+</script>
+</body>
+</html>
