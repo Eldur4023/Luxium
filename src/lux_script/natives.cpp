@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <utility>
 #include <unordered_set>
 
@@ -326,34 +327,15 @@ Value call_func_value(NativeCtx& ctx, const Value& fn, std::vector<Value> args,
 // here is asynchronous: the browser's M-demo has no awaitables, and a page
 // that writes `await` gets a compile error at the call site, not a hang.
 
-const std::array<NativeDef, 17> kNatives = {{
-    // Utilities (same semantics as the server's)
-    {"len",   1, 1, fn_len},
-    {"str",   1, 1, fn_str},
-    {"int",   1, 1, fn_int},
-    {"float", 1, 1, fn_float},
-    {"range", 1, 3, fn_range},
-    // log.*
-    {"__log_info",  1, 1, fn_log_info},
-    {"__log_warn",  1, 1, fn_log_warn},
-    {"__log_error", 1, 1, fn_log_error},
-    // document.*
-    {"__document_get",       1, 1, fn_document_get},
-    {"__document_query_all", 1, 1, fn_document_query_all},
-    {"__document_title",     0, 0, fn_document_title},
-    {"__document_root",      0, 0, fn_document_root},
-    {"__document_create",    1, 1, fn_document_create},
-    {"__page_after",         2, 2, fn_page_after},
-    {"__page_clicked",       0, 0, fn_page_clicked},
-    // page.* -- the page-scoped store
-    {"__page_get",           1, 1, fn_page_get},
-    {"__page_set",           2, 2, fn_page_set},
-}};
+const NativeDef kNatives[] = {
+#define LUX_BROWSER_NATIVE(name, min, max, impl) {name, min, max, impl},
+#include <lux_script/browser_api.inc>
+};
 
 } // namespace
 
 int native_id(const std::string& name) {
-    for (size_t i = 0; i < kNatives.size(); ++i)
+    for (size_t i = 0; i < std::size(kNatives); ++i)
         if (name == kNatives[i].name) return static_cast<int>(i);
     return -1;
 }
@@ -819,79 +801,28 @@ Value call_method(NativeCtx& ctx, Value& recv, const std::string& name,
 // method added to the runtime above has to appear here, or the checker
 // rejects it before the page ever loads.
 const std::vector<BuiltinMethod>* methods_of(const std::string& type) {
-    static const std::vector<BuiltinMethod> kElement = {
-        {"text",        0, 0, "string"},
-        {"set_text",    1, 1, nullptr},
-        {"append",      1, 1, nullptr},
-        {"remove",      0, 0, nullptr},
-        {"click",       1, 1, nullptr},
-        {"attr",        1, 1, "string"},
-        {"set_attr",    2, 2, nullptr},
-        {"tag",         0, 0, "string"},
-        {"id",          0, 0, "string"},
-        {"child_count", 0, 0, "int"},
+    struct Method { const char* type; BuiltinMethod m; };
+    static const Method kMethods[] = {
+#define LUX_BROWSER_METHOD(type, name, min, max, ret) {type, {name, min, max, ret}},
+#include <lux_script/browser_api.inc>
     };
-    static const std::vector<BuiltinMethod> kString = {
-        {"starts_with", 1, 1, "bool"}, {"ends_with", 1, 1, "bool"},
-        {"contains", 1, 1, "bool"},    {"upper", 0, 0, "string"},
-        {"lower", 0, 0, "string"},     {"trim", 0, 0, "string"},
-        {"index_of", 1, 1, "int"},     {"replace", 2, 2, "string"},
-        {"split", 1, 1, "List"},       {"slice", 1, 2, "string"},
-        {"repeat", 1, 1, "string"},
-    };
-    static const std::vector<BuiltinMethod> kList = {
-        {"add", 1, 1, nullptr},        {"contains", 1, 1, "bool"},
-        {"index_of", 1, 1, "int"},     {"remove_at", 1, 1, "bool"},
-        {"sort", 0, 0, nullptr},       {"reverse", 0, 0, nullptr},
-        {"slice", 1, 2, "List"},       {"concat", 1, 1, "List"},
-        {"join", 1, 1, "string"},
-        {"map", 1, 1, "List"},         {"filter", 1, 1, "List"},
-        {"reduce", 2, 2, "Json"},      {"for_each", 1, 1, nullptr},
-        {"sort_by", 1, 1, nullptr},    {"find", 1, 1, "Json"},
-        {"find_index", 1, 1, "int"},
-        {"first", 0, 0, "Json"},       {"last", 0, 0, "Json"},
-        {"pop", 0, 0, "Json"},         {"insert", 2, 2, nullptr},
-        {"sum", 0, 0, "Json"},         {"min", 0, 0, "Json"},
-        {"max", 0, 0, "Json"},         {"unique", 0, 0, "List"},
-        {"any", 0, 1, "bool"},         {"all", 0, 1, "bool"},
-        {"count", 0, 1, "int"},        {"group_by", 1, 1, "Dict"},
-        {"chunk", 1, 1, "List"},
-    };
-    static const std::vector<BuiltinMethod> kDict = {
-        {"has", 1, 1, "bool"},   {"keys", 0, 0, "List"},
-        {"values", 0, 0, "List"}, {"get", 1, 2, "Json"}, {"remove", 1, 1, "bool"},
-        {"merge", 1, 1, nullptr}, {"items", 0, 0, "List"},
-    };
-
-    if (type == "Element") return &kElement;
-    if (type == "string")  return &kString;
-    if (type == "List")    return &kList;
-    if (type == "Dict")    return &kDict;
-    if (type == "int" || type == "long" || type == "float" ||
-        type == "double" || type == "bool")
-        return nullptr;   // numbers and bools have no methods of their own
-    return nullptr;
+    static const std::map<std::string, std::vector<BuiltinMethod>> by_type = [] {
+        std::map<std::string, std::vector<BuiltinMethod>> m;
+        for (const auto& x : kMethods) m[x.type].push_back(x.m);
+        return m;
+    }();
+    auto it = by_type.find(type);
+    return it == by_type.end() ? nullptr : &it->second;   // numbers, bools, classes: no closed list
 }
 
 namespace {
 struct MemberMap { const char* object; const char* member; const char* native; };
 
-// The reserved objects of the browser, in full.  The server's table had
-// request/response/session/jwt/state/sse/ws/db/error; a browser page has
-// log and document, and that is the sandbox.
+// The reserved objects of the browser, in full (browser_api.inc): log,
+// document and page -- that is the sandbox.
 constexpr const MemberMap kMembers[] = {
-    {"log",      "info",      "__log_info"},
-    {"log",      "warn",      "__log_warn"},
-    {"log",      "error",     "__log_error"},
-    {"document", "get",       "__document_get"},
-    {"document", "query_all", "__document_query_all"},
-    {"document", "title",     "__document_title"},
-    {"document", "root",      "__document_root"},
-    {"document", "create",    "__document_create"},
-    {"page",     "get",       "__page_get"},
-    {"page",     "set",       "__page_set"},
-    {"page",     "after",     "__page_after"},
-    {"page",     "clicked",   "__page_clicked"},
+#define LUX_BROWSER_MEMBER(object, member, native) {object, member, native},
+#include <lux_script/browser_api.inc>
 };
 } // namespace
 

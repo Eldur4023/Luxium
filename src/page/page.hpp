@@ -9,9 +9,12 @@
 
 #include <dom/node.hpp>
 #include <script/engine.hpp>
+#include <page/luxp.hpp>
+#include <style/stylesheet.hpp>
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +31,10 @@ public:
     // script or bad HTML still yields a usable page (console shows why).
     bool load_file(const std::string& path);
     bool load_string(const std::string& html, const std::string& source_name);
+    // A .luxp received over the network (its entry page; resources are not
+    // fetched yet).
+    bool load_luxp(const std::string& bytes, const std::string& name);
+
 
     // The shell sets this: a click on (or under) an <a href> calls it with
     // the raw href.  The shell decides what it means (file, http, #anchor).
@@ -55,7 +62,10 @@ public:
     std::string page_source_name() const override { return name_; }
 
     // For the shell ───────────────────────────────────────────────────────
-    const std::string& css() const { return css_; }
+    // Author rules (<style>, <link>, @import flattened), parsed once per load
+    // -- or decoded from a .luxp.  The layout reads them every relayout.
+    const std::vector<style::Rule>& rules() const { return sheet_; }
+    bool uses_hover() const { return uses_hover_; }
     const std::vector<ConsoleLine>& console_lines() const { return console_; }
     bool dirty() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
@@ -65,6 +75,7 @@ public:
 
     // Fires due timers (the shell calls it once per frame).
     void tick() { engine_.tick(); }
+    void free_removed() { engine_.free_removed(); }
 
     // Does this node (or an ancestor?) carry a click handler registered from
     // LuxScript?  The shell asks to decide click-vs-text-selection.
@@ -74,15 +85,17 @@ public:
     void click_by_id(const std::string& id);
 
 private:
-    void collect_css();
-    void run_scripts();
+    bool load_compiled(const PageSections& s, const std::string& name);
+    void reset_for_load(const std::string& name);
+    void set_rules(std::vector<style::Rule> rules);
 
     std::unique_ptr<dom::Node> root_;
     script::Engine             engine_{*this};
     std::vector<ConsoleLine>   console_;
     std::string                title_;
     std::string                name_;
-    std::string                css_;
+    std::vector<style::Rule>   sheet_;
+    bool                       uses_hover_ = false;
     bool                       saw_js_ = false;
     std::string                source_;
     bool                       dirty_ = true;

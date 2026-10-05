@@ -14,6 +14,7 @@ pkg_check_modules(FREETYPE REQUIRED freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 pkg_check_modules(SDL2 REQUIRED sdl2)
 pkg_check_modules(CURL REQUIRED libcurl)
+pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 
 # ── CEF (doble motor): la web real via Chromium, si la distribucion esta ────
 # presente en third_party/cef.  Sin ella, http(s) usa el motor propio+curl.
@@ -53,14 +54,33 @@ add_executable(luxium
     src/dom/node.cpp
     src/html/tokenizer.cpp
     src/html/parser.cpp
-    src/css/css.cpp
+    src/style/selector.cpp
+    src/style/stylesheet.cpp
+    src/style/values.cpp
+    src/style/properties.cpp
+    src/style/cascade.cpp
+    src/style/ua.cpp
+    src/style/dump.cpp
     src/net/fetch.cpp
     src/script/engine.cpp
+    src/script/bytecode_io.cpp
+    src/script/page_compile.cpp
     src/render/text.cpp
     src/render/images.cpp
-    src/render/layout.cpp
+    src/layout/build.cpp
+    src/layout/block.cpp
+    src/layout/inline.cpp
+    src/layout/flex.cpp
+    src/layout/grid.cpp
+    src/layout/table.cpp
+    src/layout/paint.cpp
+    src/layout/layout.cpp
+    src/paint/raster.cpp
     src/shell/shell.cpp
     src/page/page.cpp
+    src/page/bundle.cpp
+    src/page/doc_codec.cpp
+    src/page/luxp.cpp
 )
 if(LUXIUM_CEF)
     list(APPEND LUXIUM_SRCS src/cef/cef_backend.cpp)
@@ -71,10 +91,11 @@ target_sources(luxium PRIVATE ${LUXIUM_SRCS})
 
 target_include_directories(luxium PRIVATE src)
 target_compile_options(luxium PRIVATE -Wall -Wextra)
+target_compile_definitions(luxium PRIVATE LUXP_ZLIB=1)
 target_link_libraries(luxium PRIVATE lux_script ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES}
-                                    ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES} ZLIB::ZLIB)
+                                    ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES} ${FONTCONFIG_LIBRARIES} ZLIB::ZLIB)
 target_include_directories(luxium PRIVATE ${SDL2_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS}
-                                    ${HARFBUZZ_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS})
+                                    ${HARFBUZZ_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
 
 if(LUXIUM_CEF)
     ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
@@ -95,9 +116,16 @@ add_executable(luxium_headless
     src/dom/node.cpp
     src/html/tokenizer.cpp
     src/html/parser.cpp
-    src/css/css.cpp
     src/script/engine.cpp
+    src/script/bytecode_io.cpp
+    src/script/page_compile.cpp
     src/page/page.cpp
+    src/style/stylesheet.cpp
+    src/style/selector.cpp
+    src/page/bundle.cpp
+    src/page/doc_codec.cpp
+    src/page/luxp.cpp
 )
 target_include_directories(luxium_headless PRIVATE src)
-target_link_libraries(luxium_headless PRIVATE lux_script)
+target_link_libraries(luxium_headless PRIVATE lux_script ZLIB::ZLIB)
+target_compile_definitions(luxium_headless PRIVATE LUXP_ZLIB=1)

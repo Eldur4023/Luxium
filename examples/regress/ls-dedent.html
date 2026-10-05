@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Regresion LuxScript: `luxium --check examples/regress` debe dar 0 errores.
+     Una fn que termina con varios niveles de dedent no debe tragarse la
+     sentencia de nivel superior que la sigue. -->
+<html><body><p id="out">?</p>
+<script type="text/luxscript">
+fn void f(int a):
+    if a > 0:
+        if a > 1:
+            log.info("big")
+document.get("out").set_text("ok")
+for string s in ["a", "b"]:
+    log.info(s)
+List<string> L = ["c"]
+log.info(L[0])
+</script></body></html>

@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <script/page_compile.hpp>
 #include <lux_script/diagnostic.hpp>
 #include <lux_script/emitter.hpp>
 #include <lux_script/natives.hpp>
@@ -46,28 +47,6 @@ namespace luxium::script {
 
 using lux_script::Value;
 
-struct Compiled {
-    lux_script::FunctionTable functions;        // slot 0 = __luxium_main__
-    lux_script::FunctionSigs  fn_sigs;
-    lux_script::ClassSigs     class_sigs;
-    lux_script::EnumSigs      enum_sigs;
-    std::vector<int>          line_map;         // wrapped line -> document line (runtime errors)
-    std::vector<std::string>  errors;           // "line N: message", document coordinates
-    bool ok() const { return errors.empty(); }
-};
-
-// Compiles one script body.  `base_line` is the document line of the first
-// source line, so diagnostics remap to where the script sits in the HTML.
-std::unique_ptr<Compiled> compile_script(std::string_view source, int base_line);
-
-// The real entry point: every <script> body of a page, in document order,
-// compiled as ONE program (shared scope, one __luxium_main__ that calls each
-// block's wrapper in order).  `blocks` = (body, document line of the body's
-// first line); diagnostics remap to document coordinates.
-std::unique_ptr<Compiled> compile_blocks(
-    const std::vector<std::pair<std::string, int>>& blocks,
-    const std::string& source_name);
-
 // The handler signature a page registers with el.on("click", fn): the engine
 // runs the script's own function through a fresh VM.
 struct EventHandler {
@@ -79,14 +58,19 @@ struct EventHandler {
 class Engine : public lux_script::Host {
 public:
     explicit Engine(class PageHost& page) : page_(page) {}
+    ~Engine() { delete compiled_; }
 
-    // Sets the program this engine runs.  A page compiles all its <script>
-    // blocks INTO ONE program (one parser pass per block, shared tables in
-    // document order), so a fn defined in the first block is visible to the
-    // second -- the same-file semantics the server's module gives a project.
-    void add_script(std::string_view source, int base_line);
-    bool finalize();                 // true if everything compiled
-    const std::vector<std::string>& errors() const { return errors_; }
+    // Forget the previous document's program, handlers, timers, handles and
+    // page.* store.  The page calls it on every load: without it a timer of
+    // page A would fire into page B's function table.
+    void reset();
+
+    // The program this engine runs: a page's scripts compiled together
+    // (page_compile.hpp, via page/luxp.hpp's translator) ...
+    void set_program(std::unique_ptr<Compiled> program);
+    // ... or a .luxp's bytecode, verified first (script/bytecode_io.hpp).
+    // false + err if it is rejected.
+    bool load_precompiled(const std::string& bytes, std::string* err);
 
     // Runs __luxium_main__ (top level).  Errors go to the page's console.
     void run_main();
@@ -102,6 +86,10 @@ public:
 
     // The shell calls this every frame: fires timers whose deadline passed.
     void tick();
+
+    // Frees what remove() took out of the DOM.  Only once nothing (layout,
+    // hover) can still point into it: the shell calls it after a relayout.
+    void free_removed() { removed_.clear(); }
 
     // ── lux_script::Host ─────────────────────────────────────────────────
     void        log(int level, const std::string& msg) override;
@@ -143,14 +131,13 @@ private:
     }
 
     PageHost&                                page_;
-    std::vector<std::pair<std::string, int>> blocks_;        // source, document line
     Compiled*                                compiled_ = nullptr;
-    std::vector<std::string>                 errors_;
     std::vector<EventHandler>                handlers_;
     struct Timer { long long at = 0; Value fn; };
     std::vector<Timer>                       timers_;
     long long                                clicked_handle_ = -1;
     std::vector<std::unique_ptr<dom::Node>>  detached_;   // document.create() output
+    std::vector<std::unique_ptr<dom::Node>>  removed_;    // remove() output, see free_removed()
     long long                                next_handle_ = 1;
     std::unordered_map<long long, dom::Node*> nodes_;
     std::unordered_map<std::string, Value>    page_state_;

@@ -114,6 +114,11 @@ const std::vector<BuiltinMethod>* methods_of(const std::string& type);
 bool is_reserved_object(const std::string& name);
 bool is_db_module(const std::string& name);
 
+// Lux switches its compiler to the browser's API with this; here the tables
+// already ARE the browser's (browser_api.inc), so it is a no-op kept for
+// source compatibility (script/page_compile.cpp is shared with Lux).
+class BrowserProfile {};
+
 // The "error" abort() raises on the server; the browser has no abort, but the
 // VM's unwinding machinery still references the sentinel.
 inline constexpr const char* kAbortMessage = "\x01" "abort";

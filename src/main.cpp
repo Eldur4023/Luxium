@@ -3,14 +3,20 @@
 //   luxium <page.html>                 the window
 //   luxium --check <dir|pages...>      lint: load every page, report errors
 //   luxium <page.html> --headless      console only, no window
+//   luxium --inspect <app.luxp>        verify its bytecode, list what it can do
+//   luxium --dump <app.luxp>           print the entry page's tree and rules
 //   luxium <page.html> --click id --shot out.ppm
 //                                      simulate clicks, dump one frame
 //
 // Loads a local page, runs its LuxScript, and shows it: HTML + text layout,
 // a console pane for log output, click handlers and timers live.
 
+#include <page/bundle.hpp>
+#include <page/doc_codec.hpp>
 #include <page/page.hpp>
 #include <shell/shell.hpp>
+#include <style/cascade.hpp>
+#include <style/dump.hpp>
 #ifdef LUXIUM_CEF
 #include <cef/cef_backend.hpp>
 #endif
@@ -19,6 +25,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -74,9 +82,35 @@ int main(int argc, char** argv) {
         return cef_code;
 #endif
 
+    if (argc == 3 && std::strcmp(argv[1], "--dump") == 0) {   // the entry page's tree and rule count
+        std::string err;
+        auto entry = luxium::bundle::mount(argv[2], &err);
+        const auto* sections = entry ? luxium::bundle::find_page(*entry) : nullptr;
+        if (!sections) { std::fprintf(stderr, "luxium --dump: %s\n", entry ? "no entry page" : err.c_str()); return 1; }
+        auto doc = luxium::page::decode_document(sections->document, &err);
+        std::vector<luxium::style::Rule> rules;
+        if (!doc || !luxium::page::decode_sheet(sections->sheet, rules, &err)) { std::fprintf(stderr, "luxium --dump: %s\n", err.c_str()); return 1; }
+        doc->print();
+        std::printf("-- %zu rules\n", rules.size());
+        for (const auto& r : rules)
+            for (const auto& d : r.decls) std::printf("%s:%s%s\n", d.name.c_str(), d.value.c_str(), d.important ? "!" : "");
+        return 0;
+    }
+
+    if (argc == 3 && std::strcmp(argv[1], "--inspect") == 0) {
+        std::string report;
+        const bool ok = luxium::bundle::inspect(argv[2], &report);
+        std::fputs(report.c_str(), stdout);
+        return ok ? 0 : 1;
+    }
+
     std::vector<std::string> paths;
     const char* shot = nullptr;
     const char* cefshot = nullptr;
+    const char* boxes = nullptr;
+    const char* styles = nullptr;
+    int win_w = 1180, win_h = 820;
+    const char* cefprobe = nullptr;
     std::vector<std::string> clicks;
     bool check = false, headless = false;
     for (int i = 1; i < argc; ++i) {
@@ -86,10 +120,16 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--click") == 0 && i + 1 < argc) clicks.push_back(argv[++i]);
         else if (std::strcmp(a, "--shot") == 0 && i + 1 < argc) shot = argv[++i];
         else if (std::strcmp(a, "--cefshot") == 0 && i + 1 < argc) cefshot = argv[++i];
+        else if (std::strcmp(a, "--boxes") == 0 && i + 1 < argc) boxes = argv[++i];
+        else if (std::strcmp(a, "--styles") == 0 && i + 1 < argc) styles = argv[++i];
+        else if (std::strcmp(a, "--size") == 0 && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2) { win_w = 1180; win_h = 820; }
+        }
+        else if (std::strcmp(a, "--cefprobe") == 0 && i + 1 < argc) cefprobe = argv[++i];
         else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
             std::fprintf(stderr,
                 "uso: luxium <page.html|dir> [--check] [--headless] "
-                "[--click id] [--shot out.ppm] [--cefshot out.ppm]\n");
+                "[--click id] [--size WxH] [--shot out.ppm [--boxes out.json]] [--cefshot out.ppm [--cefprobe out.json]]\n");
             return 0;
         } else paths.push_back(a);
     }
@@ -108,6 +148,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (styles) {   // computed styles of every [data-t] element, no window
+        luxium::style::Resolver res;
+        res.set_viewport(static_cast<float>(win_w), static_cast<float>(win_h - 58));
+        res.set_author_rules(&page.rules());
+        std::ofstream(styles) << luxium::style::dump_styles_json(*page.page_root(), res);
+        return 0;
+    }
+
     if (headless) {
         static const char* kLevel[] = {"info", "warn", "error"};
         for (const auto& l : page.console_lines())
@@ -117,7 +165,7 @@ int main(int argc, char** argv) {
 
     std::string title = "Luxium";
     if (!page.page_title().empty()) title += " \xE2\x80\x94 " + page.page_title();
-    luxium::shell::Shell shell(page, {1180, 820,
+    luxium::shell::Shell shell(page, {win_w, win_h,
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                                       "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -127,6 +175,8 @@ int main(int argc, char** argv) {
     if (is_url) shell.navigate_to(path, true);
     else if (path == "luxium:inicio") shell.navigate_address(path, true);
     for (const auto& id : clicks) page.click_by_id(id);
+    if (boxes) shell.set_boxes_out(boxes);
+    if (cefprobe) shell.set_probe_out(cefprobe);
     if (cefshot) return shell.cef_shot(path, cefshot);
     if (shot) return shell.screenshot(shot);   // SDL dummy driver, one frame
     return shell.run();
