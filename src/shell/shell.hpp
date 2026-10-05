@@ -61,6 +61,9 @@ public:
     // framebuffer goes to a PPM.  This is how the render is tested without
     // stealing anyone's screen.
     int screenshot(const std::string& ppm_path);
+    // Rects (data-t) del layout propio / de la sonda de Chromium, a JSON.
+    void set_boxes_out(const std::string& path) { boxes_path_ = path; }
+    void set_probe_out(const std::string& path) { probe_path_ = path; }
     // El oraculo: Chromium (CEF off-screen) pinta la pagina en nuestro
     // framebuffer; para generar los goldens de css-tests.
     int cef_shot(const std::string& target, const std::string& ppm_path);
@@ -123,6 +126,8 @@ private:
 
     int    mouse_x_ = 0, mouse_y_ = 0;
     bool   cursor_over_clickable_ = false;
+    const dom::Node* hover_node_ = nullptr;   // deepest element under the mouse (:hover)
+    void update_hover();
 
     // The URL bar (top strip, always visible).
     std::string url_edit_;
@@ -159,8 +164,11 @@ private:
     bool    viewing_source_ = false;
     std::string viewing_source_origin_;
     bool    engine_cef_ = false;   // la pagina actual la renderiza Chromium
+    std::string boxes_path_, probe_path_;
     unsigned long cef_display_ = 0, cef_parent_ = 0;
     void    maybe_cef_handoff();
+    bool    cef_available() const;
+    void    open_in_cef(const std::string& url);
 };
 
 } // namespace luxium::shell

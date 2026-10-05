@@ -20,12 +20,24 @@ struct Glyph {
     int bearing_x = 0, bearing_y = 0;
     int width = 0, height = 0;
     std::vector<uint8_t> alpha;   // width*height, 8-bit coverage
+    std::vector<uint8_t> lcd;     // height * width*3: per-subpixel (R,G,B) coverage, empty if none
 };
 
 struct ShapedRun {
-    struct Pos { uint32_t glyph_index; float x, y; uint32_t cluster; };
+    struct Pos { uint32_t glyph_index; float x, y; uint32_t cluster; float adv = 0, pen = 0; int face = -1; };   // face: fallback face id (-1 = the run's)   // adv: x_advance, pen: pen x before the offset
     std::vector<Pos> positions;
     float width = 0;
+};
+
+// An installed face chosen by Font::resolve (fontconfig); id indexes the font's face table.
+struct FaceKey {
+    int id = 0;
+    bool operator==(const FaceKey& o) const { return id == o.id; }
+};
+
+struct FaceMetrics {         // Blink rounds ascent/descent to whole pixels
+    float ascent = 0, descent = 0, line_gap = 0;
+    float x_height = 0;
 };
 
 class Font {
@@ -37,7 +49,25 @@ public:
     static std::unique_ptr<Font> load(const std::string& regular,
                                       const std::string& bold,
                                       const std::string& mono);
+    // Loads the whole DejaVu family from `dir` (sans/serif/mono, each in
+    // regular/bold/italic/bold-italic; missing variants fall back).
+    static std::unique_ptr<Font> load_dejavu(const std::string& dir);
     ~Font();
+
+    // Picks the face for a CSS `font-family` list like Chromium on Linux does:
+    // each family goes through fontconfig and is accepted only if it is the
+    // requested family or a metric-compatible alias (Arial -> Liberation Sans);
+    // generic keywords use Chromium's defaults (serif = Times New Roman,
+    // sans-serif = Arial, monospace = the system fixed font).
+    FaceKey resolve(const std::string& family_list, int weight, bool italic) const;
+
+    // Stateless-size API for the layout engine: shape at an explicit em.
+    ShapedRun shape_at(std::string_view utf8, FaceKey key, float px) const;
+    FaceMetrics metrics(FaceKey key, float px) const;
+    // A face able to draw code point `cp`, styled like `base` (fontconfig); -1 if none.
+    int fallback_for(uint32_t cp, FaceKey base) const;
+    // `subx` (0..3): the glyph is drawn shifted right by subx/4 pixel (sub-pixel positioning)
+    const Glyph& glyph_at(uint32_t glyph_index, FaceKey key, float px, int subx = 0) const;
 
     void set_size(float px);      // per-pixel em; cheap (FreeType set_pixel_sizes)
     float size() const { return size_; }
@@ -47,6 +77,9 @@ public:
     // UTF-8 -> positioned glyphs.  bold/mono select the face.
     ShapedRun shape(std::string_view utf8, bool bold, bool mono = false) const;
 
+    // Real advance of a space at the current size (what Blink uses for word gaps).
+    float space_width(bool bold, bool mono = false) const { return shape(" ", bold, mono).width; }
+
     // The cached bitmap for a shaped glyph at a given em.  The size is part
     // of the cache key: a glyph rasterized for the h1 (31px) reused by a
     // 15.5px run is exactly the "sometimes giant, sometimes glued" bug.
@@ -55,8 +88,18 @@ public:
 private:
     struct Face;
     std::unique_ptr<Face> regular_, bold_, mono_;
+    std::unique_ptr<Face> var_[3][2][2];       // family, bold, italic (load_dejavu)
+    mutable std::vector<std::unique_ptr<Face>> dyn_;                 // faces chosen by resolve()
+    mutable std::unordered_map<std::string, int> resolve_cache_;     // "family|weight|italic" -> id
+    mutable std::unordered_map<std::string, int> file_ids_;          // "path#index#flags" -> id
+    mutable std::unordered_map<uint64_t, int> fallback_cache_;       // (cp, base face) -> id
+    int face_from_match(void* fc_pattern, int weight, bool italic) const;
+    ShapedRun shape_face(Face* f, std::string_view utf8, float px) const;
+    int match_family(const std::string& name, bool accept_any, int weight, bool italic) const;
     float size_ = 16;
     Face* face(bool bold, bool mono) const;
+    Face* face(FaceKey key) const;
+    void use_size(Face* f, float px) const;
 
     mutable std::unordered_map<uint64_t, Glyph> cache_;   // key: idx<<2 | bold<<1 | mono
     friend struct Face;
@@ -73,7 +116,10 @@ struct Word {
     float    size   = 0;     // the em this word was shaped at
     float    ascent = 0;     // baseline depth for THAT size
     std::string text;        // for the console pane / debugging
+    bool     glued = false;  // no word gap after it (a hyphen break: "border-" | "box")
 };
+
+
 
 // Splits utf8 into words on ASCII spaces, shaping each.  Newlines never
 // reach here: the layout layer handles explicit breaks first.

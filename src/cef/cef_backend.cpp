@@ -284,6 +284,11 @@ void go_back()    { CefRefPtr<CefBrowser> b = browser(); if (b) b->GoBack(); }
 void go_forward() { CefRefPtr<CefBrowser> b = browser(); if (b) b->GoForward(); }
 void reload()     { CefRefPtr<CefBrowser> b = browser(); if (b) b->Reload(); }
 
+void run_js(const std::string& code) {
+    CefRefPtr<CefBrowser> b = browser();
+    if (b) b->GetMainFrame()->ExecuteJavaScript(CefString(code), CefString("luxium://probe"), 0);
+}
+
 void set_view(int w, int h) {
     w = std::max(1, w);
     h = std::max(1, h);

@@ -13,6 +13,7 @@ void navigate(const std::string&) {}
 void go_back() {}
 void go_forward() {}
 void reload() {}
+void run_js(const std::string&) {}
 void set_view(int, int) {}
 void mouse_move(int, int, bool, uint32_t) {}
 void mouse_button(int, int, int, bool, int, uint32_t) {}

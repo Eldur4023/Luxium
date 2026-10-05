@@ -4,16 +4,28 @@
 #include FT_FREETYPE_H
 #include <hb.h>
 #include <hb-ft.h>
+#include <fontconfig/fontconfig.h>
+#include FT_SFNT_NAMES_H
+#include FT_TRUETYPE_TABLES_H
+#include FT_OUTLINE_H
+#include FT_SYNTHESIS_H
+#include FT_LCD_FILTER_H
 
 #include <span>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <unordered_map>
 
 namespace luxium::render {
 
 struct Font::Face {
+    bool         fake_bold = false, fake_italic = false;   // synthesized when the file lacks the style
+    int          req_weight = 400;
+    bool         req_italic = false;
     FT_Face      ft = nullptr;
     hb_font_t*   hb = nullptr;
     hb_buffer_t* buf = nullptr;   // reused per shape call (single-threaded UI)
@@ -44,15 +56,369 @@ std::unique_ptr<Font> Font::load(const std::string& regular, const std::string& 
     return font;
 }
 
+std::unique_ptr<Font> Font::load_dejavu(const std::string& dir) {
+    if (!ft_lib && FT_Init_FreeType(&ft_lib)) return nullptr;
+    auto font = std::unique_ptr<Font>(new Font());
+    static const char* names[3][2][2] = {
+        {{"DejaVuSans.ttf", "DejaVuSans-Oblique.ttf"}, {"DejaVuSans-Bold.ttf", "DejaVuSans-BoldOblique.ttf"}},
+        {{"DejaVuSerif.ttf", "DejaVuSerif-Italic.ttf"}, {"DejaVuSerif-Bold.ttf", "DejaVuSerif-BoldItalic.ttf"}},
+        {{"DejaVuSansMono.ttf", "DejaVuSansMono-Oblique.ttf"}, {"DejaVuSansMono-Bold.ttf", "DejaVuSansMono-BoldOblique.ttf"}}};
+    for (int f = 0; f < 3; ++f)
+        for (int b = 0; b < 2; ++b)
+            for (int i = 0; i < 2; ++i) {
+                auto face = std::make_unique<Face>();
+                if (FT_New_Face(ft_lib, (dir + "/" + names[f][b][i]).c_str(), 0, &face->ft)) continue;
+                face->hb  = hb_ft_font_create(face->ft, nullptr);
+                face->buf = hb_buffer_create();
+                font->var_[f][b][i] = std::move(face);
+            }
+    if (!font->var_[0][0][0]) return nullptr;
+    // legacy API (chrome text) keeps working on the same set
+    return font;
+}
+
 Font::~Font() = default;
 
+Font::Face* Font::face(FaceKey k) const {
+    if (k.id >= 0 && k.id < static_cast<int>(dyn_.size()) && dyn_[static_cast<size_t>(k.id)])
+        return dyn_[static_cast<size_t>(k.id)].get();
+    if (var_[0][0][0]) return var_[0][0][0].get();
+    return regular_.get();
+}
+
+void Font::use_size(Face* f, float px) const {
+    // cached per face: FT_Set_Char_Size + hb_ft_font_changed only on change
+    static thread_local std::unordered_map<Face*, int> cur;
+    const int q = static_cast<int>(std::lround(px * 64));
+    auto it = cur.find(f);
+    if (it != cur.end() && it->second == q) return;
+    cur[f] = q;
+    FT_Set_Char_Size(f->ft, q, q, 0, 0);
+    hb_ft_font_changed(f->hb);
+}
+
+FaceMetrics Font::metrics(FaceKey key, float px) const {
+    Face* f = face(key);
+    FaceMetrics m;
+    if (!f) return m;
+    const float upem = static_cast<float>(f->ft->units_per_EM);
+    m.ascent  = std::round(static_cast<float>(f->ft->ascender) * px / upem);
+    m.descent = std::round(static_cast<float>(-f->ft->descender) * px / upem);
+    const float gap = static_cast<float>(f->ft->height - (f->ft->ascender - f->ft->descender));
+    m.line_gap = std::round(std::max(0.f, gap) * px / upem);
+    float xh = 0.5f;
+    if (auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(f->ft, ft_sfnt_os2)))
+        if (os2->version >= 2 && os2->sxHeight > 0) xh = static_cast<float>(os2->sxHeight) / upem;
+    m.x_height = xh * px;
+    return m;
+}
+
+ShapedRun Font::shape_face(Face* f, std::string_view utf8, float px) const {
+    use_size(f, px);
+    hb_buffer_reset(f->buf);
+    hb_buffer_add_utf8(f->buf, utf8.data(), static_cast<int>(utf8.size()), 0, -1);
+    hb_buffer_set_direction(f->buf, HB_DIRECTION_LTR);
+    hb_buffer_guess_segment_properties(f->buf);
+    hb_shape(f->hb, f->buf, nullptr, 0);
+    unsigned count = 0;
+    hb_glyph_info_t* info = hb_buffer_get_glyph_infos(f->buf, &count);
+    hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(f->buf, &count);
+    ShapedRun run;
+    run.positions.reserve(count);
+    float x = 0, y = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        run.positions.push_back({info[i].codepoint, x + pos[i].x_offset / 64.f, y + pos[i].y_offset / 64.f, info[i].cluster,
+                                 pos[i].x_advance / 64.f, x});
+        x += pos[i].x_advance / 64.f;
+    }
+    run.width = x;
+    return run;
+}
+
+ShapedRun Font::shape_at(std::string_view utf8, FaceKey key, float px) const {
+    Face* f = face(key);
+    ShapedRun run = shape_face(f, utf8, px);
+    bool missing = false;
+    for (const auto& p : run.positions) if (p.glyph_index == 0) { missing = true; break; }
+    if (!missing) return run;
+
+    // some code points are not in the face: cut the text into pieces by the face that
+    // can draw them and shape each piece with its own face
+    auto decode = [&](size_t& i) {
+        const unsigned char c = static_cast<unsigned char>(utf8[i]);
+        if (c < 0x80) { ++i; return uint32_t(c); }
+        int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+        uint32_t cp = c & (0x3F >> n);
+        ++i;
+        while (n-- > 0 && i < utf8.size() && (static_cast<unsigned char>(utf8[i]) & 0xC0) == 0x80) cp = (cp << 6) | (utf8[i++] & 0x3F);
+        return cp;
+    };
+    struct Seg { size_t b0, b1; int face; };   // face -1: primary
+    std::vector<Seg> segs;
+    for (size_t i = 0; i < utf8.size();) {
+        const size_t at = i;
+        const uint32_t cp = decode(i);
+        int fid = -1;
+        const bool control = cp < 0x20 || cp == 0x200B || cp == 0x200C || cp == 0x200D || cp == 0xFEFF || cp == 0xAD;
+        if (!control && FT_Get_Char_Index(f->ft, cp) == 0) fid = fallback_for(cp, key);
+        if (fid == key.id) fid = -1;
+        if (!segs.empty() && segs.back().face == fid) segs.back().b1 = i; else segs.push_back({at, i, fid});
+    }
+    ShapedRun out;
+    float x = 0;
+    for (const Seg& sg : segs) {
+        Face* sf = sg.face >= 0 ? face(FaceKey{sg.face}) : f;
+        ShapedRun sub = shape_face(sf, utf8.substr(sg.b0, sg.b1 - sg.b0), px);
+        for (auto p : sub.positions) {
+            p.x += x; p.pen += x;
+            p.cluster += static_cast<uint32_t>(sg.b0);
+            if (sg.face >= 0) p.face = sg.face;
+            out.positions.push_back(p);
+        }
+        x += sub.width;
+    }
+    out.width = x;
+    return out;
+}
+
+const Glyph& Font::glyph_at(uint32_t glyph_index, FaceKey key, float px, int subx) const {
+    Face* f = face(key);
+    const uint64_t k = (static_cast<uint64_t>(glyph_index) << 40) |
+                       (static_cast<uint64_t>(static_cast<uint32_t>(px * 4.f)) << 16) |
+                       (static_cast<uint64_t>(subx & 3) << 14) | 0x2000u | static_cast<uint64_t>(key.id & 0x1FFF);
+    auto it = cache_.find(k);
+    if (it != cache_.end()) return it->second;
+    use_size(f, px);
+    Glyph g;
+    // Chromium on Linux: light (vertical-only) hinting, LCD sub-pixel AA.  The
+    // glyph is rendered 3x wider, then filtered with FreeType's default 5-tap FIR
+    // across the sub-pixels (the filter ClearType-style builds use).
+    if (!FT_Load_Glyph(f->ft, glyph_index, FT_LOAD_TARGET_LIGHT)) {
+        if (f->fake_bold) FT_GlyphSlot_Embolden(f->ft->glyph);
+        if (f->fake_italic) FT_GlyphSlot_Oblique(f->ft->glyph);
+        if (f->ft->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
+            FT_Matrix m = {3 * 65536, 0, 0, 65536};
+            FT_Outline_Transform(&f->ft->glyph->outline, &m);
+            FT_Outline_Translate(&f->ft->glyph->outline, subx * 48, 0);   // subx/4 px = subx*0.75 sub-pixels
+            if (!FT_Render_Glyph(f->ft->glyph, FT_RENDER_MODE_NORMAL)) {
+                FT_Bitmap& bm = f->ft->glyph->bitmap;
+                const int wb = static_cast<int>(bm.width), rows = static_cast<int>(bm.rows);
+                const int s0 = f->ft->glyph->bitmap_left - 2;            // first filtered sub-pixel
+                const int wp = wb + 4;
+                auto floordiv = [](int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
+                const int px0 = floordiv(s0, 3);
+                const int n = (s0 + wp + 2) / 3 - px0 + 1;
+                static const int kFir[5] = {0x08, 0x4D, 0x56, 0x4D, 0x08};
+                g.width = n; g.height = rows;
+                g.bearing_x = px0;
+                g.bearing_y = static_cast<int>(f->ft->glyph->bitmap_top);
+                g.lcd.assign(static_cast<size_t>(n) * 3 * rows, 0);
+                g.alpha.assign(static_cast<size_t>(n) * rows, 0);
+                std::vector<int> row(static_cast<size_t>(wp), 0);
+                for (int r = 0; r < rows; ++r) {
+                    const uint8_t* src = bm.buffer + static_cast<size_t>(r) * bm.pitch;
+                    for (int i = 0; i < wp; ++i) {
+                        int acc = 0;
+                        for (int j = 0; j < 5; ++j) {
+                            const int si = i + j - 4;   // padded index of the bitmap column
+                            if (si >= 0 && si < wb) acc += kFir[j] * src[si];
+                        }
+                        row[static_cast<size_t>(i)] = std::min(255, acc >> 8);
+                    }
+                    for (int p = 0; p < n; ++p) {
+                        int sum = 0;
+                        for (int ch = 0; ch < 3; ++ch) {
+                            const int idx = 3 * (px0 + p) + ch - s0;
+                            const int v = (idx >= 0 && idx < wp) ? row[static_cast<size_t>(idx)] : 0;
+                            g.lcd[(static_cast<size_t>(r) * n + p) * 3 + ch] = static_cast<uint8_t>(v);
+                            sum += v;
+                        }
+                        g.alpha[static_cast<size_t>(r) * n + p] = static_cast<uint8_t>(sum / 3);
+                    }
+                }
+            }
+        }
+    }
+    return cache_.emplace(k, std::move(g)).first->second;
+}
+
+// ── fontconfig: CSS font-family -> an installed face ─────────────────────────
+
+static std::string lc(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Skia's metric-compatible families (SkFontConfigInterface_direct.cpp).
+static int equiv_class(const std::string& f) {
+    static const std::pair<const char*, int> table[] = {
+        {"arial", 1}, {"arimo", 1}, {"liberation sans", 1}, {"helvetica", 1},
+        {"times new roman", 2}, {"tinos", 2}, {"liberation serif", 2},
+        {"courier new", 3}, {"cousine", 3}, {"liberation mono", 3},
+        {"cambria", 4}, {"caladea", 4}, {"calibri", 5}, {"carlito", 5},
+        {"symbol", 6}, {"symbol neu", 6},
+    };
+    for (const auto& [n, c] : table) if (f == n) return c;
+    return 0;
+}
+
+int Font::face_from_match(void* fc_pattern, int weight, bool italic) const {
+    FcPattern* m = static_cast<FcPattern*>(fc_pattern);
+    FcChar8* file = nullptr; int idx = 0; int fw = FC_WEIGHT_REGULAR, fs = FC_SLANT_ROMAN;
+    FcPatternGetString(m, FC_FILE, 0, &file);
+    FcPatternGetInteger(m, FC_INDEX, 0, &idx);
+    FcPatternGetInteger(m, FC_WEIGHT, 0, &fw);
+    FcPatternGetInteger(m, FC_SLANT, 0, &fs);
+    if (!file) return -1;
+    const bool fake_b = weight >= 600 && fw < FC_WEIGHT_DEMIBOLD;
+    const bool fake_i = italic && fs == FC_SLANT_ROMAN;
+    const std::string fkey = std::string(reinterpret_cast<const char*>(file)) + "#" + std::to_string(idx) +
+                             (fake_b ? "b" : "") + (fake_i ? "i" : "");
+    auto it = file_ids_.find(fkey);
+    if (it != file_ids_.end()) return it->second;
+    auto face = std::make_unique<Face>();
+    if (FT_New_Face(ft_lib, reinterpret_cast<const char*>(file), idx, &face->ft)) return -1;
+    face->hb = hb_ft_font_create(face->ft, nullptr);
+    face->buf = hb_buffer_create();
+    face->fake_bold = fake_b; face->fake_italic = fake_i;
+    face->req_weight = weight; face->req_italic = italic;
+    dyn_.push_back(std::move(face));
+    const int id = static_cast<int>(dyn_.size()) - 1;
+    file_ids_[fkey] = id;
+    return id;
+}
+
+int Font::fallback_for(uint32_t cp, FaceKey base) const {
+    const uint64_t k = (static_cast<uint64_t>(cp) << 20) | static_cast<uint64_t>(base.id & 0xFFFFF);
+    auto it = fallback_cache_.find(k);
+    if (it != fallback_cache_.end()) return it->second;
+    static bool inited = false;
+    if (!inited) inited = FcInit();
+    Face* bf = face(base);
+    const int weight = bf ? bf->req_weight : 400;
+    const bool italic = bf ? bf->req_italic : false;
+    FcPattern* pat = FcPatternCreate();
+    FcCharSet* cs = FcCharSetCreate();
+    FcCharSetAddChar(cs, cp);
+    FcPatternAddCharSet(pat, FC_CHARSET, cs);
+    FcPatternAddInteger(pat, FC_WEIGHT, FcWeightFromOpenType(weight));
+    FcPatternAddInteger(pat, FC_SLANT, italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN);
+    FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
+    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+    FcResult res;
+    FcFontSet* set = FcFontSort(nullptr, pat, FcTrue, nullptr, &res);
+    int id = -1;
+    if (set) {
+        for (int i = 0; i < set->nfont && id < 0; ++i) {
+            FcCharSet* fcs = nullptr;
+            if (FcPatternGetCharSet(set->fonts[i], FC_CHARSET, 0, &fcs) != FcResultMatch || !FcCharSetHasChar(fcs, cp)) continue;
+            FcPattern* m = FcFontRenderPrepare(nullptr, pat, set->fonts[i]);
+            id = face_from_match(m, weight, italic);
+            FcPatternDestroy(m);
+        }
+        FcFontSetDestroy(set);
+    }
+    FcCharSetDestroy(cs);
+    FcPatternDestroy(pat);
+    fallback_cache_[k] = id;
+    return id;
+}
+
+int Font::match_family(const std::string& name, bool accept_any, int weight, bool italic) const {
+    static bool inited = false;
+    if (!inited) { inited = FcInit(); }
+    FcPattern* pat = FcPatternCreate();
+    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(name.c_str()));
+    FcPatternAddInteger(pat, FC_WEIGHT, FcWeightFromOpenType(weight));
+    FcPatternAddInteger(pat, FC_SLANT, italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN);
+    FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
+    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+    FcResult res;
+    // generics take whatever fontconfig prefers; named families only an equivalent one
+    // (the first acceptable font in fontconfig's own preference order)
+    FcPattern* m = nullptr;
+    FcFontSet* sorted = nullptr;
+    if (accept_any) {
+        m = FcFontMatch(nullptr, pat, &res);
+    } else {
+        sorted = FcFontSort(nullptr, pat, FcTrue, nullptr, &res);
+        if (sorted) {
+            const std::string want = lc(name);
+            for (int i = 0; i < sorted->nfont; ++i) {
+                FcChar8* fam = nullptr;
+                if (FcPatternGetString(sorted->fonts[i], FC_FAMILY, 0, &fam) != FcResultMatch) continue;
+                const std::string got = lc(reinterpret_cast<const char*>(fam));
+                if (want == got || (equiv_class(want) != 0 && equiv_class(want) == equiv_class(got))) {
+                    m = FcFontRenderPrepare(nullptr, pat, sorted->fonts[i]);
+                    break;
+                }
+            }
+        }
+    }
+    int id = -1;
+    if (m) {
+        FcChar8* file = nullptr; int idx = 0; int fw = FC_WEIGHT_REGULAR, fs = FC_SLANT_ROMAN;
+        FcPatternGetString(m, FC_FILE, 0, &file);
+        FcPatternGetInteger(m, FC_INDEX, 0, &idx);
+        FcPatternGetInteger(m, FC_WEIGHT, 0, &fw);
+        FcPatternGetInteger(m, FC_SLANT, 0, &fs);
+        id = face_from_match(m, weight, italic);
+        FcPatternDestroy(m);
+    }
+    if (sorted) FcFontSetDestroy(sorted);
+    FcPatternDestroy(pat);
+    return id;
+}
+
+FaceKey Font::resolve(const std::string& family_list, int weight, bool italic) const {
+    const std::string key = family_list + "|" + std::to_string(weight >= 600 ? 700 : weight >= 500 ? 500 : 400) +
+                            (italic ? "i" : "n");
+    auto it = resolve_cache_.find(key);
+    if (it != resolve_cache_.end()) return {it->second};
+    if (!ft_lib) FT_Init_FreeType(&ft_lib);
+    int found = -1;
+    const int w = weight >= 600 ? 700 : 400;
+    size_t i = 0;
+    while (i <= family_list.size() && found < 0) {
+        size_t e = family_list.find(',', i);
+        if (e == std::string::npos) e = family_list.size();
+        std::string name = family_list.substr(i, e - i);
+        i = e + 1;
+        size_t a = name.find_first_not_of(" \t'\"");
+        size_t z = name.find_last_not_of(" \t'\"");
+        if (a == std::string::npos) continue;
+        name = name.substr(a, z - a + 1);
+        const std::string l = lc(name);
+        bool any = false;
+        std::string q = name;
+        if (l == "serif" || l == "ui-serif") q = "Times New Roman";
+        else if (l == "sans-serif") q = "Arial";
+        else if (l == "system-ui" || l == "ui-sans-serif") { q = "sans-serif"; any = true; }
+        else if (l == "monospace" || l == "ui-monospace") { q = "Monospace"; any = true; }
+        else if (l == "cursive") { q = "Comic Sans MS"; any = true; }
+        else if (l == "fantasy") { q = "Impact"; any = true; }
+        found = match_family(q, any, w, italic);
+    }
+    if (found < 0) found = match_family("Times New Roman", false, w, italic);   // Chromium's standard font
+    if (found < 0) found = match_family("DejaVu Sans", true, w, italic);
+    if (found < 0) found = 0;
+    resolve_cache_[key] = found;
+    return {found};
+}
+
 Font::Face* Font::face(bool bold, bool mono) const {
+    if (var_[0][0][0]) return var_[mono ? 2 : 0][bold][0].get();   // load_dejavu
     return mono ? mono_.get() : (bold ? bold_.get() : regular_.get());
 }
 
 void Font::set_size(float px) {
     size_ = px;
-    for (Face* f : {regular_.get(), bold_.get(), mono_.get()}) {
+    std::vector<Face*> all{regular_.get(), bold_.get(), mono_.get()};
+    for (int f = 0; f < 3; ++f) for (int b = 0; b < 2; ++b) for (int i = 0; i < 2; ++i) all.push_back(var_[f][b][i].get());
+    for (Face* f : all) {
+        if (!f) continue;
         // 26.6 fixed point at 72dpi: the em becomes exactly px PIXELS,
         // fractions included (15.5 stays 15.5 -- FT_Set_Pixel_Sizes would
         // truncate it to 15 and every advance would lie by 3%).
@@ -152,15 +518,27 @@ std::vector<Word> shape_words(const Font& font, std::string_view utf8, bool bold
         size_t start = i;
         while (i < flat.size() && flat[i] != ' ') ++i;
         if (i == start) break;
-        Word w;
-        w.text   = flat.substr(start, i - start);
-        w.shaped = font.shape(w.text, bold, mono);
-        w.width  = w.shaped.width;
-        w.bold   = bold;
-        w.mono   = mono;
-        w.size   = font.size();
-        w.ascent = font.ascent();
-        out.push_back(std::move(w));
+        // oportunidad de salto tras un guion entre alfanumericos (UAX#14 HY)
+        const std::string token = flat.substr(start, i - start);
+        size_t p0 = 0;
+        for (size_t k = 0; k < token.size(); ++k) {
+            const bool brk = token[k] == '-' && k > 0 && k + 1 < token.size() &&
+                             std::isalnum((unsigned char)token[k - 1]) &&
+                             std::isalnum((unsigned char)token[k + 1]);
+            if (!brk && k + 1 < token.size()) continue;
+            const size_t end = brk ? k + 1 : token.size();
+            Word w;
+            w.text   = token.substr(p0, end - p0);
+            w.shaped = font.shape(w.text, bold, mono);
+            w.width  = w.shaped.width;
+            w.bold   = bold;
+            w.mono   = mono;
+            w.size   = font.size();
+            w.ascent = font.ascent();
+            w.glued  = brk;
+            out.push_back(std::move(w));
+            p0 = end;
+        }
     }
     return out;
 }

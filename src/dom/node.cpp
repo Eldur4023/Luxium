@@ -120,4 +120,16 @@ std::unique_ptr<Node> make_document() {
     return doc;
 }
 
+int depth_of(const Node* n) {
+    int d = 0;
+    for (; n && n->parent; n = n->parent) ++d;
+    return d;
+}
+
+int subtree_height(const Node& n) {
+    int h = 0;
+    for (const auto& c : n.children) h = std::max(h, subtree_height(*c));
+    return h + 1;
+}
+
 } // namespace luxium::dom

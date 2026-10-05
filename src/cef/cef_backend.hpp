@@ -40,6 +40,10 @@ void go_back();
 void go_forward();
 void reload();
 
+// Runs JavaScript in the main frame (the oracle's probe; pages of Luxium
+// itself never reach here).
+void run_js(const std::string& code);
+
 // Page-area size in pixels; Chromium re-measures afterwards.
 void set_view(int w, int h);
 

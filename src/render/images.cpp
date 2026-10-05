@@ -3,6 +3,8 @@
 // cotidiana; lo exotico (16 bits, entrelazado) falla con elegancia.
 #include "render/images.hpp"
 
+#include <page/bundle.hpp>
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -83,14 +85,9 @@ bool to_rgb(const uint8_t* raw, size_t rawlen, int w, int h, int channels,
 }
 
 const ImageBitmap* decode(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return nullptr;
-    std::vector<uint8_t> data;
-    uint8_t buf[65536];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
-        data.insert(data.end(), buf, buf + n);
-    std::fclose(f);
+    auto bytes = bundle::read_file(path);
+    if (!bytes) return nullptr;
+    std::vector<uint8_t> data(bytes->begin(), bytes->end());
 
     static const uint8_t kSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
     if (data.size() < 57 || std::memcmp(data.data(), kSig, 8) != 0) return nullptr;

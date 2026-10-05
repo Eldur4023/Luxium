@@ -287,12 +287,40 @@ ParseResult parse(std::string_view source) {
             else if (b.cur()->is_element("html"))
                 b.ensure_body(t.line);
 
+            // table structure: sections close what is open inside the table; a row
+            // directly in a table gets an implicit <tbody>, a cell outside a row an
+            // implicit <tr> (WHATWG "in table" insertion modes, the common paths)
+            auto open_implicit = [&](const char* tag) {
+                auto el = b.make(NodeType::Element, tag, t.line);
+                Node* raw = &b.cur()->append(std::move(el));
+                if (b.stack.size() < size_t(dom::kMaxDepth)) b.stack.push_back(raw);
+            };
+            auto is_section = [&](Node* n) {
+                return n->is_element("tbody") || n->is_element("thead") || n->is_element("tfoot");
+            };
+            if (name == "tbody" || name == "thead" || name == "tfoot" || name == "caption" || name == "colgroup") {
+                while (b.stack.size() > 2 &&
+                       (b.cur()->is_element("td") || b.cur()->is_element("th") || b.cur()->is_element("tr") ||
+                        is_section(b.cur()) || b.cur()->is_element("caption") || b.cur()->is_element("colgroup")))
+                    b.stack.pop_back();
+            } else if (name == "tr") {
+                b.close_implied("tr", t.line);
+                if (b.cur()->is_element("table")) open_implicit("tbody");
+            } else if (name == "td" || name == "th") {
+                b.close_implied(name, t.line);
+                if (b.cur()->is_element("table")) { open_implicit("tbody"); open_implicit("tr"); }
+                else if (is_section(b.cur())) open_implicit("tr");
+            }
+
             b.close_implied(name, t.line);
             Node* parent = b.content_parent(t.line);
             auto el = b.make(NodeType::Element, name, t.line);
             el->attrs = t.attrs;
             Node* raw = &parent->append(std::move(el));
-            if (!t.self_closing && !is_void(name)) b.stack.push_back(raw);
+            // Past kMaxDepth the element stays a leaf: what it would have
+            // contained lands next to it (Chromium does the same).
+            if (!t.self_closing && !is_void(name) && b.stack.size() < size_t(dom::kMaxDepth))
+                b.stack.push_back(raw);
             break;
         }
 

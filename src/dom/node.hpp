@@ -20,6 +20,16 @@ namespace luxium::dom {
 
 enum class NodeType { Document, Doctype, Element, Text, Comment };
 
+// Deepest tree the engine accepts (Chromium's parser uses the same 512).
+// Layout and style recurse over the tree: without a cap, 8000 nested <div>
+// overflow the stack.  Enforced by every way a tree is built: the HTML
+// parser, Element.append() from LuxScript and the .luxp document decoder.
+constexpr int kMaxDepth = 512;
+
+struct Node;
+int depth_of(const Node* n);          // 0 for the document
+int subtree_height(const Node& n);    // 1 for a leaf
+
 struct Node {
     NodeType type;
     std::string name;   // element tag (lowercase); "#text"/"#comment"/"#document"/"#doctype" for the rest
@@ -28,6 +38,9 @@ struct Node {
     Node*        parent = nullptr;
     std::vector<std::unique_ptr<Node>> children;
     int          line = 0;  // source line of the start tag (elements) / of the run (text)
+    // dynamic pseudo-class state, set by the shell (hover chain, pressed, focus)
+    enum State : unsigned char { Hover = 1, Active = 2, Focus = 4 };
+    unsigned char state = 0;
 
     explicit Node(NodeType t) : type(t) {}
 

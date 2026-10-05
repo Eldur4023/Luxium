@@ -2,6 +2,8 @@
 
 #include <net/fetch.hpp>
 #include <cef/cef_backend.hpp>
+#include <style/dump.hpp>
+#include <paint/raster.hpp>
 #include <render/images.hpp>
 
 #ifdef LUXIUM_CEF
@@ -21,7 +23,6 @@ namespace luxium::shell {
 
 using luxium::render::ImageBitmap;
 
-using render::ShapeCmd;
 
 Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cfg)) {
     // Clicks on <a href> come back here from the page, whatever the run mode.
@@ -78,115 +79,6 @@ static inline void blend_px(uint32_t& dst, uint32_t argb) {
           ((sr * a + dr * ia) / 255) << 16 |
           ((sg * a + dg * ia) / 255) << 8 |
           ((sb * a + db * ia) / 255);
-}
-
-// Signed-distance rounded-rect test: 0 inside, >0 outside (in px).
-static inline float rrect_sdf(float px, float py, float x, float y, float w,
-                              float h, float r) {
-    const float cx = std::max(x + r - px, px - (x + w - r));
-    const float cy = std::max(y + r - py, py - (y + h - r));
-    const float dx = std::max(cx, 0.f), dy = std::max(cy, 0.f);
-    const float d = std::sqrt(dx * dx + dy * dy) - r;
-    return std::max(d, std::min(std::max(x - px, px - (x + w)),
-                                std::max(y - py, py - (y + h))));
-}
-
-static void fill_shape(std::vector<uint32_t>& fb, int fb_w, int fb_h,
-                       const ShapeCmd& s, float scroll, int yoff, float alpha_mult) {
-    const int margin = s.blur > 0 ? int(s.blur * 2.f) + 2 : 2;
-    const int x0 = std::max(0, static_cast<int>(s.x) - margin);
-    const int y0 = std::max(0, static_cast<int>(s.y - scroll) - margin + yoff);
-    const int x1 = std::min(fb_w, static_cast<int>(s.x + s.w) + margin);
-    const int y1 = std::min(fb_h, static_cast<int>(s.y - scroll + s.h) + margin + yoff);
-    if (x0 >= x1 || y0 >= y1) return;
-    const float sigma = std::max(0.5f, s.blur * 0.5f);
-    const float blur_k = 0.5f / (sigma * 1.41421356f);
-
-    for (int y = y0; y < y1; ++y) {
-        uint32_t* row = fb.data() + static_cast<size_t>(y) * fb_w;
-        for (int x = x0; x < x1; ++x) {
-            float d = 0;
-            switch (s.kind) {
-            case ShapeCmd::Kind::Rect:
-                d = s.blur > 0
-                      ? std::max(std::max(float(x) + 0.5f - (s.x + s.w),
-                                          s.x - (float(x) + 0.5f)),
-                                 std::max(float(y) + 0.5f - (s.y - scroll + yoff + s.h),
-                                          s.y - scroll + yoff - (float(y) + 0.5f)))
-                      : -1.f;   // interior pleno: sin banda AA (d=0 daba 50% alpha!)
-                break;
-            case ShapeCmd::Kind::RRect:
-                d = rrect_sdf(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f,
-                              s.x, s.y - scroll + yoff, s.w, s.h, s.r);
-                break;
-            case ShapeCmd::Kind::Circle:
-                d = std::sqrt((x + 0.5f - s.x) * (x + 0.5f - s.x) +
-                              (y + 0.5f - s.y - scroll + yoff) * (y + 0.5f - s.y - scroll + yoff)) -
-                    s.r;
-                break;
-            }
-            float cov = 1.f;
-            if (s.blur > 0) {
-                // sombra gausiana: perfil 0.5*erfc(d/(sigma*sqrt2)), sigma = blur/2
-                cov = std::clamp(0.5f * std::erfc(d * blur_k), 0.f, 1.f);
-                if (cov <= 0.004f) continue;   // 1/255: invisible
-            } else if (d > 0.5f) {
-                continue;
-            } else if (d > -0.5f) {
-                cov = 0.5f - d;
-            }
-            uint32_t argb = s.argb;
-            if (s.grad && !s.stops.empty()) {
-                // degradado: color interpolado en la posicion del pixel
-                const float px = static_cast<float>(x) + 0.5f;
-                const float py = static_cast<float>(y) + 0.5f - scroll + yoff;
-                float t;
-                if (s.grad_radial) {
-                    const float ddx = (px - s.gcx) / s.grx;
-                    const float ddy = (py - (s.gcy - scroll + yoff)) / s.gry;
-                    t = std::sqrt(ddx * ddx + ddy * ddy);
-                } else {
-                    const float cxm = s.x + s.w / 2.f;
-                    const float cym = s.y - scroll + yoff + s.h / 2.f;
-                    t = 0.5f + ((px - cxm) * s.gdx + (py - cym) * s.gdy) / s.glen;
-                }
-                t = std::clamp(t, 0.f, 1.f);
-                size_t i = 0;
-                while (i + 1 < s.stops.size() && s.stops[i + 1].t <= t) ++i;
-                const auto& sa = s.stops[i];
-                const auto& sb = s.stops[std::min(i + 1, s.stops.size() - 1)];
-                const float span = sb.t - sa.t;
-                const float f = span > 1e-6f
-                                  ? std::clamp((t - sa.t) / span, 0.f, 1.f)
-                                  : 0.f;
-                const int ar = (sa.argb >> 16) & 0xFF, ag = (sa.argb >> 8) & 0xFF,
-                          ab = sa.argb & 0xFF;
-                const int br = (sb.argb >> 16) & 0xFF, bg = (sb.argb >> 8) & 0xFF,
-                          bb = sb.argb & 0xFF;
-                argb = 0xFF000000u |
-                       uint32_t(ar + (br - ar) * f) << 16 |
-                       uint32_t(ag + (bg - ag) * f) << 8 |
-                       uint32_t(ab + (bb - ab) * f);
-            }
-            const uint32_t a = uint32_t(float((argb >> 24) & 0xFF) * cov);
-            if (a == 0) continue;
-            argb = (a << 24) | (argb & 0xFFFFFF);
-            if (((argb >> 24) & 0xFF) == 255 && alpha_mult == 1.f) {
-                uint32_t& dst = row[static_cast<size_t>(x)];
-                const float ca = alpha_mult;
-                const uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
-                const uint32_t sr = (argb >> 16) & 0xFF, sg = (argb >> 8) & 0xFF, sb = argb & 0xFF;
-                dst = 0xFF000000u |
-                      uint32_t(sr * ca + dr * (1 - ca)) << 16 |
-                      uint32_t(sg * ca + dg * (1 - ca)) << 8 |
-                      uint32_t(sb * ca + db * (1 - ca));
-            } else {
-                const uint32_t a = ((argb >> 24) & 0xFF);
-                blend_px(row[static_cast<size_t>(x)],
-                         (uint32_t(a * alpha_mult) << 24) | (argb & 0xFFFFFF));
-            }
-        }
-    }
 }
 
 // ── shell ────────────────────────────────────────────────────────────────────
@@ -267,7 +159,7 @@ Shell::Resolved Shell::resolve(const std::string& href) const {
 }
 
 static std::string error_page(const std::string& target, const std::string& why) {
-    return "<html><head><title>No se pudo cargar</title></head><body>"
+    return "<html><head><title>No se pudo cargar</title><style>body{font-family:Arial,Helvetica,sans-serif}</style></head><body>"
            "<h1>No se pudo cargar la pagina</h1>"
            "<p><b>" + escape_html(target) + "</b></p>"
            "<p>" + escape_html(why) + "</p>"
@@ -290,27 +182,12 @@ void Shell::navigate_to(const std::string& href, bool push_history) {
     }
 
     if (r.kind == Target::Http) {
-#ifdef LUXIUM_CEF
-        // Con CEF construido, http(s) lo renderiza Chromium directamente
-        // (JS y web moderna completas).  El juicio lux/js sigue existiendo
-        // para lo que llega por curl+motor propio.
-        if (cef::built()) {
-            cef::attach(cef_display_, cef_parent_, r.target);
-            cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
-            cef::set_focus(true);
-            engine_cef_ = true;
-            scroll_ = 0;
-            if (push_history) {
-                hist_.resize(hist_idx_ + 1);
-                hist_.push_back(r.target);
-                hist_idx_ = hist_.size() - 1;
-            }
-            return;
-        }
-        page_.console(1, "CEF no disponible en este binario: motor propio");
-#endif
+        // Always asked as .luxp first (Accept): a Lux server answers its
+        // compiled page and our engine shows it.  Anything else goes to
+        // Chromium when it is built -- the fetch is then cut at the first
+        // byte (luxp_only), so the page is not downloaded twice.
         if (fetch_) fetch_.reset();   // one fetch at a time: the newest wins
-        fetch_ = net::Fetch::start(r.target);
+        fetch_ = net::Fetch::start(r.target, cef_available());
         if (push_history) {
             hist_.resize(hist_idx_ + 1);
             hist_.push_back(r.target);
@@ -337,6 +214,7 @@ void Shell::navigate_to(const std::string& href, bool push_history) {
 }
 
 void Shell::after_load() {
+    hover_node_ = nullptr;   // the old DOM is gone
     scroll_ = 0;
     std::string t = "Luxium";
     if (!page_.page_title().empty()) t += " \xE2\x80\x94 " + page_.page_title();
@@ -347,10 +225,21 @@ void Shell::after_load() {
 void Shell::poll_fetch() {
     if (!fetch_ || !fetch_->done()) return;
     const bool ok = fetch_->ok();
+    const bool luxp = fetch_->is_luxp();
+    const bool not_luxp = fetch_->not_luxp();
     const std::string body = fetch_->body();
     const std::string err  = fetch_->error();
     const std::string url  = fetch_->url();
     fetch_.reset();
+    if (not_luxp) {   // the web's HTML/JS: Chromium's job
+        open_in_cef(url);
+        return;
+    }
+    if (ok && luxp) {
+        page_.load_luxp(body, url);   // verified section by section; never handed to Chromium
+        after_load();
+        return;
+    }
     if (!ok) {
         page_.load_string(error_page(url, err), "luxium-error:" + url);
         after_load();
@@ -387,7 +276,7 @@ constexpr const char* kHomeHTML = R"html(<!doctype html>
 <html>
 <head><title>Luxium</title>
 <style>
-body { text-align: center; }
+body { text-align: center; font-family: Arial, Helvetica, sans-serif; }
 h1 { font-size: 44px; margin-top: 40px; }
 .sub { color: #8A919B; font-size: 15px; }
 h2 { font-size: 18px; }
@@ -485,10 +374,10 @@ int Shell::word_index_at(float doc_x, float doc_y) const {
     float best_d = 1e9f;
     for (int i = 0; i < static_cast<int>(layout_.words.size()); ++i) {
         const auto& w = layout_.words[i];
-        if (doc_y < w.y - 2 || doc_y > w.y + w.word.size * 2 + 2) continue;
+        if (doc_y < w.y - 2 || doc_y > w.y + w.h + 2) continue;
         float d = 0;
         if (doc_x < w.x)            d = w.x - doc_x;
-        else if (doc_x > w.x + w.word.width) d = doc_x - (w.x + w.word.width);
+        else if (doc_x > w.x + w.w) d = doc_x - (w.x + w.w);
         if (d < best_d) { best_d = d; best = i; }
     }
     return best;
@@ -516,7 +405,7 @@ std::string Shell::selection_text() const {
         const auto& w = layout_.words[static_cast<size_t>(i)];
         if (last_y > -1e8f && std::fabs(w.y - last_y) > 2.f) out += '\n';
         else if (!out.empty()) out += ' ';
-        out += w.word.text;
+        out += w.text;
         last_y = w.y;
     }
     return out;
@@ -534,21 +423,35 @@ void Shell::copy_selection() const {
 // hay CEF, se la pasa a Chromium (que la descarga y renderiza con todo).
 // Sin display X11 (modo --shot, dummy) no hay handoff: el motor propio la
 // deja en blanco y lo dice por consola.
-void Shell::maybe_cef_handoff() {
+bool Shell::cef_available() const {
 #ifdef LUXIUM_CEF
-    if (!page_.used_javascript() || !cef::built() || !cef_display_) return;
+    return cef::built() && cef_display_;
+#else
+    return false;
+#endif
+}
+
+void Shell::open_in_cef(const std::string& url) {
+#ifdef LUXIUM_CEF
+    cef::attach(cef_display_, cef_parent_, url);
+    cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
+    cef::set_focus(true);
+    engine_cef_ = true;
+    scroll_ = 0;
+#else
+    (void)url;
+#endif
+}
+
+void Shell::maybe_cef_handoff() {
+    if (!page_.used_javascript() || !cef_available()) return;
     std::string target = page_.name();
     if (target.rfind("http", 0) != 0) {
         std::error_code ec;
         auto abs = std::filesystem::absolute(target, ec);
         target = "file://" + (ec ? std::string("/") + target : abs.string());
     }
-    cef::attach(cef_display_, cef_parent_, target);
-    cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
-    cef::set_focus(true);
-    engine_cef_ = true;
-    scroll_ = 0;
-#endif
+    open_in_cef(target);
 }
 
 // ── the URL bar itself ──────────────────────────────────────────────────────
@@ -898,7 +801,7 @@ int Shell::run() {
     renderer_ = SDL_CreateRenderer(window_, -1, 0);
     cursor_hand_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
 
-    font_ = render::Font::load(cfg_.font_regular, cfg_.font_bold, cfg_.font_mono);
+    font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
     if (!font_) {
         std::fprintf(stderr, "cannot load the UI fonts:\n  %s\n  %s\n  %s\n",
                      cfg_.font_regular.c_str(), cfg_.font_bold.c_str(),
@@ -957,6 +860,7 @@ int Shell::run() {
                 if (url_drag_ && url_focus_ &&
                     (e.motion.state & SDL_BUTTON_LMASK))
                     url_caret_ = url_caret_at(e.motion.x);
+                if (!engine_cef_) update_hover();
 #ifdef LUXIUM_CEF
                 if (engine_cef_) {
                     const bool inside =
@@ -1258,6 +1162,20 @@ int Shell::run() {
     return 0;
 }
 
+// [{"t":"name","x":..,"y":..,"w":..,"h":..},...]  (mismo formato que la sonda)
+static void write_boxes_json(const std::string& path,
+                             const std::vector<render::BoxRect>& boxes) {
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return;
+    std::fputc('[', f);
+    for (size_t i = 0; i < boxes.size(); ++i)
+        std::fprintf(f, "%s{\"t\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"w\":%.2f,\"h\":%.2f}",
+                     i ? "," : "", boxes[i].name.c_str(), boxes[i].x, boxes[i].y,
+                     boxes[i].w, boxes[i].h);
+    std::fputs("]\n", f);
+    std::fclose(f);
+}
+
 int Shell::screenshot(const std::string& ppm_path) {
     // The SAME startup the windowed run does, on the dummy driver: if this
     // path renders, the windowed path renders -- they share ensure_surface(),
@@ -1271,7 +1189,7 @@ int Shell::screenshot(const std::string& ppm_path) {
     window_ = SDL_CreateWindow(cfg_.title.c_str(), SDL_WINDOWPOS_CENTERED,
                                SDL_WINDOWPOS_CENTERED, cfg_.width, cfg_.height, 0);
     renderer_ = SDL_CreateRenderer(window_, -1, 0);
-    font_ = render::Font::load(cfg_.font_regular, cfg_.font_bold, cfg_.font_mono);
+    font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
     if (!font_) return 1;
     ensure_surface();
     // clicks may have navigated to an http page: give the worker a chance
@@ -1279,6 +1197,7 @@ int Shell::screenshot(const std::string& ppm_path) {
         SDL_Delay(20);
     poll_fetch();
     repaint();
+    if (!boxes_path_.empty()) write_boxes_json(boxes_path_, layout_.boxes);
 
     FILE* f = std::fopen(ppm_path.c_str(), "wb");
     if (!f) return 1;
@@ -1311,7 +1230,7 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
                                SDL_WINDOWPOS_CENTERED, cfg_.width, cfg_.height,
                                SDL_WINDOW_HIDDEN);
     renderer_ = SDL_CreateRenderer(window_, -1, 0);
-    font_ = render::Font::load(cfg_.font_regular, cfg_.font_bold, cfg_.font_mono);
+    font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
     if (!font_) return 1;
     ensure_surface();
 
@@ -1365,6 +1284,38 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
     }
     repaint();   // ultimo blit con el frame final
 
+    if (!probe_path_.empty()) {
+        // La sonda: rect (border-box, coords de documento) de cada [data-t].
+        // display "inline" va marcado: sus fragmentos no son una caja.
+        std::string props = "[";
+        for (const auto& n : style::probe_properties()) props += "'" + n + "',";
+        props += "]";
+        cef::run_js(
+            "(()=>{const P=" + props + ";const o=[];for(const e of document.querySelectorAll('[data-t]')){"
+            "const r=e.getBoundingClientRect();const g=getComputedStyle(e);const cs={};"
+            "for(const p of P)cs[p]=g.getPropertyValue(p);"
+            "o.push({t:e.getAttribute('data-t'),x:+(r.x+scrollX).toFixed(2),"
+            "y:+(r.y+scrollY).toFixed(2),w:+r.width.toFixed(2),h:+r.height.toFixed(2),"
+            "d:g.display,cs:cs});}"
+            "console.log('LUXPROBE'+JSON.stringify(o));})()");
+        for (int waited = 0; waited < 5000; waited += 10) {
+            int lv = 0;
+            std::string tx;
+            bool got = false;
+            while (cef::pop_console(&lv, &tx))
+                if (tx.rfind("LUXPROBE", 0) == 0) {
+                    if (FILE* pf = std::fopen(probe_path_.c_str(), "wb")) {
+                        std::fputs(tx.c_str() + 8, pf);
+                        std::fputc('\n', pf);
+                        std::fclose(pf);
+                    }
+                    got = true;
+                }
+            if (got) break;
+            SDL_Delay(10);
+        }
+    }
+
     FILE* f = std::fopen(ppm_path.c_str(), "wb");
     if (!f) { cef::shutdown(); return 1; }
     std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
@@ -1390,18 +1341,35 @@ float Shell::page_h() const { return static_cast<float>(win_h_ - bottom_h() - kU
 void Shell::relayout() {
     if (win_w_ == 0 || !page_.page_root()) return;   // http pages start empty
 
+    // The hovered node may have been remove()d: its Hover chain is cut, so
+    // clear the bit document-wide and let the next mouse move set it again.
+    if (hover_node_) {
+        const dom::Node* top = hover_node_;
+        while (top->parent) top = top->parent;
+        if (top != page_.page_root()) {
+            std::vector<dom::Node*> st{page_.page_root()};
+            while (!st.empty()) {
+                dom::Node* n = st.back();
+                st.pop_back();
+                n->state &= static_cast<unsigned char>(~dom::Node::Hover);
+                for (auto& c : n->children) st.push_back(c.get());
+            }
+            hover_node_ = nullptr;
+        }
+    }
+
     page_.clear_dirty();
     layout_ = render::layout(*page_.page_root(), *font_,
-                             static_cast<float>(win_w_), page_.css(),
+                             static_cast<float>(win_w_), page_.rules(),
                              page_.base_dir(),
                              static_cast<float>(kUrlH),
                              static_cast<float>(win_h_ - bottom_h()));
     content_h_ = layout_.content_height;
+    page_.free_removed();   // the new layout no longer points into removed nodes
     scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_h_ - page_h()));
     if (std::getenv("LUXIUM_DEBUG_LAYOUT"))
-        for (const auto& d : layout_.shapes)
-            std::printf("shape kind=%d y=%.0f x=%.0f %.0fx%.0f\n",
-                        (int)d.kind, d.y, d.x, d.w, d.h);
+        for (const auto& d : layout_.boxes)
+            std::printf("box %s x=%.1f y=%.1f %.1fx%.1f\n", d.name.c_str(), d.x, d.y, d.w, d.h);
 }
 
 bool Shell::handle_click(int mx, int my, int clicks) {
@@ -1448,25 +1416,62 @@ bool Shell::handle_click(int mx, int my, int clicks) {
     return false;
 }
 
+// :hover -- the element under the mouse and its ancestors carry the Hover
+// state; a style change re-runs layout (only pages that mention :hover).
+void Shell::update_hover() {
+    if (!page_.page_root() || !page_.uses_hover()) return;
+    const dom::Node* target = nullptr;
+    if (mouse_y_ >= kUrlH && mouse_y_ < win_h_ - bottom_h() && !url_focus_) {
+        const float dx = static_cast<float>(mouse_x_);
+        const float dy = static_cast<float>(mouse_y_ - kUrlH) + scroll_;
+        for (const auto& a : layout_.areas)
+            if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h) target = a.node;
+    }
+    if (target == hover_node_) return;
+    auto set = [](const dom::Node* n, bool on) {
+        for (; n; n = n->parent) {
+            auto* m = const_cast<dom::Node*>(n);
+            if (on) m->state |= dom::Node::Hover; else m->state &= static_cast<unsigned char>(~dom::Node::Hover);
+        }
+    };
+    set(hover_node_, false);
+    set(target, true);
+    hover_node_ = target;
+    relayout();
+}
+
 void Shell::draw_scrollbar() {
+    // Chromium's classic Linux scrollbar, measured from its output: a 15px
+    // track (#fcfcfc), 5-row arrows, a 9px-wide rounded thumb inset 3px.
     const float page = page_h();
     if (content_h_ <= page || page <= 0) return;
-    const float bar_h = std::max(36.f, page * page / content_h_);
-    const float bar_y = scroll_ / (content_h_ - page) * (page - bar_h);
-    // the thumb only -- no track gutter, the page edge stays clean
-    const int   gx   = win_w_ - 8;
-    for (float yy = bar_y + kUrlH; yy < bar_y + bar_h + kUrlH; yy += 1) {
-        const int iy = static_cast<int>(yy);
-        if (iy < kUrlH || iy >= kUrlH + static_cast<int>(page)) continue;
-        for (int x = gx; x < gx + 5; ++x) {
-            // rounded ends on the thumb
-            const int ex = x - gx;
-            if ((iy == static_cast<int>(bar_y) || iy == static_cast<int>(bar_y + bar_h - 1)) &&
-                (ex == 0 || ex == 4))
-                continue;
-            fb_[static_cast<size_t>(iy) * win_w_ + x] = 0xFFC3CAD3;
-        }
+    const int x0 = win_w_ - 15, top = kUrlH, h = static_cast<int>(page);
+    auto put = [&](int x, int y, uint32_t c) {
+        if (x < 0 || x >= win_w_ || y < top || y >= top + h) return;
+        fb_[static_cast<size_t>(y) * win_w_ + x] = c;
+    };
+    for (int y = top; y < top + h; ++y)
+        for (int x = x0; x < win_w_; ++x) put(x, y, 0xFFFCFCFC);
+    const uint32_t k = 0xFF8B8B8B;
+    for (int i = 0; i < 5; ++i) {   // up arrow: apex at row 6, base at row 10
+        for (int dx = -i; dx <= i; ++dx) put(x0 + 7 + dx, top + 6 + i, k);
+        for (int dx = -(4 - i); dx <= 4 - i; ++dx) put(x0 + 7 + dx, top + h - 12 + i, k);   // down arrow
     }
+    const float track = page - 30.f;
+    const float thumb = std::max(24.f, track * page / content_h_);
+    const float off = scroll_ / (content_h_ - page) * (track - thumb);
+    paint::DisplayList dl;
+    paint::Item it; it.kind = paint::Item::Kind::Rect;
+    it.x = static_cast<float>(x0 + 3); it.w = 9;
+    it.y = std::round(15.f + 3.f + off); it.h = std::round(thumb - 6.f);
+    it.radii = {4.5f, 4.5f, 4.5f, 4.5f}; it.color = k;
+    dl.push_back(it);
+    paint::Canvas cv;
+    cv.px = std::span<uint32_t>(fb_.data(), fb_.size());
+    cv.w = win_w_; cv.h = win_h_;
+    cv.clip = {x0, top, win_w_, top + h};
+    cv.ox = 0; cv.oy = static_cast<float>(top);
+    paint::rasterize(dl, cv, *font_);
 }
 
 void Shell::draw_console() {
@@ -1570,7 +1575,7 @@ void Shell::repaint() {
     // paper
     for (int y = page_top; y < page_bottom; ++y) {
         uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
-        for (int x = 0; x < win_w_; ++x) row[x] = 0xFFFAFAF7;
+        for (int x = 0; x < win_w_; ++x) row[x] = layout_.canvas_bg;
     }
 
     // hover state: which button is under the cursor (document coords)
@@ -1587,56 +1592,24 @@ void Shell::repaint() {
         SDL_SetCursor(cursor_over_clickable_ ? cursor_hand_ : SDL_GetDefaultCursor());
     }
 
-    // shapes first (button boxes, pills, bars), then words over them.
-    for (const auto& s : layout_.shapes) {
-        if (s.y - scroll_ > page_h() + kUrlH || s.y + s.h - scroll_ < kUrlH) continue;
-        if (s.kind == ShapeCmd::Kind::Image) {
-            // bitmap bilinear del rect fuente al rect destino
-            const ImageBitmap* bm = s.img.get();
-            if (!bm || s.w <= 0 || s.h <= 0 || s.sw <= 0 || s.sh <= 0) continue;
-            const int x0 = std::max(0, int(s.x));
-            const int y0 = std::max(0, int(s.y - scroll_) + page_top);
-            const int x1 = std::min(win_w_, int(s.x + s.w) + 1);
-            const int y1 = std::min(win_h_, int(s.y - scroll_ + s.h) + 1 + page_top);
-            for (int y = std::max(y0, page_top); y < std::min(y1, page_bottom); ++y) {
-                uint32_t* row = fb_.data() + size_t(y) * win_w_;
-                const float v = (float(y) + 0.5f - page_top - (s.y - scroll_)) / s.h;
-                for (int x = x0; x < x1; ++x) {
-                    const float u = (float(x) + 0.5f - s.x) / s.w;
-                    if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
-                    const float fx = std::clamp(s.sx + u * s.sw, 0.f, float(bm->w) - 1.f);
-                    const float fy = std::clamp(s.sy + v * s.sh, 0.f, float(bm->h) - 1.f);
-                    const int ix = int(fx), iy = int(fy);
-                    const int ix1 = std::min(ix + 1, bm->w - 1);
-                    const int iy1 = std::min(iy + 1, bm->h - 1);
-                    const float tx = fx - ix, ty = fy - iy;
-                    for (int chn = 0; chn < 3; ++chn) {
-                        const float p00 = bm->rgb[(size_t(iy) * bm->w + ix) * 3 + chn];
-                        const float p10 = bm->rgb[(size_t(iy) * bm->w + ix1) * 3 + chn];
-                        const float p01 = bm->rgb[(size_t(iy1) * bm->w + ix) * 3 + chn];
-                        const float p11 = bm->rgb[(size_t(iy1) * bm->w + ix1) * 3 + chn];
-                        const float top = p00 + (p10 - p00) * tx;
-                        const float bot = p01 + (p11 - p01) * tx;
-                        row[x] &= ~(0xFFu << (16 - chn * 8));
-                        row[x] |= uint32_t(top + (bot - top) * ty) << (16 - chn * 8);
-                    }
-                }
-            }
-            continue;
+    // the page: display list in document coordinates, then fixed boxes in viewport coordinates
+    {
+        paint::Canvas cv;
+        cv.px = std::span<uint32_t>(fb_.data(), fb_.size());
+        cv.w = win_w_; cv.h = win_h_;
+        cv.clip = {0, page_top, win_w_, page_bottom};
+        cv.ox = 0; cv.oy = static_cast<float>(page_top) - scroll_;
+        paint::rasterize(layout_.list, cv, *font_);
+        if (hover) {   // the hovered button lightens: an overlay over its box
+            paint::DisplayList ov;
+            paint::Item it; it.kind = paint::Item::Kind::Rect;
+            it.x = hover->x; it.y = hover->y; it.w = hover->w; it.h = hover->h;
+            it.radii = {7, 7, 7, 7}; it.color = 0x22FFFFFF;
+            ov.push_back(std::move(it));
+            paint::rasterize(ov, cv, *font_);
         }
-        fill_shape(fb_, win_w_, win_h_, s, scroll_, page_top, 1.f);
-    }
-    if (hover) {   // the hovered button lightens: an overlay over the box,
-                   // before the words, so the text stays crisp
-        fill_shape(fb_, win_w_, win_h_,
-                   {ShapeCmd::Kind::RRect, hover->x, hover->y, hover->w, hover->h, 7,
-                    0x22FFFFFF},
-                   scroll_, page_top, 1.f);
-    }
-    for (const auto& w : layout_.words) {
-        if (w.y - scroll_ > page_h() || w.y + 40 - scroll_ < 0) continue;
-        render::draw_word(fb_, win_w_, win_h_, *font_, w.word, w.x,
-                          w.y - scroll_ + page_top, w.color);
+        cv.oy = static_cast<float>(page_top);
+        paint::rasterize(layout_.fixed, cv, *font_);
     }
 
     draw_status();

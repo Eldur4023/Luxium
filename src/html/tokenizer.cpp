@@ -5,6 +5,8 @@
 
 namespace luxium::html {
 
+#include "html/entities.inc"
+
 namespace {
 
 // Entity decoding for text and attribute values (structure is already
@@ -20,24 +22,21 @@ void decode_entities(std::string& s) {
     while (i < s.size()) {
         if (s[i] != '&') { out += s[i++]; continue; }
         size_t semi = s.find(';', i);
-        if (semi == std::string::npos || semi - i > 10) { out += s[i++]; continue; }
+        if (semi == std::string::npos || semi - i > 33) { out += s[i++]; continue; }
         std::string name = s.substr(i + 1, semi - i - 1);
-        if (name == "amp")       out += '&';
-        else if (name == "lt")   out += '<';
-        else if (name == "gt")   out += '>';
-        else if (name == "quot") out += '"';
-        else if (name == "apos") out += '\'';
-        else if (name == "nbsp")   out += "\xC2\xA0";
-        else if (name == "middot") out += "\xC2\xB7";
-        else if (name == "mdash")  out += "\xE2\x80\x94";
-        else if (name == "ndash")  out += "\xE2\x80\x93";
-        else if (name == "hellip") out += "\xE2\x80\xA6";
-        else if (name == "laquo")  out += "\xC2\xAB";
-        else if (name == "raquo")  out += "\xC2\xBB";
-        else if (name == "copy")   out += "\xC2\xA9";
-        else if (name == "times")  out += "\xC3\x97";
-        else if (name == "plusmn") out += "\xC2\xB1";
-        else if (name == "deg")    out += "\xC2\xB0";
+        if (!name.empty() && name[0] != '#') {
+            // named character reference: binary search in the generated WHATWG table
+            size_t lo = 0, hi = sizeof(kEntities) / sizeof(kEntities[0]);
+            const char* found = nullptr;
+            while (lo < hi) {
+                const size_t mid = (lo + hi) / 2;
+                const int cmp = name.compare(kEntities[mid].name);
+                if (cmp == 0) { found = kEntities[mid].utf8; break; }
+                if (cmp < 0) hi = mid; else lo = mid + 1;
+            }
+            if (found) out += found;
+            else out += s.substr(i, semi - i + 1);   // unknown entity: literal
+        }
         else if (!name.empty() && name[0] == '#') {
             long cp = -1;
             try {
