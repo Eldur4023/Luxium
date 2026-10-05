@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: click=quita -->
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+.fila { display: flex; gap: 10px; margin: 6px 0; }
+.fila div { flex: 1; padding: 8px; background: #eef2f7; }
+</style>
+<div class="fila" data-t="fila">
+  <div id="x" data-t="x">equis</div>
+  <div id="y" data-t="y">ye</div>
+  <div id="z" data-t="z">zeta</div>
+</div>
+<button id="quita" data-t="boton">quitar ye</button>
+<script>
+fn void quita():
+    document.get("y").remove()
+document.get("quita").click(quita)
+</script>

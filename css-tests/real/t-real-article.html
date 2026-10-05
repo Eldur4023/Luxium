@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700 -->
+<style>
+body { margin: 0; font-family: Georgia, 'Times New Roman', serif; font-size: 18px; line-height: 1.65; color: #1a1a1a; background: #fffdf8; }
+.page { max-width: 680px; margin: 0 auto; padding: 40px 20px 60px; }
+.kicker { font: 600 12px/1 Arial, sans-serif; letter-spacing: 1.5px; text-transform: uppercase; color: #b3541e; margin-bottom: 12px; }
+h1 { font-size: 40px; line-height: 1.15; margin: 0 0 12px; font-weight: 700; }
+.meta { font: 14px Arial, sans-serif; color: #777; margin-bottom: 28px; border-bottom: 1px solid #e6dfd0; padding-bottom: 16px; }
+.meta b { color: #333; }
+p { margin: 0 0 20px; }
+h2 { font-size: 26px; margin: 36px 0 12px; line-height: 1.25; }
+blockquote { margin: 28px 0; padding: 4px 0 4px 20px; border-left: 4px solid #b3541e; color: #444; font-style: italic; font-size: 20px; }
+code { font-family: 'Courier New', monospace; font-size: 15px; background: #f1ece0; padding: 1px 5px; border-radius: 3px; }
+pre { background: #1f1f1f; color: #f0e6d2; padding: 16px; border-radius: 6px; font-size: 14px; line-height: 1.5; overflow: auto; margin: 0 0 24px; }
+ul, ol { margin: 0 0 20px; padding-left: 28px; }
+li { margin-bottom: 6px; }
+a { color: #1b5fbf; }
+.note { background: #f4efe2; border: 1px solid #e0d7c0; border-radius: 6px; padding: 14px 16px; font: 15px/1.5 Arial, sans-serif; margin: 24px 0; }
+hr { border: 0; border-top: 1px solid #ddd3bd; margin: 40px 0 20px; }
+.foot { font: 13px Arial, sans-serif; color: #888; }
+</style>
+</head>
+<body>
+<div class="page" data-t="page">
+  <div class="kicker" data-t="kicker">Ingenieria</div>
+  <h1 data-t="h1">Por que medimos un navegador contra otro navegador</h1>
+  <div class="meta" data-t="meta">Por <b>Redaccion</b> &middot; 12 min de lectura &middot; 5 de octubre</div>
+  <p data-t="p1">Escribir un motor de renderizado es, sobre todo, un ejercicio de humildad: cada atajo que parece razonable choca tarde o temprano con un caso que la especificacion resolvio hace veinte anos. <a href="#">La unica defensa</a> es medir.</p>
+  <p data-t="p2">Un oraculo no es un juez perfecto, pero tiene una virtud insustituible: <code>getBoundingClientRect()</code> no tiene opiniones. Pregunta, responde un numero, y el numero o coincide o no.</p>
+  <h2 data-t="h2">Tres reglas que nos salvaron</h2>
+  <ol data-t="ol"><li data-t="o1">Una caracteristica por pagina de prueba.</li><li data-t="o2">El veredicto es numerico, el pixel es una pista.</li><li data-t="o3">Ningun commit rompe lo que ya pasaba.</li></ol>
+  <blockquote data-t="bq">Medir antes de construir; construir antes de opinar.</blockquote>
+  <pre data-t="pre">$ python3 tools/cssrun.py
+85 pass, 0 fail</pre>
+  <ul data-t="ul"><li data-t="u1">Rects con tolerancia de un pixel.</li><li data-t="u2">Estilos computados exactos.</li><li data-t="u3">Color de texto y de bordes.</li></ul>
+  <div class="note" data-t="note"><b>Nota:</b> los goldens se regeneran con Chromium; nunca a mano.</div>
+  <hr>
+  <div class="foot" data-t="foot">Publicado en el blog de ingenieria.</div>
+</div>
+</body>
+</html>

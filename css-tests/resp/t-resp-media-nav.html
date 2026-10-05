@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700,420x700 -->
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; color: #222; }
+.top { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: #1d2733; color: #fff; }
+.logo { font-weight: bold; font-size: 20px; }
+.menu { display: flex; gap: 20px; }
+.menu a { color: #cfd8e3; text-decoration: none; }
+.extra { display: inline-block; background: #2f6fed; padding: 4px 10px; border-radius: 12px; }
+.hero { padding: 60px 20px; text-align: center; background: linear-gradient(135deg, #2f6fed, #8a4fbf); color: #fff; }
+.hero h1 { margin: 0 0 12px; font-size: 40px; }
+.hero p { margin: 0 auto; max-width: 520px; }
+@media (max-width: 900px) { .top { flex-direction: column; gap: 10px; } .hero h1 { font-size: 30px; } }
+@media (max-width: 500px) { .menu { flex-direction: column; align-items: center; gap: 6px; } .extra { display: none; } .hero { padding: 30px 12px; } }
+</style>
+<div class="top" data-t="top">
+  <div class="logo" data-t="logo">Luxium</div>
+  <div class="menu" data-t="menu"><a href="#" data-t="m1">Inicio</a><a href="#" data-t="m2">Productos</a><a href="#" data-t="m3">Precios</a><span class="extra" data-t="extra">Nuevo</span></div>
+</div>
+<div class="hero" data-t="hero"><h1 data-t="h1">Un navegador distinto</h1><p data-t="p">Renderiza HTML y CSS como Chromium y ejecuta LuxScript en lugar de JavaScript.</p></div>

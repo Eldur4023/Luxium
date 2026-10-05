@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700 -->
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; padding: 40px 20px; font-family: Arial, Helvetica, sans-serif; background: #eef1f6; color: #1d2733; }
+.title { text-align: center; margin-bottom: 32px; }
+.title h1 { margin: 0 0 8px; font-size: 32px; }
+.title p { margin: 0; color: #667085; }
+.plans { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; max-width: 980px; margin: 0 auto; }
+.plan { flex: 1 1 260px; max-width: 300px; background: #fff; border-radius: 14px; border: 1px solid #dde2ea; overflow: hidden; display: flex; flex-direction: column; }
+.plan.pro { border: 2px solid #2f6fed; box-shadow: 0 8px 24px rgba(47, 111, 237, 0.2); }
+.plan header { padding: 20px; background: #f6f8fb; border-bottom: 1px solid #e6eaf0; }
+.plan.pro header { background: linear-gradient(135deg, #2f6fed, #5d92ff); color: #fff; }
+.plan h2 { margin: 0 0 4px; font-size: 20px; }
+.price { font-size: 36px; font-weight: 700; }
+.price small { font-size: 14px; font-weight: 400; opacity: .7; }
+.plan ul { list-style: none; margin: 0; padding: 16px 20px; flex: 1; }
+.plan li { padding: 7px 0 7px 24px; position: relative; border-bottom: 1px dashed #e3e7ee; font-size: 15px; }
+.plan li::before { content: "\2713"; position: absolute; left: 0; color: #1d8a2e; font-weight: bold; }
+.plan li.no { color: #98a2b3; }
+.plan li.no::before { content: "\2717"; color: #d42020; }
+.plan .cta { display: block; margin: 0 20px 20px; padding: 12px; text-align: center; background: #1d2733; color: #fff; border-radius: 8px; text-decoration: none; font-weight: bold; }
+.plan.pro .cta { background: #2f6fed; }
+</style>
+</head>
+<body>
+<div class="title" data-t="title"><h1 data-t="h1">Elige tu plan</h1><p data-t="sub">Sin permanencia. Cancela cuando quieras.</p></div>
+<div class="plans" data-t="plans">
+  <div class="plan" data-t="p1"><header data-t="p1h"><h2>Basico</h2><div class="price">0&euro;<small>/mes</small></div></header>
+    <ul data-t="p1u"><li>1 proyecto</li><li>Comunidad</li><li class="no">Soporte prioritario</li><li class="no">Dominio propio</li></ul><a class="cta" href="#" data-t="p1c">Empezar</a></div>
+  <div class="plan pro" data-t="p2"><header data-t="p2h"><h2>Pro</h2><div class="price">19&euro;<small>/mes</small></div></header>
+    <ul data-t="p2u"><li>Proyectos ilimitados</li><li>Soporte prioritario</li><li>Dominio propio</li><li class="no">SLA dedicado</li></ul><a class="cta" href="#" data-t="p2c">Probar 14 dias</a></div>
+  <div class="plan" data-t="p3"><header data-t="p3h"><h2>Empresa</h2><div class="price">99&euro;<small>/mes</small></div></header>
+    <ul data-t="p3u"><li>Todo lo de Pro</li><li>SLA dedicado</li><li>Auditoria de seguridad</li><li>Integracion a medida</li><li>Formacion del equipo</li></ul><a class="cta" href="#" data-t="p3c">Contactar</a></div>
+</div>
+</body>
+</html>

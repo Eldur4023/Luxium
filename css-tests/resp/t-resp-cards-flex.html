@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700,420x700 -->
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #333; background: #f5f6f8; line-height: 1.5; }
+.wrap { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+h1 { margin: 0 0 16px; font-size: 28px; }
+.cards { display: flex; flex-wrap: wrap; gap: 16px; }
+.card { flex: 1 1 260px; background: #fff; border: 1px solid #dde1e6; border-radius: 8px; padding: 16px; }
+.card h2 { margin: 0 0 8px; font-size: 18px; color: #2f6fed; }
+.card p { margin: 0; font-size: 14px; }
+</style>
+<div class="wrap" data-t="wrap">
+  <h1 data-t="titulo">Tarjetas flexibles</h1>
+  <div class="cards" data-t="cards">
+    <div class="card" data-t="c1"><h2>Uno</h2><p>Un texto corto para la primera tarjeta del conjunto.</p></div>
+    <div class="card" data-t="c2"><h2>Dos</h2><p>Esta segunda tarjeta lleva bastante mas texto para comprobar que las alturas se igualan dentro de cada fila cuando se reparte el espacio y que el contenido se ajusta al ancho disponible sin desbordar.</p></div>
+    <div class="card" data-t="c3"><h2>Tres</h2><p>Tercera.</p></div>
+    <div class="card" data-t="c4"><h2>Cuatro</h2><p>Cuarta tarjeta con un texto de longitud media para variar.</p></div>
+    <div class="card" data-t="c5"><h2>Cinco</h2><p>Quinta.</p></div>
+  </div>
+</div>

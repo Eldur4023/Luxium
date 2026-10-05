@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700,420x700 -->
+<style>
+body { margin: 0; padding: 20px; font-family: Georgia, 'Times New Roman', serif; font-size: 17px; line-height: 1.55; color: #222; background: #fff; }
+.art { max-width: 720px; margin: 0 auto; }
+.art h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; }
+.fig { float: left; width: 35%; margin: 4px 18px 8px 0; background: #dfe6f0; padding: 10px; font: 13px Arial, sans-serif; border: 1px solid #b8c4d6; }
+.fig.der { float: right; margin: 4px 0 8px 18px; width: 30%; }
+.art p { margin: 0 0 14px; }
+.cl { clear: both; border-top: 1px solid #ccc; padding-top: 8px; }
+</style>
+<div class="art" data-t="art">
+  <h1 data-t="h1">Un articulo con figuras flotantes</h1>
+  <div class="fig" data-t="f1">Figura 1: una caja flotante a la izquierda.</div>
+  <p data-t="p1">El texto rodea las figuras flotantes. Cuando la ventana es estrecha las lineas se acortan y el reparto cambia, y cuando la figura es mas alta que el parrafo el siguiente bloque sigue rodeandola hasta que se acaba el flotante.</p>
+  <div class="fig der" data-t="f2">Figura 2: otra a la derecha.</div>
+  <p data-t="p2">Segundo parrafo: mas texto para que se vean lineas a ambos lados de las dos figuras al mismo tiempo, con la anchura de linea reducida por los dos flotantes.</p>
+  <p data-t="p3">Tercer parrafo, mas corto.</p>
+  <p class="cl" data-t="p4">Parrafo con clear: both, debajo de todo.</p>
+</div>

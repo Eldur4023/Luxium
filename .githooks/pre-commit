@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Regla: ningun commit rompe un test que ya pasaba (css-tests/BASELINE.txt).
+# Activar una vez:  git config core.hooksPath .githooks
+# Solo corre si el commit toca el motor de render/CSS/shell.
+git diff --cached --name-only | grep -qE '^(src/(render|css|shell|html|dom)/|tools/css)' || exit 0
+cd "$(git rev-parse --show-toplevel)"
+[ -x build/luxium ] || { echo "pre-commit: falta build/luxium (./compile.sh)"; exit 0; }
+python3 tools/cssrun.py --check-baseline | tail -8 | grep -A20 REGRESION && exit 1
+python3 tools/cssref.py | grep FAIL && exit 1
+exit 0

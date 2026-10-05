@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: click=add,add -->
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+ul { margin: 8px 0; padding-left: 30px; }
+li { padding: 4px 8px; margin: 2px 0; background: #eef2f7; }
+button { margin-top: 6px; }
+</style>
+<ul id="lista" data-t="lista"><li data-t="i0">uno</li></ul>
+<button id="add" data-t="boton">anadir</button>
+<script>
+page.set("n", 0)
+fn void add():
+    int k = int(page.get("n")) + 1
+    page.set("n", k)
+    Element li = document.create("li")
+    li.set_text("nuevo " + str(k))
+    li.set_attr("data-t", "n" + str(k))
+    document.get("lista").append(li)
+document.get("add").click(add)
+</script>

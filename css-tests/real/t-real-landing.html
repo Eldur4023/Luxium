@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700 -->
+<style>
+:root { --brand: #2f6fed; --ink: #1d2733; --muted: #667085; --card: #ffffff; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Helvetica, Arial, sans-serif; color: var(--ink); line-height: 1.6; background: #f7f8fa; }
+a { color: inherit; text-decoration: none; }
+.container { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+header { background: #fff; border-bottom: 1px solid #e5e8ec; }
+header .container { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+.brand { font-size: 22px; font-weight: 700; color: var(--brand); letter-spacing: -0.5px; }
+nav a { margin-left: 24px; font-size: 15px; color: var(--muted); }
+.btn { display: inline-block; padding: 10px 20px; border-radius: 8px; font-weight: 600; font-size: 15px; background: var(--brand); color: #fff; border: 2px solid var(--brand); }
+.btn.ghost { background: transparent; color: var(--brand); margin-left: 12px; }
+.hero { padding: 72px 0 64px; text-align: center; background: linear-gradient(180deg, #eaf0ff 0%, #f7f8fa 100%); }
+.hero h1 { font-size: 46px; line-height: 1.15; margin-bottom: 16px; letter-spacing: -1px; }
+.hero p { font-size: 19px; color: var(--muted); max-width: 620px; margin: 0 auto 28px; }
+.features { padding: 56px 0; }
+.features h2 { text-align: center; font-size: 30px; margin-bottom: 32px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.feature { background: var(--card); border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); border-top: 4px solid var(--brand); }
+.feature h3 { font-size: 19px; margin-bottom: 8px; }
+.feature p { color: var(--muted); font-size: 15px; }
+.badge { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: #e6efff; color: var(--brand); margin-bottom: 10px; }
+.cta { background: var(--ink); color: #fff; text-align: center; padding: 48px 0; }
+.cta h2 { font-size: 28px; margin-bottom: 12px; }
+footer { padding: 24px 0; font-size: 14px; color: var(--muted); }
+footer .container { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } .hero h1 { font-size: 34px; } nav a { margin-left: 14px; } }
+@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header data-t="header"><div class="container">
+  <a class="brand" href="#" data-t="brand">Luxium</a>
+  <nav data-t="nav"><a href="#" data-t="n1">Producto</a><a href="#" data-t="n2">Docs</a><a href="#" data-t="n3">Precios</a></nav>
+</div></header>
+<section class="hero" data-t="hero"><div class="container">
+  <h1 data-t="h1">El navegador que habla LuxScript</h1>
+  <p data-t="lead">Renderiza la web de siempre con CEF y tus propias paginas compiladas con un motor propio, pequeno y rapido.</p>
+  <a class="btn" href="#" data-t="b1">Empezar ahora</a><a class="btn ghost" href="#" data-t="b2">Ver documentacion</a>
+</div></section>
+<section class="features" data-t="features"><div class="container">
+  <h2 data-t="h2">Todo lo que necesitas</h2>
+  <div class="grid" data-t="grid">
+    <div class="feature" data-t="f1"><span class="badge">RAPIDO</span><h3>Motor propio</h3><p>Layout, estilo y pintado escritos desde cero y probados contra Chromium.</p></div>
+    <div class="feature" data-t="f2"><span class="badge">SEGURO</span><h3>Sin JavaScript</h3><p>LuxScript es tipado y se ejecuta en una maquina virtual con superficie minima.</p></div>
+    <div class="feature" data-t="f3"><span class="badge">COMPATIBLE</span><h3>Doble motor</h3><p>La web normal la renderiza Chromium; tus paginas, el motor de Luxium.</p></div>
+    <div class="feature" data-t="f4"><span class="badge">LIGERO</span><h3>Un binario</h3><p>Todo en un ejecutable pequeno.</p></div>
+    <div class="feature" data-t="f5"><span class="badge">ABIERTO</span><h3>Documentado</h3><p>Una gramatica, una guia, ejemplos y una bateria de tests comparada contra Chromium pixel a pixel.</p></div>
+  </div>
+</div></section>
+<section class="cta" data-t="cta"><div class="container"><h2 data-t="h2b">Prueba Luxium hoy</h2><a class="btn" href="#" data-t="b3">Descargar</a></div></section>
+<footer data-t="footer"><div class="container"><span data-t="f-l">&copy; 2026 Luxium</span><span data-t="f-r">Hecho con LuxScript</span></div></footer>
+</body>
+</html>

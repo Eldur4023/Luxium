@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700,420x700 -->
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; padding: 20px; font-family: Arial, sans-serif; background: #fff; color: #222; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.item { background: #eef2f7; border: 2px solid #2f6fed; padding: 12px; min-height: 70px; }
+.item.wide { grid-column: span 2; background: #fdeeee; border-color: #d42020; }
+</style>
+<div class="grid" data-t="grid">
+  <div class="item" data-t="i1">uno</div>
+  <div class="item wide" data-t="i2">dos (ancho doble)</div>
+  <div class="item" data-t="i3">tres</div>
+  <div class="item" data-t="i4">cuatro con algo mas de texto dentro</div>
+  <div class="item" data-t="i5">cinco</div>
+  <div class="item" data-t="i6">seis</div>
+  <div class="item" data-t="i7">siete</div>
+</div>

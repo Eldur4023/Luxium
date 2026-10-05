@@ -1,68 +1,70 @@
 #!/usr/bin/env python3
-# cssgolden.py — genera los goldens de css-tests desde el ORACULO:
-# cada pagina se renderiza con Chromium (CEF off-screen, --cefshot) y el
-# area de pagina del framebuffer se guarda como css-tests/golden/<id>.png.
+# cssgolden.py -- generates the goldens of css-tests from the ORACLE: every
+# page is rendered by Chromium (CEF off-screen, --cefshot) and its page area is
+# saved as css-tests/golden/<id>.png, together with the probe's JSON (rects and
+# computed styles per [data-t], --cefprobe).
 #
-# Requiere sesion X11 (DISPLAY=:0); la ventana es oculta.
-# Uso:
-#   python3 tools/cssgolden.py               # todo (salta goldens existentes)
-#   python3 tools/cssgolden.py --force box/box-sizing
-#   python3 tools/cssgolden.py box flex      # directorios/ficheros concretos
+# Needs an X11 session (DISPLAY=:0); the window is hidden.
+#   python3 tools/cssgolden.py                  # everything missing
+#   python3 tools/cssgolden.py --force box flex # regenerate those
 import argparse
 import subprocess
 import sys
-from pathlib import Path
 
 from PIL import Image
 
-REPO = Path(__file__).resolve().parent.parent
-TESTS = REPO / "css-tests"
-GOLDEN = TESTS / "golden"
-PPM = Path("/tmp/opencode/cssgolden.ppm")
-URL_BAR_H = 38
-STATUS_H = 20
+from csscommon import (REPO, TESTS, GOLDEN, TMP, URL_BAR_H, STATUS_H, find_tests,
+                       golden_png, golden_json, oracle_source, sizes_of)
+
+PPM = TMP / "cssgolden.ppm"
+PROBE = TMP / "cssgolden.json"
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--force", action="store_true", help="regenerar existentes")
+    ap.add_argument("--force", action="store_true", help="regenerate existing goldens")
     ap.add_argument("targets", nargs="*")
     args = ap.parse_args()
 
-    rels = sorted(str(p.relative_to(TESTS))
-                  for p in TESTS.rglob("*.html") if p.is_file())
+    rels = [str(p.relative_to(TESTS)) for p in find_tests()]
     if args.targets:
         wanted = []
         for t in args.targets:
             base = t[:-len(".html")] if t.endswith(".html") else t
-            cand = [r for r in rels if r == base + ".html" or r.startswith(base.rstrip("/") + "/")]
-            wanted += cand
+            wanted += [r for r in rels if r == base + ".html" or r.startswith(base.rstrip("/") + "/")]
         rels = wanted
 
     GOLDEN.mkdir(exist_ok=True)
     ok = skip = bad = 0
     for rel in rels:
-        out = GOLDEN / (rel[:-len(".html")] + ".png")
-        if out.exists() and not args.force:
-            skip += 1
-            continue
-        try:
-            subprocess.run(
-                [str(REPO / "build" / "luxium"), str(TESTS / rel),
-                 "--cefshot", str(PPM)],
-                cwd=REPO, check=True, timeout=60,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            img = Image.open(PPM).convert("RGB")
-            w, h = img.size
-            out.parent.mkdir(parents=True, exist_ok=True)
-            img.crop((0, URL_BAR_H, w, h - STATUS_H)).save(out)
-            ok += 1
-            print("golden", rel, flush=True)
-        except Exception as e:  # noqa: BLE001
-            bad += 1
-            print("FALLO", rel, repr(e), flush=True)
-            subprocess.run(["pkill", "-x", "luxium"], capture_output=True)
-    print(f"\n{ok} goldens nuevos, {skip} ya existian, {bad} fallos")
+        html = TESTS / rel
+        noext = rel[:-len(".html")]
+        for size in sizes_of(html):
+            png, js = golden_png(noext, size), golden_json(noext, size)
+            if png.exists() and js.exists() and not args.force:
+                skip += 1
+                continue
+            try:
+                PROBE.unlink(missing_ok=True)
+                subprocess.run(
+                    [str(REPO / "build" / "luxium"), str(oracle_source(html)), "--size", size,
+                     "--cefshot", str(PPM), "--cefprobe", str(PROBE)],
+                    cwd=REPO, check=True, timeout=60,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                img = Image.open(PPM).convert("RGB")
+                w, h = img.size
+                png.parent.mkdir(parents=True, exist_ok=True)
+                img.crop((0, URL_BAR_H, w, h - STATUS_H)).save(png)
+                if not PROBE.exists():
+                    raise RuntimeError("the probe produced no JSON")
+                js.write_text(PROBE.read_text())
+                ok += 1
+                print("golden", rel, size, flush=True)
+            except Exception as e:  # noqa: BLE001
+                bad += 1
+                print("FAILED", rel, size, repr(e), flush=True)
+                subprocess.run(["pkill", "-x", "luxium"], capture_output=True)
+    print(f"\n{ok} new goldens, {skip} already there, {bad} failures")
     return 1 if bad else 0
 
 

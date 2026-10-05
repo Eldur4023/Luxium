@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: click=go -->
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+.card { padding: 10px; margin: 8px 0; border: 2px solid #cccccc; background: #f4f6f8; }
+.card.on { border-color: #2f6fed; background: #e6efff; font-weight: bold; width: 60%; }
+.oculto { display: none; }
+</style>
+<div class="card" id="a" data-t="a">tarjeta a</div>
+<div class="card" id="b" data-t="b">tarjeta b</div>
+<div class="card oculto" id="c" data-t="c">tarjeta c (oculta)</div>
+<button id="go" data-t="boton">cambiar</button>
+<script>
+fn void go():
+    document.get("a").set_attr("class", "card on")
+    document.get("b").set_attr("style", "margin-left: 40px; color: #d42020;")
+    document.get("c").set_attr("class", "card")
+    document.get("b").set_text("tarjeta b (cambiada)")
+document.get("go").click(go)
+</script>

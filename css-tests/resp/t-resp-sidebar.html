@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: sizes=1180x820,800x700,420x700 -->
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; color: #222; background: #eef0f3; }
+.layout { display: flex; min-height: 400px; }
+.side { flex: 0 0 220px; background: #1d2733; color: #cfd8e3; padding: 16px; }
+.side h2 { margin: 0 0 12px; font-size: 16px; color: #fff; }
+.side ul { margin: 0; padding: 0; list-style: none; }
+.side li { padding: 6px 0; border-bottom: 1px solid #2c3948; }
+.main { flex: 1 1 auto; min-width: 0; padding: 20px; background: #fff; }
+.main h1 { margin: 0 0 12px; font-size: 24px; }
+.stats { display: flex; gap: 12px; margin-bottom: 16px; }
+.stat { flex: 1; background: #f4f6f8; border-radius: 6px; padding: 12px; text-align: center; }
+.stat b { display: block; font-size: 24px; color: #2f6fed; }
+@media (max-width: 700px) { .layout { flex-direction: column; } .side { flex-basis: auto; } .stats { flex-direction: column; } }
+</style>
+<div class="layout" data-t="layout">
+  <div class="side" data-t="side"><h2 data-t="sh">Panel</h2><ul><li data-t="l1">Resumen</li><li data-t="l2">Clientes</li><li data-t="l3">Pedidos</li><li data-t="l4">Ajustes</li></ul></div>
+  <div class="main" data-t="main"><h1 data-t="h1">Resumen del dia</h1>
+    <div class="stats" data-t="stats"><div class="stat" data-t="s1"><b>128</b>pedidos</div><div class="stat" data-t="s2"><b>42</b>clientes</div><div class="stat" data-t="s3"><b>9.4k</b>ingresos</div></div>
+    <p data-t="p">Texto de ejemplo del area principal que se adapta al ancho disponible sin forzar scroll horizontal ni desbordar el contenedor flexible.</p></div>
+</div>

@@ -20,7 +20,7 @@
 # con FAIL o ERROR.
 
 import argparse
-import re
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -28,21 +28,24 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 
-REPO = Path(__file__).resolve().parent.parent
-TESTS = REPO / "css-tests"
-GOLDEN = TESTS / "golden"
-OUT = TESTS / "out"
-SHOT_PPM = Path("/tmp/opencode/cssrun.ppm")
+from csscommon import (REPO, TESTS, GOLDEN, TMP, URL_BAR_H, STATUS_H, DEFAULT_SIZE, find_tests,
+                       golden_png, golden_json, options, sizes_of, tag)
 
-URL_BAR_H = 38       # kUrlH
-STATUS_H = 20        # tira de estado inferior
-LUM_DIFF = 24        # anti-aliasing perdonado: umbral de luminancia por píxel
-PCT_THRESHOLD = 2.0  # % de píxeles distintos permitido (por defecto)
-SOLID_WIN = 9        # ventana de "region solida": 9x9
-SOLID_FRAC = 0.8     # >=80% de la ventana con diff = interior de un blob
-SOLID_MAX = 50       # pixeles "solidos" permitidos (elementos ausentes)
-BLOCK = 8            # rejilla del detector de tinta
-INK_MAX = 80         # bloques con contenido claro en un motor y vacio en el otro
+OUT = TESTS / "out"
+BASELINE = TESTS / "BASELINE.txt"
+SHOT_PPM = TMP / "cssrun.ppm"
+BOXES_JSON = TMP / "cssrun-boxes.json"
+STYLES_JSON = TMP / "cssrun-styles.json"
+RECT_TOL = 1.0       # px per coordinate (docs/plan-css-tests.md §1)
+BOXY = {"block", "flex", "grid", "table", "table-cell", "list-item", "flow-root", "inline-block"}
+
+LUM_DIFF = 24        # anti-aliasing forgiven: per-pixel luminance threshold
+PCT_THRESHOLD = 2.0  # % of differing pixels allowed (default)
+SOLID_WIN = 9        # "solid region" window: 9x9
+SOLID_FRAC = 0.8     # >=80% of the window differing = inside a blob
+SOLID_MAX = 50       # pixels inside solid regions allowed (missing elements)
+BLOCK = 8            # ink-detector grid
+INK_MAX = 80         # blocks with content in one engine and blank in the other
 
 
 def ink_mismatch(a: Image.Image, b: Image.Image):
@@ -62,19 +65,27 @@ def ink_mismatch(a: Image.Image, b: Image.Image):
     return int(((A_ink & B_blank) | (A_blank & B_ink)).sum())
 
 
+COLOR_TOL = 28       # por canal, sobre la media de un bloque 8x8
+COLOR_MAX = 25       # bloques con color distinto (texto del color equivocado, etc.)
+
+
+def color_mismatch(a: Image.Image, b: Image.Image):
+    """Bloques 8x8 cuya media de color difiere: caza el color equivocado de
+    texto/bordes que la luminancia perdona (p.ej. gris en vez de azul)."""
+    aa = np.asarray(a).astype(float)
+    bb = np.asarray(b).astype(float)
+    h = min(aa.shape[0], bb.shape[0]) // BLOCK * BLOCK
+    w = min(aa.shape[1], bb.shape[1]) // BLOCK * BLOCK
+    A = aa[:h, :w].reshape(h // BLOCK, BLOCK, w // BLOCK, BLOCK, 3).mean(axis=(1, 3))
+    B = bb[:h, :w].reshape(h // BLOCK, BLOCK, w // BLOCK, BLOCK, 3).mean(axis=(1, 3))
+    return int((np.abs(A - B).max(axis=2) > COLOR_TOL).sum())
+
+
 def test_options(html: Path):
     """Umbral y solido por test via comentario en el HTML:
     <!-- cssrun: threshold=3.5 solid=80 -->"""
-    th, so = PCT_THRESHOLD, SOLID_MAX
-    try:
-        m = re.search(r"cssrun:\s*(.*)", html.read_text(encoding="utf-8", errors="ignore"))
-    except OSError:
-        return th, so
-    if m:
-        d = dict(re.findall(r"(threshold|solid)\s*=\s*([\d.]+)", m.group(1)))
-        th = float(d.get("threshold", th))
-        so = float(d.get("solid", so))
-    return th, so
+    o = options(html)
+    return float(o.get("threshold", PCT_THRESHOLD)), float(o.get("solid", SOLID_MAX))
 
 
 def solid_dirty(a: Image.Image, b: Image.Image):
@@ -100,19 +111,89 @@ def solid_dirty(a: Image.Image, b: Image.Image):
     return int((dl & (s >= SOLID_FRAC * area)).sum())
 
 
-def find_tests():
-    return sorted(p for p in TESTS.rglob("*.html") if p.is_file())
-
-
-def shot(html: Path) -> Image.Image:
+def shot(html: Path, size: str = DEFAULT_SIZE) -> Image.Image:
     if SHOT_PPM.exists():
         SHOT_PPM.unlink()
-    r = subprocess.run(
-        [str(REPO / "build" / "luxium"), str(html), "--shot", str(SHOT_PPM)],
-        cwd=REPO, capture_output=True, text=True, timeout=30)
+    BOXES_JSON.unlink(missing_ok=True)
+    cmd = [str(REPO / "build" / "luxium"), str(html), "--size", size, "--shot", str(SHOT_PPM),
+           "--boxes", str(BOXES_JSON)]
+    for cid in options(html).get("click", "").split(","):
+        if cid:
+            cmd += ["--click", cid]
+    r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=30)
     if r.returncode != 0 or not SHOT_PPM.exists():
         raise RuntimeError(f"shot exit={r.returncode} {r.stderr.strip()[:120]}")
     return Image.open(SHOT_PPM).convert("RGB")
+
+
+def rect_diff(golden_json: Path):
+    """Compara los rects por data-t contra la sonda de Chromium.
+    Devuelve (mal, medidos, sin_medir, detalle).  'sin_medir' = cajas del
+    oraculo que el motor propio aun no registra (inline, img...)."""
+    if not golden_json.exists() or not BOXES_JSON.exists():
+        return 0, 0, 0, []
+    want = json.loads(golden_json.read_text())
+    got = {b["t"]: b for b in json.loads(BOXES_JSON.read_text())}
+    bad = measured = unmeasured = 0
+    detail = []
+    for w in want:
+        if w["d"] not in BOXY:
+            continue   # inline/none/contents: sin caja propia comparable
+        g = got.get(w["t"])
+        if g is None:
+            unmeasured += 1
+            detail.append(f"  sin-medir {w['t']} ({w['d']}) esperado "
+                          f"x={w['x']} y={w['y']} w={w['w']} h={w['h']}")
+            continue
+        measured += 1
+        d = {k: g[k] - w[k] for k in "xywh"}
+        if any(abs(v) > RECT_TOL for v in d.values()):
+            bad += 1
+            detail.append(f"  MAL {w['t']}: " + " ".join(
+                f"{k}={w[k]:g}->{g[k]:g}" for k in "xywh" if abs(d[k]) > RECT_TOL))
+    return bad, measured, unmeasured, detail
+
+
+def _same_value(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if a.endswith("px") and b.endswith("px"):
+        try:
+            return abs(float(a[:-2]) - float(b[:-2])) <= 0.51
+        except ValueError:
+            return False
+    return False
+
+
+def style_diff(html: Path, golden_json: Path, size: str = DEFAULT_SIZE):
+    """Estilos computados propios (--styles, sin ventana) contra getComputedStyle
+    de Chromium, por data-t.  Verifica la cascada y los valores tipados sin
+    mezclar el layout.  Devuelve (n_malos, detalle)."""
+    if not golden_json.exists():
+        return 0, []
+    want = {e["t"]: e["cs"] for e in json.loads(golden_json.read_text()) if "cs" in e}
+    if not want:
+        return 0, []
+    STYLES_JSON.unlink(missing_ok=True)
+    subprocess.run([str(REPO / "build" / "luxium"), str(html), "--size", size, "--styles", str(STYLES_JSON)],
+                   cwd=REPO, capture_output=True, timeout=30)
+    if not STYLES_JSON.exists():
+        return 1, ["  estilos: --styles no produjo salida"]
+    got = {e["t"]: e["cs"] for e in json.loads(STYLES_JSON.read_text())}
+    bad = 0
+    detail = []
+    for t, cs in want.items():
+        mine = got.get(t)
+        if mine is None:
+            continue
+        for prop, expected in cs.items():
+            have = mine.get(prop)
+            if have is None:
+                continue          # propiedad que no volcamos para este elemento
+            if not _same_value(have, expected):
+                bad += 1
+                detail.append(f"  ESTILO {t}.{prop}: chromium={expected!r} nuestro={have!r}")
+    return bad, detail
 
 
 def page_area(img: Image.Image) -> Image.Image:
@@ -131,27 +212,42 @@ def pixel_diff(a: Image.Image, b: Image.Image):
     return pct, bad
 
 
-def run_one(rel: str, bless: bool) -> str:
+def run_one(rel: str, size: str, bless: bool, verbose: bool = False) -> str:
     html = TESTS / rel
-    img = page_area(shot(html))
-    golden = GOLDEN / (rel[:-len(".html")] + ".png")
+    noext = rel[:-len(".html")]
+    img = page_area(shot(html, size))
+    golden = golden_png(noext, size)
     if bless:
         golden.parent.mkdir(parents=True, exist_ok=True)
         img.save(golden)
         return "BLESS"
     if not golden.exists():
-        OUT.joinpath(rel[:-len(".html")] + ".png").parent.mkdir(
-            parents=True, exist_ok=True)
-        img.save(OUT / (rel[:-len(".html")] + ".png"))
+        out = OUT / (tag(noext, size) + ".png")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.save(out)
         return "PENDIENTE"
     th, solid_max = test_options(html)
+    gjson = golden_json(noext, size)
+    rbad, rmeas, runm, rdetail = rect_diff(gjson)
+    sbad, sdetail = style_diff(html, gjson, size) if not options(html).get("click") else (0, [])
+    if verbose:
+        for line in rdetail + sdetail:
+            print(line)
     golden_img = Image.open(golden).convert("RGB")
     pct, bad = pixel_diff(img, golden_img)
     solid = solid_dirty(img, golden_img)
     ink = ink_mismatch(img, golden_img)
-    if pct <= th and solid <= solid_max and ink <= INK_MAX:
-        return f"PASS ({pct:.2f}% tinta={ink})"
+    colr = color_mismatch(img, golden_img)
+    rects = f"rects {rmeas - rbad}/{rmeas}" + (f" +{runm} sin medir" if runm else "")
+    if pct <= th and solid <= solid_max and ink <= INK_MAX and colr <= COLOR_MAX and rbad == 0 and sbad == 0:
+        return f"PASS ({pct:.2f}% tinta={ink}; {rects})"
     motivo = []
+    if sbad:
+        motivo.append(f"estilos={sbad}")
+    if rbad:
+        motivo.append(rects)
+    if colr > COLOR_MAX:
+        motivo.append(f"color={colr}>{COLOR_MAX}")
     if pct > th:
         motivo.append(f"{pct:.2f}%>{th}%")
     if solid > solid_max:
@@ -166,6 +262,12 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--bless", action="store_true",
                     help="reescribe goldens con NUESTRO render (solo oráculo!)")
+    ap.add_argument("--write-baseline", action="store_true",
+                    help="guarda en css-tests/BASELINE.txt los tests que pasan ahora")
+    ap.add_argument("--check-baseline", action="store_true",
+                    help="exit 1 si un test de BASELINE.txt deja de pasar")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="detalle de rects por elemento")
     ap.add_argument("targets", nargs="*")
     args = ap.parse_args()
 
@@ -175,25 +277,49 @@ def main():
         print("\n".join(rels))
         return 0
     if args.targets:
-        rels = [t if t.endswith(".html") else t + ".html" for t in args.targets]
+        sel = []
+        for t in args.targets:
+            t = t.rstrip("/")
+            if (TESTS / t).is_dir():
+                sel += [r for r in rels if r.startswith(t + "/")]
+            else:
+                sel.append(t if t.endswith(".html") else t + ".html")
+        rels = sel
 
     OUT.mkdir(exist_ok=True)
     counts = {"PASS": 0, "FAIL": 0, "PENDIENTE": 0, "ERROR": 0, "BLESS": 0}
     failed = []
+    results = {}
     for rel in rels:
-        try:
-            verdict = run_one(rel, args.bless)
-        except Exception as e:  # noqa: BLE001 — el runner nunca muere por un test
-            verdict = f"ERROR ({e})"
-        key = verdict.split()[0]
-        counts[key] = counts.get(key, 0) + 1
-        print(f"{verdict:<22} {rel}")
-        if key in ("FAIL", "ERROR"):
-            failed.append(rel)
+        noext = rel[:-len(".html")]
+        for size in sizes_of(TESTS / rel):
+            tid = tag(noext, size)
+            try:
+                verdict = run_one(rel, size, args.bless, args.verbose)
+            except Exception as e:  # noqa: BLE001 -- the runner never dies for one test
+                verdict = f"ERROR ({e})"
+            key = verdict.split()[0]
+            results[tid] = verdict
+            counts[key] = counts.get(key, 0) + 1
+            print(f"{verdict:<22} {tid}")
+            if key in ("FAIL", "ERROR"):
+                failed.append(tid)
+    passed = sorted(r for r, v in results.items() if v.startswith("PASS"))
+    if args.write_baseline:
+        BASELINE.write_text("".join(f"{r}\n" for r in passed))
+        print(f"\nBASELINE.txt: {len(passed)} tests")
+    if args.check_baseline:
+        want = BASELINE.read_text().split() if BASELINE.exists() else []
+        broke = [r for r in want if r in results and not results[r].startswith("PASS")]
+        if broke:
+            print("\nREGRESION: pasaban en BASELINE.txt y ya no:")
+            for r in broke:
+                print("  ", r)
+            return 1
     print(f"\n{counts['PASS']} pass, {counts['FAIL']} fail, "
           f"{counts['PENDIENTE']} pendientes (sin golden), "
           f"{counts['ERROR']} error")
-    return 1 if failed else 0
+    return 1 if failed and not args.check_baseline else 0
 
 
 if __name__ == "__main__":
