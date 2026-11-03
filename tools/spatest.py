@@ -169,6 +169,18 @@ try:
     else:
         print("  skip  needs build/luxium and Xvfb :99")
 
+    print("== .luxp keeps the engine's newer selectors (:has(>), ::placeholder, :focus-within, :open...)")
+    lux = os.path.join(ROOT, "..", "Lux", "build", "lux")
+    if os.path.exists(lux) and os.path.exists(win):
+        pk = os.path.join(ROOT, "examples", "spa")
+        r1 = subprocess.run([lux, "pack", "selectors-luxp.html", os.path.join(PROFILE, "sel.luxp")], cwd=pk,
+                            capture_output=True, text=True)
+        r2 = subprocess.run([win, "--inspect", os.path.join(PROFILE, "sel.luxp")], cwd=ROOT, capture_output=True, text=True)
+        check("Lux packs and Luxium accepts a sheet with the new selector kinds", r1.stdout + r1.stderr + r2.stdout + r2.stderr,
+              "1 page(s)", "estilos:   7 reglas")
+    else:
+        print("  skip  needs ../Lux/build/lux and build/luxium")
+
     print("== compat: M4 demo pages")
     o = run("examples/counter.html", ["mas", "mas"])
     check("counter.html still works (click(fn) + page.clicked)", o, "contador: 2")
