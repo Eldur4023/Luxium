@@ -68,6 +68,7 @@ add_library(lux_script STATIC
     src/lux_script/diagnostic.cpp
     src/lux_script/tiny_regex.cpp
     src/lux_script/template.cpp
+    src/lux_script/json_parse.cpp
     src/lux_script/builtin_module.cpp
     src/lux_script/natives.cpp
 )
@@ -104,6 +105,9 @@ add_executable(luxium
     src/style/dump.cpp
     src/net/fetch.cpp
     src/script/engine.cpp
+    src/script/engine_dom.cpp
+    src/script/engine_net.cpp
+    src/script/engine_util.cpp
     src/script/bytecode_io.cpp
     src/script/page_compile.cpp
     src/render/text.cpp
@@ -119,6 +123,7 @@ add_executable(luxium
     src/layout/media_ui.cpp
     src/paint/raster.cpp
     src/shell/shell.cpp
+    src/shell/media_glue.cpp
     src/page/page.cpp
     src/page/bundle.cpp
     src/page/doc_codec.cpp
@@ -170,10 +175,14 @@ endif()
 # Headless test harness for the script engine (no window).
 add_executable(luxium_headless
     src/tools/headless.cpp
+    src/net/fetch.cpp
     src/dom/node.cpp
     src/html/tokenizer.cpp
     src/html/parser.cpp
     src/script/engine.cpp
+    src/script/engine_dom.cpp
+    src/script/engine_net.cpp
+    src/script/engine_util.cpp
     src/script/bytecode_io.cpp
     src/script/page_compile.cpp
     src/page/page.cpp
@@ -184,5 +193,6 @@ add_executable(luxium_headless
     src/page/luxp.cpp
 )
 target_include_directories(luxium_headless PRIVATE src)
-target_link_libraries(luxium_headless PRIVATE lux_script ZLIB::ZLIB)
+target_link_libraries(luxium_headless PRIVATE lux_script ZLIB::ZLIB ${CURL_LIBRARIES})
+target_include_directories(luxium_headless PRIVATE ${CURL_INCLUDE_DIRS})
 target_compile_definitions(luxium_headless PRIVATE LUXP_ZLIB=1)

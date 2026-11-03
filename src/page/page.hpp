@@ -20,6 +20,8 @@
 
 namespace luxium::page {
 
+using luxium::EventData;
+
 class Page : public PageHost {
 public:
     struct ConsoleLine {
@@ -56,9 +58,35 @@ public:
         return slash == std::string::npos ? std::string() : name_.substr(0, slash + 1);
     }
 
+    // The shell sets this: history.push/replace changed the location (no load).
+    std::function<void(const std::string& url, bool replace)> on_location;
+
+    // What the shell lends the page (see script/engine.hpp): geometry, focus,
+    // scroll, fullscreen, clipboard; and the <video> player.
+    ShellHooks& hooks() override { return hooks_; }
+    void set_media(MediaApi* m) { media_ = m; }
+    MediaApi* media() override { return media_; }
+    // Where storage.* persists (default: the main profile).
+    void set_profile_dir(std::string dir) { profile_dir_ = std::move(dir); }
+    std::string profile_dir() const override { return profile_dir_; }
+
+    // Input, as events: the shell calls these.  `node` null = the page's
+    // active element / the document.  Return true if a handler prevented it.
+    bool dispatch(const std::string& kind, const dom::Node* node, const EventData& d = {});
+    bool key_event(bool down, const EventData& d, const dom::Node* target = nullptr);
+    void dispatch_window(const std::string& kind, const EventData& d = {}) { engine_.dispatch_window(kind, d); }
+    // The page's own back/forward.  False = nothing to go back to inside it.
+    bool history_go(int delta) { return engine_.history_go(delta); }
+    // Where history.push put the page (== name() until then).
+    const std::string& location() const { return engine_.location(); }
+
     // PageHost ────────────────────────────────────────────────────────────
     void        console(int level, const std::string& msg) override;
     std::string page_title() const override { return title_; }
+    void        set_page_title(const std::string& t) override { title_ = t; }
+    void        location_changed(const std::string& url, bool replace) override {
+        if (on_location) on_location(url, replace);
+    }
     dom::Node*  page_root() override { return root_.get(); }
     void        page_mutated() override { dirty_ = true; }
     std::string page_source_name() const override { return name_; }
@@ -72,8 +100,10 @@ public:
     bool dirty() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
 
-    // Routes a click at a node (hit-tested by the shell) to script handlers.
-    void click(const dom::Node* node);
+    // Routes a click at a node (hit-tested by the shell): the "click" event
+    // goes through the script handlers, then the default action runs unless
+    // one called event.prevent() (link navigation, form submit, <dialog>).
+    void click(const dom::Node* node, float x = 0, float y = 0, int button = 0);
 
     // Fires due timers (the shell calls it once per frame).
     void tick() { engine_.tick(); }
@@ -101,6 +131,9 @@ private:
     bool                       saw_js_ = false;
     std::string                source_;
     bool                       dirty_ = true;
+    ShellHooks                 hooks_;
+    MediaApi*                  media_ = nullptr;
+    std::string                profile_dir_;
 };
 
 } // namespace luxium::page

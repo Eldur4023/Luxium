@@ -439,6 +439,7 @@ void Host::start_own(AppWin* w, bool auto_engine) {
     shell::ShellConfig cfg;
     cfg.app = true;
     cfg.devtools = w->dev;
+    own->page.set_profile_dir(w->profile_root + "/" + w->app_id);   // storage.* per app
     own->shell = std::make_unique<shell::Shell>(own->page, cfg);
     own->shell->attach(w->win);
     own->shell->set_overlay([this, w](uint32_t* fb, int ww, int hh) {

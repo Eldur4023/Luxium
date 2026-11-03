@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <memory>
+#include <SDL_events.h>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,8 @@ struct ShellConfig {
     bool app      = false;
     bool devtools = false;   // app mode: F12 shows the console pane
 };
+
+class OwnMediaApi;
 
 class Shell {
 public:
@@ -137,6 +140,10 @@ private:
     Resolved resolve(const std::string& href) const;
 
     page::Page&    page_;
+    std::unique_ptr<OwnMediaApi> media_api_;   // <video> API for LuxScript (media_glue.cpp)
+    dom::Node* fullscreen_el_ = nullptr;       // document.fullscreen(e)
+    void wire_page_hooks();                    // clipboard, fullscreen, scroll, reload for scripts
+    bool forward_key_to_page(const SDL_Event& e, bool down);   // true: a script prevented it
     ShellConfig    cfg_;
     std::unique_ptr<render::Font> font_;
 

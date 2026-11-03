@@ -7,6 +7,7 @@
 #include <paint/raster.hpp>
 #include <render/images.hpp>
 #include <media/own_media.hpp>
+#include "shell/media_glue.hpp"
 
 #ifdef LUXIUM_CEF
 #include <SDL_syswm.h>
@@ -38,9 +39,67 @@ Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cf
     // Clicks on <a href> come back here from the page, whatever the run mode.
     page_.on_navigate = [this](const std::string& href) { navigate_to(href, true); };
     page_.on_media_click = [](const dom::Node* n) { media::own::toggle(n); };
+    media_api_ = std::make_unique<OwnMediaApi>(this);
+    wire_page_hooks();
+}
+
+// What LuxScript reaches through Page::hooks(): the pieces only the window knows.
+void Shell::wire_page_hooks() {
+    page_.set_media(media_api_.get());
+    auto& h = page_.hooks();
+    h.clipboard_set = [](const std::string& s) { SDL_SetClipboardText(s.c_str()); };
+    h.clipboard_get = [] {
+        char* t = SDL_GetClipboardText();
+        std::string s = t ? t : "";
+        if (t) SDL_free(t);
+        return s;
+    };
+    h.page_scroll_y  = [this] { return scroll_; };
+    h.page_scroll_to = [this](float y) { scroll_ = std::max(0.f, std::min(y, std::max(0.f, content_h_ - page_h()))); };
+    h.fullscreen = [this](dom::Node* n) { fullscreen_el_ = n; set_fullscreen(n != nullptr); page_.dispatch_window("fullscreenchange"); };
+    h.fullscreen_element = [this] { return fullscreen_ ? fullscreen_el_ : nullptr; };
+    h.reload = [this] { navigate_to(hist_[hist_idx_], false); };
+    h.history_back_outside = [this] { if (hist_idx_ > 0) { --hist_idx_; navigate_to(hist_[hist_idx_], false); } };
+    h.page_visible = [this] { return window_ && !(SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)); };
+    // history.push/replace: the address bar follows; the browser's own history keeps one entry per page load.
+    page_.on_location = [this](const std::string& url, bool) { if (hist_idx_ < hist_.size()) hist_[hist_idx_] = url; };
+}
+
+// DOM key names for the keys scripts care about; printable keys use their text.
+bool Shell::forward_key_to_page(const SDL_Event& e, bool down) {
+    const SDL_Keycode k = e.key.keysym.sym;
+    EventData d;
+    switch (k) {
+    case SDLK_RETURN: case SDLK_KP_ENTER: d.key = "Enter"; break;
+    case SDLK_ESCAPE: d.key = "Escape"; break;
+    case SDLK_TAB: d.key = "Tab"; break;
+    case SDLK_BACKSPACE: d.key = "Backspace"; break;
+    case SDLK_DELETE: d.key = "Delete"; break;
+    case SDLK_LEFT: d.key = "ArrowLeft"; break;
+    case SDLK_RIGHT: d.key = "ArrowRight"; break;
+    case SDLK_UP: d.key = "ArrowUp"; break;
+    case SDLK_DOWN: d.key = "ArrowDown"; break;
+    case SDLK_HOME: d.key = "Home"; break;
+    case SDLK_END: d.key = "End"; break;
+    case SDLK_PAGEUP: d.key = "PageUp"; break;
+    case SDLK_PAGEDOWN: d.key = "PageDown"; break;
+    case SDLK_SPACE: d.key = " "; d.code = "Space"; break;
+    default:
+        if (k >= SDLK_F1 && k <= SDLK_F12) d.key = "F" + std::to_string(k - SDLK_F1 + 1);
+        else if (k >= 32 && k < 127) d.key = std::string(1, static_cast<char>(
+                     (e.key.keysym.mod & KMOD_SHIFT) && k >= 'a' && k <= 'z' ? k - 32 : k));
+        else return false;
+    }
+    if (d.code.empty()) d.code = d.key.size() == 1 && std::isalpha(static_cast<unsigned char>(d.key[0]))
+                                     ? "Key" + std::string(1, static_cast<char>(std::toupper(d.key[0]))) : d.key;
+    const uint16_t m = e.key.keysym.mod;
+    d.ctrl = m & KMOD_CTRL; d.shift = m & KMOD_SHIFT; d.alt = m & KMOD_ALT; d.meta = m & KMOD_GUI;
+    d.repeat = e.key.repeat != 0;
+    return page_.key_event(down, d);
 }
 
 Shell::~Shell() {
+    media::own::Scope media_scope(this);
     media::own::reset();
     if (cursor_hand_) SDL_FreeCursor(cursor_hand_);
     if (texture_)  SDL_DestroyTexture(texture_);
@@ -265,7 +324,7 @@ void Shell::tick_media() {
 }
 
 void Shell::after_load() {
-    media::own::reset();     // players of the old document stop here
+    { media::own::Scope media_scope(this); media::own::reset(); }   // players of the old document stop here
     hover_node_ = nullptr;   // the old DOM is gone
     scroll_ = 0;
     std::string t = "Luxium";
@@ -654,7 +713,7 @@ void Shell::draw_url_bar() {
 
     // label -- only when it adds information (a luxium: address already
     // says it)
-    const std::string shown_addr = url_focus_ ? url_edit_ : page_.name();
+    const std::string shown_addr = url_focus_ ? url_edit_ : page_.location();
     font_->set_size(12.5f);
     if (shown_addr.rfind("luxium:", 0) != 0) {
         float lx = fx + 10;
@@ -749,7 +808,7 @@ void Shell::draw_url_bar() {
                     if (xx >= 0 && xx < win_w_)
                         fb_[static_cast<size_t>(yy) * win_w_ + xx] = 0xFF2F6FED;
     } else {
-        std::string visible = engine_cef_ ? cef::url() : page_.name();
+        std::string visible = engine_cef_ ? cef::url() : page_.location();
         if (visible.empty()) visible = "escribe una uri...";
         // keep the tail that fits (utf-8 sequences dropped whole from the front)
         while (visible.size() > 4 &&
@@ -947,6 +1006,8 @@ bool Shell::handle_event(const SDL_Event& e) {
 #endif
                 if (e.button.button == SDL_BUTTON_LEFT)
                     handle_click(e.button.x, e.button.y, e.button.clicks);
+                else if (e.button.button == 3 && !engine_cef_ && page_.history_go(-1)) {}   // X1 = back inside the page
+                else if (e.button.button == 4 && !engine_cef_ && page_.history_go(1)) {}    // X2 = forward inside the page
                 else if (e.button.button == 3) navigate_to(hist_[hist_idx_], false);      // X1 = back
                 else if (e.button.button == 4 && hist_idx_ + 1 < hist_.size()) {          // X2 = forward
                     ++hist_idx_;
@@ -1060,7 +1121,7 @@ bool Shell::handle_event(const SDL_Event& e) {
                     if (engine_cef_ && !cef::url().empty()) shown = cef::url();
 #endif
                     if (shown.empty())
-                        shown = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+                        shown = page_.location().rfind("luxium:", 0) == 0 ? "" : page_.location();
                     url_edit_  = shown;
                     url_caret_  = static_cast<int>(url_edit_.size());
                     url_anchor_ = 0;   // como Chrome: la dirección queda marcada
@@ -1076,6 +1137,10 @@ bool Shell::handle_event(const SDL_Event& e) {
                     toggle_view_source();
                     break;
                 }
+                if (!engine_cef_ && (e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_LEFT &&
+                    page_.history_go(-1)) break;
+                if (!engine_cef_ && (e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_RIGHT &&
+                    page_.history_go(1)) break;
                 if ((e.key.keysym.mod & KMOD_ALT) && e.key.keysym.sym == SDLK_LEFT &&
                     hist_idx_ > 0) {
                     --hist_idx_;
@@ -1111,6 +1176,7 @@ bool Shell::handle_event(const SDL_Event& e) {
                     break;
                 }
 #endif
+                if (forward_key_to_page(e, true)) break;   // a script handled it (event.prevent())
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: if (!app_) quit = true; break;
                 case SDLK_PAGEUP:   scroll_ = std::max(0.f, scroll_ - page_h() * 0.8f); break;
@@ -1120,12 +1186,15 @@ bool Shell::handle_event(const SDL_Event& e) {
                 case SDLK_END:  scroll_ = std::max(0.f, content_h_ - page_h()); break;
                 }
                 break;
-#ifdef LUXIUM_CEF
             case SDL_KEYUP:
-                if (engine_cef_ && !url_focus_)
+#ifdef LUXIUM_CEF
+                if (engine_cef_ && !url_focus_) {
                     forward_cef_key(e.key.keysym, 1, cef_display_, false);
-                break;
+                    break;
+                }
 #endif
+                if (!url_focus_) forward_key_to_page(e, false);
+                break;
             }
     return quit;
 }
@@ -1408,6 +1477,7 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
 float Shell::page_h() const { return static_cast<float>(win_h_ - bottom_h() - url_h()); }
 
 void Shell::relayout() {
+    media::own::Scope media_scope(this);   // this window's players only (sweep)
     if (win_w_ == 0 || !page_.page_root()) return;   // http pages start empty
 
     // The hovered node may have been remove()d: its Hover chain is cut, so
@@ -1451,7 +1521,7 @@ bool Shell::handle_click(int mx, int my, int clicks) {
             if (engine_cef_ && !cef::url().empty()) shown = cef::url();
 #endif
             if (shown.empty())
-                shown = page_.name().rfind("luxium:", 0) == 0 ? "" : page_.name();
+                shown = page_.location().rfind("luxium:", 0) == 0 ? "" : page_.location();
             url_edit_   = shown;
             url_caret_  = static_cast<int>(url_edit_.size());
             url_anchor_ = url_caret_;
@@ -1482,7 +1552,8 @@ bool Shell::handle_click(int mx, int my, int clicks) {
     for (auto it = layout_.media.rbegin(); it != layout_.media.rend(); ++it)   // control bars
         if (render::media_click(*it, doc_x, it->fixed ? static_cast<float>(my - url_h()) : doc_y)) return true;
     if (const dom::Node* n = render::hit_test(layout_, doc_x, doc_y)) {
-        page_.click(n);
+        page_.click(n, doc_x, doc_y);
+        if (clicks == 2) page_.dispatch("dblclick", n);
         return true;
     }
     return false;
@@ -1726,7 +1797,7 @@ void Shell::draw_status() {
             }
         }
     }
-    if (text.empty()) text = engine_cef_ ? cef::url() : page_.name();
+    if (text.empty()) text = engine_cef_ ? cef::url() : page_.location();
     for (const auto& w : render::shape_words(*font_, text, false, false)) {
         if (x > win_w_ - 80) break;
         render::draw_word(fb_, win_w_, win_h_, *font_, w, x,
