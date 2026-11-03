@@ -37,8 +37,8 @@ class Page:
                     raise RuntimeError(m["error"])
                 return m["result"]
 
-    def eval(self, expr, await_promise=True):
-        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=await_promise)
+    def eval(self, expr, await_promise=True, gesture=False):
+        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=await_promise, userGesture=gesture)
         if "exceptionDetails" in r:
             d = r["exceptionDetails"]
             raise RuntimeError(d.get("exception", {}).get("description") or d.get("text"))

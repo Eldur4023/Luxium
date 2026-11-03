@@ -14,6 +14,8 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -48,7 +50,7 @@ void Shell::ensure_surface() {
     console_h_ = ch;
 #ifdef LUXIUM_CEF
     if (engine_cef_)
-        cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
+        cef::set_view(win_w_, win_h_ - bottom_h() - url_h());
 #endif
     fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFAFAF7u);
     if (texture_) SDL_DestroyTexture(texture_);
@@ -60,7 +62,20 @@ void Shell::ensure_surface() {
 // 20px de tira de estado siempre; el panel de consola solo cuando esta
 // visible (F12).  La pagina ocupa todo lo demas.
 int Shell::bottom_h() const {
+    if (fullscreen_) return 0;
     return 20 + (console_visible_ ? console_h_ : 0);
+}
+
+int Shell::url_h() const { return fullscreen_ ? 0 : kUrlH; }
+
+// The page took fullscreen (a video player, a web app): the window follows and
+// the chrome around the page disappears; the view is the whole window.
+void Shell::set_fullscreen(bool on) {
+    if (on == fullscreen_) return;
+    fullscreen_ = on;
+    if (window_) SDL_SetWindowFullscreen(window_, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    win_w_ = 0;      // force ensure_surface() to rebuild everything for the new size
+    ensure_surface();
 }
 
 void Shell::toggle_console() {
@@ -419,6 +434,38 @@ void Shell::copy_selection() const {
     }
 }
 
+// Chromium's cursor type for the page area -> an SDL system cursor.
+void Shell::update_cef_cursor() {
+#ifdef LUXIUM_CEF
+    static const SDL_SystemCursor map[] = {
+        SDL_SYSTEM_CURSOR_ARROW, SDL_SYSTEM_CURSOR_CROSSHAIR, SDL_SYSTEM_CURSOR_HAND, SDL_SYSTEM_CURSOR_IBEAM,
+        SDL_SYSTEM_CURSOR_WAIT, SDL_SYSTEM_CURSOR_ARROW,                                // pointer cross hand ibeam wait help
+        SDL_SYSTEM_CURSOR_SIZEWE, SDL_SYSTEM_CURSOR_SIZENS, SDL_SYSTEM_CURSOR_SIZENESW, SDL_SYSTEM_CURSOR_SIZENWSE,
+        SDL_SYSTEM_CURSOR_SIZENS, SDL_SYSTEM_CURSOR_SIZENWSE, SDL_SYSTEM_CURSOR_SIZENESW, SDL_SYSTEM_CURSOR_SIZEWE,
+        SDL_SYSTEM_CURSOR_SIZENS, SDL_SYSTEM_CURSOR_SIZEWE, SDL_SYSTEM_CURSOR_SIZENESW, SDL_SYSTEM_CURSOR_SIZENWSE,
+        SDL_SYSTEM_CURSOR_SIZEWE, SDL_SYSTEM_CURSOR_SIZENS,                              // column row resize
+        SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL,
+        SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL,
+        SDL_SYSTEM_CURSOR_SIZEALL, SDL_SYSTEM_CURSOR_SIZEALL,                            // panning, move
+        SDL_SYSTEM_CURSOR_IBEAM, SDL_SYSTEM_CURSOR_CROSSHAIR, SDL_SYSTEM_CURSOR_ARROW, SDL_SYSTEM_CURSOR_HAND,
+        SDL_SYSTEM_CURSOR_WAITARROW, SDL_SYSTEM_CURSOR_NO, SDL_SYSTEM_CURSOR_ARROW,      // vtext cell menu alias progress nodrop copy
+    };
+    constexpr int kNone = 36, kNotAllowed = 37;
+    const int t = cef::cursor();
+    if (t == cef_cursor_) return;
+    cef_cursor_ = t;
+    if (std::getenv("LUXIUM_DEBUG_CEF")) std::fprintf(stderr, "[cursor] type %d\n", t);
+    if (t == kNone) { SDL_ShowCursor(SDL_DISABLE); return; }
+    SDL_ShowCursor(SDL_ENABLE);
+    SDL_SystemCursor id = SDL_SYSTEM_CURSOR_ARROW;
+    if (t == kNotAllowed) id = SDL_SYSTEM_CURSOR_NO;
+    else if (t >= 0 && t < (int)(sizeof map / sizeof map[0])) id = map[t];
+    static SDL_Cursor* cache[SDL_NUM_SYSTEM_CURSORS] = {};
+    if (!cache[id]) cache[id] = SDL_CreateSystemCursor(id);
+    if (cache[id]) SDL_SetCursor(cache[id]);
+#endif
+}
+
 // El juicio de la casa: si la pagina que acaba de cargar pide JavaScript y
 // hay CEF, se la pasa a Chromium (que la descarga y renderiza con todo).
 // Sin display X11 (modo --shot, dummy) no hay handoff: el motor propio la
@@ -434,7 +481,7 @@ bool Shell::cef_available() const {
 void Shell::open_in_cef(const std::string& url) {
 #ifdef LUXIUM_CEF
     cef::attach(cef_display_, cef_parent_, url);
-    cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
+    cef::set_view(win_w_, win_h_ - bottom_h() - url_h());
     cef::set_focus(true);
     engine_cef_ = true;
     scroll_ = 0;
@@ -552,7 +599,7 @@ void Shell::url_paste() {
 }
 
 void Shell::draw_url_bar() {
-    constexpr int H = kUrlH;
+    constexpr int H = kUrlH;   // drawn only outside fullscreen
     // field background + focus ring
     const uint32_t bg      = url_focus_ ? 0xFFFFFFFFu : 0xFFF1F2F4;
     const uint32_t ring    = url_focus_ ? 0xFF2F6FEDu : 0xFFD9DCDF;
@@ -786,6 +833,10 @@ static void forward_cef_key(const SDL_Keysym& k, int type, unsigned long display
 }
 #endif // LUXIUM_CEF
 
+// SIGTERM/SIGINT become a normal quit, so CEF shuts down and flushes the profile.
+static std::atomic<bool> g_term{false};
+static void on_term(int) { g_term = true; }
+
 int Shell::run() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -829,6 +880,8 @@ int Shell::run() {
             cef_display_ = (unsigned long)wm.info.x11.display;
             cef_parent_  = (unsigned long)wm.info.x11.window;
             cef::init(cef_display_, cef_parent_);
+            std::signal(SIGTERM, on_term);   // CEF's init replaced the handlers
+            std::signal(SIGINT, on_term);
         }
     }
     maybe_cef_handoff();   // la pagina inicial tambien se juzga (lux vs js)
@@ -836,6 +889,7 @@ int Shell::run() {
 
     bool quit = false;
     while (!quit) {
+        if (g_term) quit = true;
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             switch (e.type) {
@@ -865,9 +919,9 @@ int Shell::run() {
                 if (engine_cef_) {
                     const bool inside =
                         e.motion.x >= 0 && e.motion.x < win_w_ &&
-                        e.motion.y >= kUrlH &&
+                        e.motion.y >= url_h() &&
                         e.motion.y < win_h_ - bottom_h();
-                    cef::mouse_move(e.motion.x, e.motion.y - kUrlH, !inside,
+                    cef::mouse_move(e.motion.x, e.motion.y - url_h(), !inside,
                                     cef_mods_flags(SDL_GetModState(), false));
                 }
 #endif
@@ -875,14 +929,24 @@ int Shell::run() {
             case SDL_TEXTINPUT:
                 if (url_focus_) url_insert(e.text.text);
 #ifdef LUXIUM_CEF
-                else if (engine_cef_)
-                    cef::key(2, cef_mods_flags(SDL_GetModState(), false), 0, 0,
-                             e.text.text);
+                else if (engine_cef_) {
+                    // plain ASCII is a CHAR key event; anything else (accents, CJK, emoji)
+                    // goes through the input-method path so it is not cut to 16 bits
+                    if (static_cast<unsigned char>(e.text.text[0]) < 0x80)
+                        cef::key(2, cef_mods_flags(SDL_GetModState(), false), 0, 0, e.text.text);
+                    else
+                        cef::ime_commit(e.text.text);
+                }
+#endif
+                break;
+            case SDL_TEXTEDITING:   // IME preedit; an empty string cancels it
+#ifdef LUXIUM_CEF
+                if (engine_cef_ && !url_focus_) cef::ime_compose(e.edit.text, e.edit.start);
 #endif
                 break;
             case SDL_MOUSEWHEEL: {
 #ifdef LUXIUM_CEF
-                if (engine_cef_ && !url_focus_ && mouse_y_ >= kUrlH &&
+                if (engine_cef_ && !url_focus_ && mouse_y_ >= url_h() &&
                     mouse_y_ < win_h_ - bottom_h()) {
                     float dy = e.wheel.preciseY;
                     float dx = e.wheel.preciseX;
@@ -890,7 +954,7 @@ int Shell::run() {
                         dy = -dy;
                         dx = -dx;
                     }
-                    cef::mouse_wheel(mouse_x_, mouse_y_ - kUrlH,
+                    cef::mouse_wheel(mouse_x_, mouse_y_ - url_h(),
                                      static_cast<int>(dx * 100),
                                      static_cast<int>(dy * 100),
                                      cef_mods_flags(SDL_GetModState(), false));
@@ -910,14 +974,14 @@ int Shell::run() {
             }
             case SDL_MOUSEBUTTONDOWN:
 #ifdef LUXIUM_CEF
-                if (engine_cef_ && e.button.y >= kUrlH &&
+                if (engine_cef_ && e.button.y >= url_h() &&
                     e.button.y < win_h_ - bottom_h()) {
                     // click dentro del area de pagina: el chrome no la toca
                     url_focus_ = false;
                     url_drag_  = false;
                     const int btn = e.button.button == SDL_BUTTON_LEFT ? 0
                                   : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
-                    cef::mouse_button(e.button.x, e.button.y - kUrlH, btn, false,
+                    cef::mouse_button(e.button.x, e.button.y - url_h(), btn, false,
                                       e.button.clicks,
                                       cef_mods_flags(SDL_GetModState(), false));
                     break;
@@ -934,17 +998,23 @@ int Shell::run() {
             case SDL_MOUSEBUTTONUP:
                 if (e.button.button == SDL_BUTTON_LEFT) url_drag_ = false;
 #ifdef LUXIUM_CEF
-                if (engine_cef_ && e.button.y >= kUrlH &&
+                if (engine_cef_ && e.button.y >= url_h() &&
                     e.button.y < win_h_ - bottom_h()) {
                     const int btn = e.button.button == SDL_BUTTON_LEFT ? 0
                                   : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
-                    cef::mouse_button(e.button.x, e.button.y - kUrlH, btn, true,
+                    cef::mouse_button(e.button.x, e.button.y - url_h(), btn, true,
                                       e.button.clicks,
                                       cef_mods_flags(SDL_GetModState(), false));
                 }
 #endif
                 break;
             case SDL_KEYDOWN:
+#ifdef LUXIUM_CEF
+                if (fullscreen_ && e.key.keysym.sym == SDLK_ESCAPE) {
+                    cef::exit_fullscreen();
+                    break;
+                }
+#endif
                 if (e.key.keysym.sym == SDLK_F12) {   // consola: mostrar/ocultar
                     toggle_console();
                     break;
@@ -1070,6 +1140,13 @@ int Shell::run() {
                 }
 #ifdef LUXIUM_CEF
                 if (engine_cef_) {
+                    if ((e.key.keysym.mod & KMOD_CTRL) && !(e.key.keysym.mod & (KMOD_ALT | KMOD_SHIFT))) {
+                        const int sc = e.key.keysym.sym;
+                        if (sc == SDLK_c || sc == SDLK_x || sc == SDLK_v || sc == SDLK_a) {
+                            cef::edit(static_cast<char>(sc));
+                            break;
+                        }
+                    }
                     // Todo lo que el chrome no se quedo (letras, Esc, flechas,
                     // Ctrl+C/V...) va a Chromium como evento nativo.
                     forward_cef_key(e.key.keysym, 0, cef_display_, e.key.repeat);
@@ -1104,6 +1181,8 @@ int Shell::run() {
                 page_.console(lv, tx);
                 console_scroll_ = 0;   // el panel salta a la ultima linea
             }
+            set_fullscreen(cef::fullscreen());
+            update_cef_cursor();
             // el titulo de la ventana sigue a la pagina de Chromium
             static std::string last_title;
             const std::string t = cef::title();
@@ -1253,7 +1332,7 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
     }
     // el juicio NO aplica aqui: el oraculo es Chromium SIEMPRE
     cef::attach(cef_display_, cef_parent_, url);
-    cef::set_view(win_w_, win_h_ - bottom_h() - kUrlH);
+    cef::set_view(win_w_, win_h_ - bottom_h() - url_h());
     cef::set_focus(true);
     engine_cef_ = true;
 
@@ -1336,7 +1415,7 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
 #endif
 }
 
-float Shell::page_h() const { return static_cast<float>(win_h_ - bottom_h() - kUrlH); }
+float Shell::page_h() const { return static_cast<float>(win_h_ - bottom_h() - url_h()); }
 
 void Shell::relayout() {
     if (win_w_ == 0 || !page_.page_root()) return;   // http pages start empty
@@ -1362,7 +1441,7 @@ void Shell::relayout() {
     layout_ = render::layout(*page_.page_root(), *font_,
                              static_cast<float>(win_w_), page_.rules(),
                              page_.base_dir(),
-                             static_cast<float>(kUrlH),
+                             static_cast<float>(url_h()),
                              static_cast<float>(win_h_ - bottom_h()));
     content_h_ = layout_.content_height;
     page_.free_removed();   // the new layout no longer points into removed nodes
@@ -1373,7 +1452,7 @@ void Shell::relayout() {
 }
 
 bool Shell::handle_click(int mx, int my, int clicks) {
-    if (my < kUrlH) {   // the address strip: caret placement + selection
+    if (my < url_h()) {   // the address strip: caret placement + selection
         if (!url_focus_) {
             url_focus_  = true;
             std::string shown;
@@ -1408,7 +1487,7 @@ bool Shell::handle_click(int mx, int my, int clicks) {
     url_focus_ = false;
     url_drag_  = false;
     const float doc_x = static_cast<float>(mx);
-    const float doc_y = static_cast<float>(my - kUrlH) + scroll_;
+    const float doc_y = static_cast<float>(my - url_h()) + scroll_;
     if (const dom::Node* n = render::hit_test(layout_, doc_x, doc_y)) {
         page_.click(n);
         return true;
@@ -1421,9 +1500,9 @@ bool Shell::handle_click(int mx, int my, int clicks) {
 void Shell::update_hover() {
     if (!page_.page_root() || !page_.uses_hover()) return;
     const dom::Node* target = nullptr;
-    if (mouse_y_ >= kUrlH && mouse_y_ < win_h_ - bottom_h() && !url_focus_) {
+    if (mouse_y_ >= url_h() && mouse_y_ < win_h_ - bottom_h() && !url_focus_) {
         const float dx = static_cast<float>(mouse_x_);
-        const float dy = static_cast<float>(mouse_y_ - kUrlH) + scroll_;
+        const float dy = static_cast<float>(mouse_y_ - url_h()) + scroll_;
         for (const auto& a : layout_.areas)
             if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h) target = a.node;
     }
@@ -1445,7 +1524,7 @@ void Shell::draw_scrollbar() {
     // track (#fcfcfc), 5-row arrows, a 9px-wide rounded thumb inset 3px.
     const float page = page_h();
     if (content_h_ <= page || page <= 0) return;
-    const int x0 = win_w_ - 15, top = kUrlH, h = static_cast<int>(page);
+    const int x0 = win_w_ - 15, top = url_h(), h = static_cast<int>(page);
     auto put = [&](int x, int y, uint32_t c) {
         if (x < 0 || x >= win_w_ || y < top || y >= top + h) return;
         fb_[static_cast<size_t>(y) * win_w_ + x] = c;
@@ -1553,15 +1632,17 @@ void Shell::repaint() {
             // (mismo layout ARGB little-endian) solo en el area de pagina.
             int fw = 0, fh = 0;
             uint8_t* page = reinterpret_cast<uint8_t*>(fb_.data()) +
-                            static_cast<size_t>(kUrlH) * win_w_ * 4;
-            const int ph = win_h_ - bottom_h() - kUrlH;
+                            static_cast<size_t>(url_h()) * win_w_ * 4;
+            const int ph = win_h_ - bottom_h() - url_h();
             if (ph > 0)
                 cef::copy_frame(page, win_w_ * 4, win_w_, ph, &fw, &fh);
         }
 #endif
-        draw_url_bar();
-        draw_status();
-        draw_console();
+        if (!fullscreen_) {
+            draw_url_bar();
+            draw_status();
+            draw_console();
+        }
         ++frames_;
         return;
     }
@@ -1569,7 +1650,7 @@ void Shell::repaint() {
         draw_url_bar();
         return;
     }
-    const int page_top    = kUrlH;
+    const int page_top    = url_h();
     const int page_bottom = win_h_ - bottom_h();
 
     // paper

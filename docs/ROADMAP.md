@@ -210,3 +210,15 @@ images (PNG/JPEG via stb or similar), `<table>` layout completion,
 `@media`/viewport sizes, text selection + clipboard, the `--native` question
 (should Luxium *cache compiled bytecode* per page like a build artifact?),
 GPU painting if the rasterizer profiles hot.
+
+## CEF parity sweep (plan-media section 4)
+
+`tools/paritytest.py` (needs Xvfb + xdotool, `DISPLAY=:99`) drives a real
+Luxium with real input and CDP; all checks pass: persistent profile (cookies +
+localStorage, `LUXIUM_PROFILE`), file dialog / JS dialogs (zenity), downloads
+(XDG dir), `window.open`/`_blank` in the same window, cursor mapping, clipboard
+(Ctrl+C/X/V/A + `navigator.clipboard`), key/wheel events, fetch / EventSource /
+WebSocket, element fullscreen (window fullscreen, chrome hidden, Esc exits),
+non-ASCII text via the IME commit path.  HiDPI (`LUXIUM_SCALE` or Xft.dpi) is
+applied as page zoom.  Not testable headless: IME preedit with a real input
+method, HiDPI sharpness on a real HiDPI screen.

@@ -93,6 +93,10 @@ private:
 
     void ensure_surface();
     int  bottom_h() const;      // 20px status strip + console pane when visible
+    int  url_h() const;         // the address strip, 0 while a page is fullscreen
+    void set_fullscreen(bool on);
+    void update_cef_cursor();   // Chromium's cursor type -> SDL cursor
+    int  cef_cursor_ = -1;      // last Chromium cursor type applied
     void toggle_console();      // F12
     void relayout();                    // DOM -> boxes (page dirty or resize)
     void repaint();                     // boxes -> framebuffer -> screen
@@ -120,6 +124,7 @@ private:
     float  content_h_ = 0;
     int    win_w_ = 0, win_h_ = 0;
     int    console_h_ = 180;
+    bool   fullscreen_ = false;        // the page (CEF) asked for element fullscreen
     bool   console_visible_ = false;   // F12 shows/hides the console pane
     bool   console_scroll_bottom_ = true;
     float  console_scroll_ = 0;
