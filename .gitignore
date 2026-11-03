@@ -13,3 +13,5 @@ build/vk_swiftshader_icd.json
 build/chrome-sandbox
 css-tests/out/
 __pycache__/
+third_party/ffmpeg/
+tests-media/

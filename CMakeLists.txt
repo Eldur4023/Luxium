@@ -30,6 +30,32 @@ else()
     message(STATUS "CEF: OFF (third_party/cef no existe; http usa el motor propio)")
 endif()
 
+# ── Media engine: FFmpeg's libs (system .so) + headers from the system or from
+# third_party/ffmpeg (tools/fetch_ffmpeg_dev.sh, no sudo needed). ────────────
+set(LUXIUM_MEDIA OFF)
+set(_ff_inc "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg/usr/include/x86_64-linux-gnu")
+find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h HINTS "${_ff_inc}" /usr/include/x86_64-linux-gnu /usr/include)
+if(FFMPEG_INCLUDE_DIR)
+    set(FFMPEG_LIBS)
+    set(_ff_ok ON)
+    foreach(_l avformat avcodec avutil swscale swresample)
+        find_library(FFMPEG_${_l}_LIB NAMES ${_l} lib${_l}.so.60 lib${_l}.so.58 lib${_l}.so.7 lib${_l}.so.4
+                     PATHS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib)
+        if(FFMPEG_${_l}_LIB)
+            list(APPEND FFMPEG_LIBS ${FFMPEG_${_l}_LIB})
+        else()
+            set(_ff_ok OFF)
+        endif()
+    endforeach()
+    if(_ff_ok)
+        set(LUXIUM_MEDIA ON)
+        message(STATUS "Media: ON (${FFMPEG_INCLUDE_DIR})")
+    endif()
+endif()
+if(NOT LUXIUM_MEDIA)
+    message(STATUS "Media: OFF (no FFmpeg headers; run tools/fetch_ffmpeg_dev.sh)")
+endif()
+
 # ── The vendored Lux Script engine (frontend + VM, browser natives) ──────────
 add_library(lux_script STATIC
     src/lux_script/token.cpp
@@ -47,6 +73,20 @@ add_library(lux_script STATIC
 )
 target_include_directories(lux_script PUBLIC src)
 target_compile_options(lux_script PRIVATE -w)   # vendored code: Lux owns its warnings
+
+# The engine (src/media) is a static lib shared by the browser and the self-test.
+if(LUXIUM_MEDIA)
+    add_library(luxium_media STATIC src/media/player.cpp)
+    target_include_directories(luxium_media PUBLIC src ${FFMPEG_INCLUDE_DIR} ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(luxium_media PUBLIC ${FFMPEG_LIBS} ${SDL2_LIBRARIES} pthread)
+    target_compile_options(luxium_media PRIVATE -Wall -Wextra)
+else()
+    add_library(luxium_media STATIC src/media/player_stub.cpp)
+    target_include_directories(luxium_media PUBLIC src)
+endif()
+add_executable(luxium_mediatest src/media/mediatest.cpp)
+target_include_directories(luxium_mediatest PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(luxium_mediatest PRIVATE luxium_media ${SDL2_LIBRARIES})
 
 # ── Luxium proper ─────────────────────────────────────────────────────────────
 add_executable(luxium
