@@ -15,6 +15,9 @@
 #include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_render_handler.h"
+#include "include/cef_render_process_handler.h"
+
+#include "media_bridge.hpp"
 
 #include <X11/Xlib.h>
 
@@ -172,13 +175,40 @@ private:
     IMPLEMENT_REFCOUNTING(LuxClient);
 };
 
-class LuxApp : public CefApp, public CefBrowserProcessHandler {
+class LuxApp : public CefApp, public CefBrowserProcessHandler, public CefRenderProcessHandler {
 public:
-    // Sin GPU real, Chromium trapa al arrancar: software rendering.
+    CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
+    // Every page frame gets the media shim and its native engine bridge.
+    void OnContextCreated(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame> f, CefRefPtr<CefV8Context> c) override {
+        bridge::on_context_created(b, f, c);
+    }
+    void OnContextReleased(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame> f, CefRefPtr<CefV8Context> c) override {
+        bridge::on_context_released(b, f, c);
+    }
+
+    // GPU policy: LUXIUM_GPU=0 forces software rendering (no GPU at all, no
+    // WebGL); anything else lets Chromium use the GPU, falling back to
+    // SwiftShader.  LUXIUM_CEF_FLAGS="--a --b=c" appends raw switches.
     void OnBeforeCommandLineProcessing(const CefString&,
                                        CefRefPtr<CefCommandLine> cl) override {
-        if (!cl->HasSwitch("disable-gpu"))             cl->AppendSwitch("disable-gpu");
-        if (!cl->HasSwitch("disable-gpu-compositing")) cl->AppendSwitch("disable-gpu-compositing");
+        const char* gpu = std::getenv("LUXIUM_GPU");
+        if (gpu && gpu[0] == '0') {
+            cl->AppendSwitch("disable-gpu");
+            cl->AppendSwitch("disable-gpu-compositing");
+        }
+        if (const char* extra = std::getenv("LUXIUM_CEF_FLAGS")) {
+            std::string s(extra);
+            for (size_t i = 0; i < s.size();) {
+                size_t j = s.find(' ', i);
+                if (j == std::string::npos) j = s.size();
+                std::string tok = s.substr(i, j - i);
+                i = j + 1;
+                if (tok.rfind("--", 0) != 0) continue;
+                const size_t eq = tok.find('=');
+                if (eq == std::string::npos) cl->AppendSwitch(tok.substr(2));
+                else cl->AppendSwitchWithValue(tok.substr(2, eq - 2), tok.substr(eq + 1));
+            }
+        }
     }
     IMPLEMENT_REFCOUNTING(LuxApp);
 };
@@ -227,7 +257,12 @@ char32_t first_cp(const char* s) {
 
 bool built() { return true; }
 
+static int g_argc = 0;
+static char** g_argv = nullptr;
+
 int early(int argc, char** argv) {
+    g_argc = argc;
+    g_argv = argv;
     CefMainArgs args(argc, argv);
     return CefExecuteProcess(args, app(), nullptr);   // -1 = browser process
 }
@@ -239,7 +274,7 @@ void init(unsigned long display, unsigned long parent) {
     g_display = display;
     g_parent  = parent;
 
-    CefMainArgs args(0, nullptr);   // multi_threaded: the args matter at early()
+    CefMainArgs args(g_argc, g_argv);
     CefSettings settings;
     settings.multi_threaded_message_loop = true;   // CEF's own UI thread
     settings.no_sandbox = true;
@@ -258,6 +293,8 @@ void init(unsigned long display, unsigned long parent) {
     CefString(&settings.locales_dir_path)   = dir + "/locales";
     CefString(&settings.log_file)           = dir + "/cef.log";
     settings.log_severity                   = LOGSEVERITY_INFO;
+    if (const char* port = std::getenv("LUXIUM_CDP_PORT"))   // DevTools protocol, for tests/automation
+        settings.remote_debugging_port = std::atoi(port);
 
     CefInitialize(args, settings, app(), nullptr);
 }
@@ -269,6 +306,7 @@ void attach(unsigned long display, unsigned long parent, const std::string& url)
         info.SetAsWindowless((::Window)parent);   // parent: dialogs/IME only
         CefBrowserSettings bs;
         bs.background_color = 0xFFFFFFFF;         // opaco: blanco antes del 1er paint
+        bs.windowless_frame_rate = 60;            // video and animations: 30 is the default
         CefBrowserHost::CreateBrowser(info, client(), url, bs, nullptr, nullptr);
         return;
     }

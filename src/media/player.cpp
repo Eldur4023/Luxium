@@ -157,7 +157,7 @@ struct Player::Impl {
     std::mutex dm;
     std::condition_variable dcv;         // wakes the demux thread (seek, space freed, abort)
     std::atomic<bool> seek_req{false};
-    double seek_target = 0;
+    std::atomic<double> seek_target{0};
     std::atomic<bool> eof{false};        // demuxer read everything
     std::atomic<double> v_end{0}, a_end{0};   // pts end of the last packet queued
     std::atomic<double> buf_start{0};
@@ -502,6 +502,7 @@ struct Player::Impl {
             std::lock_guard<std::mutex> lk(dm);
             t = seek_target;
             seek_req = false;
+            eof = false;                 // poll() trusts eof only while no seek is pending
         }
         const double d = dur;
         if (std::isfinite(d)) t = std::min(t, d);
@@ -521,7 +522,6 @@ struct Player::Impl {
         if (ai >= 0) apq.put(f);
         v_end = a_end = t;
         buf_start = t;
-        eof = false;
     }
 
     // ── video decode ─────────────────────────────────────────────────────────
@@ -893,7 +893,7 @@ void Player::set_rate(double r) {
 
 double Player::duration() const { return d->dur; }
 double Player::current_time() const {
-    double t = d->clock();
+    double t = seeking_ ? d->seek_target.load() : d->clock();
     const double dd = d->dur;
     if (std::isfinite(dd)) t = std::min(t, dd);
     return t;
@@ -951,6 +951,12 @@ std::vector<Event> Player::poll() {
         if (has_video_) { std::lock_guard<std::mutex> lk(s.vm); s.data_ok = s.fresh; }
         else if (has_audio_) { std::lock_guard<std::mutex> lk(s.am); s.data_ok = s.aq_frames > 0 || s.a_eof; }
         else s.data_ok = true;
+    }
+    if (!s.data_ok && seeking_ && s.eof && !s.seek_req) {   // seeked to the very end: nothing left to decode
+        bool v_done = s.vi < 0, a_done = s.ai < 0;
+        if (!v_done) { std::lock_guard<std::mutex> lk(s.vm); v_done = s.v_eof && s.vq.empty(); }
+        if (!a_done) a_done = s.a_eof;
+        if (v_done && a_done) s.data_ok = true;
     }
     if (seeking_ && s.data_ok && !s.seek_req) {
         seeking_ = false;

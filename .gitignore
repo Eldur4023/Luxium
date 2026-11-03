@@ -15,3 +15,5 @@ css-tests/out/
 __pycache__/
 third_party/ffmpeg/
 tests-media/
+examples/media/fixtures/
+examples/media/hls.min.js

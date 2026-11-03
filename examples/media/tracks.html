@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="probe.js"></script>
+<title>tracks</title>
+<style>body{margin:0;background:#222} .wrap{position:relative;width:640px} video{width:640px;display:block} #o{position:absolute;left:0;right:0;bottom:30px;text-align:center;color:#ff0;font:20px sans-serif}</style>
+<div class="wrap"><video id="v" preload="auto" src="fixtures/h264_aac.mp4"><source src="fixtures/vp9_opus.webm" type="video/webm"><track kind="subtitles" src="fixtures/subs.vtt" srclang="en" label="English" default></video><div id="o"></div></div>
+<script>
+const v = document.getElementById('v'); __probe(v);
+window.__cues = [];
+v.addEventListener('loadedmetadata', () => {
+  const t = v.textTracks[0];
+  t.mode = 'hidden';
+  t.addEventListener('cuechange', () => { window.__cues.push([+v.currentTime.toFixed(2), [...t.activeCues].map(c => c.text)]);
+    document.getElementById('o').replaceChildren(...[...t.activeCues].map(c => c.getCueAsHTML())); });
+});
+</script>

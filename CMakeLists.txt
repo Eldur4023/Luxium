@@ -122,8 +122,12 @@ add_executable(luxium
     src/page/doc_codec.cpp
     src/page/luxp.cpp
 )
+# The media shim is embedded in the binary as a raw string literal.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/media/shim.js" _shim_js)
+file(WRITE "${CMAKE_BINARY_DIR}/gen/shim_js.inc" "R\"LXSHIM(${_shim_js})LXSHIM\"\n")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/media/shim.js")
 if(LUXIUM_CEF)
-    list(APPEND LUXIUM_SRCS src/cef/cef_backend.cpp)
+    list(APPEND LUXIUM_SRCS src/cef/cef_backend.cpp src/cef/media_bridge.cpp)
 else()
     list(APPEND LUXIUM_SRCS src/cef/cef_backend_stub.cpp)
 endif()
@@ -132,7 +136,7 @@ target_sources(luxium PRIVATE ${LUXIUM_SRCS})
 target_include_directories(luxium PRIVATE src)
 target_compile_options(luxium PRIVATE -Wall -Wextra)
 target_compile_definitions(luxium PRIVATE LUXP_ZLIB=1)
-target_link_libraries(luxium PRIVATE lux_script ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES}
+target_link_libraries(luxium PRIVATE lux_script luxium_media ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES}
                                     ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES} ${FONTCONFIG_LIBRARIES} ZLIB::ZLIB)
 target_include_directories(luxium PRIVATE ${SDL2_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS}
                                     ${HARFBUZZ_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
@@ -140,13 +144,13 @@ target_include_directories(luxium PRIVATE ${SDL2_INCLUDE_DIRS} ${FREETYPE_INCLUD
 if(LUXIUM_CEF)
     ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
     target_compile_definitions(luxium PRIVATE LUXIUM_CEF=1)
-    target_include_directories(luxium PRIVATE ${CEF_ROOT})
+    target_include_directories(luxium SYSTEM PRIVATE ${CEF_ROOT})
+    target_include_directories(luxium PRIVATE "${CMAKE_BINARY_DIR}/gen")
     target_link_libraries(luxium PRIVATE libcef_lib libcef_dll_wrapper X11)
-    set_target_properties(luxium PROPERTIES BUILD_RPATH "${CEF_ROOT}/Release")
+    set_target_properties(luxium PROPERTIES BUILD_RPATH "$ORIGIN")   # libcef.so + its resources are copied next to the binary
     add_custom_command(TARGET luxium POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_ROOT}/Resources" "$<TARGET_FILE_DIR:luxium>"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CEF_ROOT}/Release/libcef.so" "$<TARGET_FILE_DIR:luxium>"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CEF_ROOT}/Release/libvk_swiftshader.so" "$<TARGET_FILE_DIR:luxium>"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_ROOT}/Release" "$<TARGET_FILE_DIR:luxium>"
         COMMENT "copiando recursos de CEF junto al binario")
 endif()
 
