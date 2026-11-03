@@ -110,8 +110,83 @@ fn void suma():
 document.get("mas").click(suma)              # NOT .on("click", fn):
                                              # `on` is a language keyword
 
-The full per-context tables will be documented here as each milestone lands
-them, in the same style as the grammar's §45 ("the complete surface").
+### 3.1 The SPA surface (workstream A, `docs/plan-luxscript-spa.md` §1)
+
+The authoritative list is `Lux/include/lux_script/browser_api.inc` (the checker
+compiles against it; Luxium implements each entry in `src/script/engine.cpp`).
+Status column: `done` = implemented and tested; `wip` = declared, being built.
+
+**Execution model.** The top level, every event handler, every timer callback
+and every websocket callback run as VM coroutines on the main loop, so `await`
+is valid in any `fn`. Suspendable: `sleep(ms)`, `page.frame()` (resumes next
+frame), `http.*`, `await sock.recv()`, `await sock.wait_open()`. A runtime
+error inside a handler/callback is logged to the console and never stops the
+page. A handler is a named `fn` taking **no parameters** — the event is read
+through the reserved object `event` (`event.key()`, `event.target()`...).
+Context between handlers lives in the page store (`page.get/set`), in element
+data (`e.data("id")`) or in the DOM. There are no closures; a closure feature
+was not needed to write Homeflix.
+
+**Reserved objects** (`status`: all `wip` until the commit that says otherwise)
+
+| Object | Members |
+|---|---|
+| `log` | `info(s)` `warn(s)` `error(s)` |
+| `document` | `get(id)` `query(sel)` `query_all(sel)` `root()` `body()` `create(tag)` `title()` `listen(kind, fn [, capture])` `unlisten(kind, fn)` `fullscreen(e)` `exit_fullscreen()` `fullscreen_element()` `active_element()` `hidden()` |
+| `page` | `get(k)` `set(k, v)` `after(ms, fn) -> int` `every(ms, fn) -> int` `cancel(id)` `await frame()` `now()` (monotonic ms) `location() -> Dict{url, origin, path, query: Dict, search, hash}` `on_navigate(fn)` (back/forward) `listen(kind, fn)` (window: `resize`, `visibilitychange`, `fullscreenchange`) `title([s])` `scroll_y()` `scroll_to(y)` `reload()` `clicked()` |
+| `event` | `kind()` `target()` `current()` `key()` `code()` `value()` `button()` `x()` `y()` `delta()` `ctrl()` `shift()` `alt()` `meta()` `repeat()` `prevent()` `stop()` `prevented()` `message()` (ws text) `close_code()` |
+| `http` | `await get(url [, headers])` `await delete(url [, headers])` `await post(url, body [, headers])` `await put(...)` `await patch(...)` -> `Response`. Same origin only; relative URLs resolve against the page. `body`: string as-is, Dict/List -> JSON (`Content-Type` set), `Form` -> multipart. A network failure raises (catchable with `try`); an HTTP error status is a normal `Response` |
+| `json` | `parse(s) -> Json` (raises on bad JSON) `stringify(v) -> string` |
+| `ws` | `connect(url) -> Socket` (ws/wss, relative URLs resolve against the page) |
+| `storage` | `get(k) -> string?` `set(k, s)` `remove(k)` `keys()` `clear()` — persistent per origin, `$LUXIUM_PROFILE_DIR` or `~/.local/share/luxium/storage/` |
+| `history` | `push(path)` `replace(path)` `back()` `forward()` — no reload, no `on_navigate` for your own pushes |
+| `clipboard` | `write(s)` `read() -> string` |
+| `template` | `render(src, Dict) -> string` (Lux's template engine: `{{ x }}` escapes, `{% for %}`, `{% if %}`) `escape(s)` |
+| `url` | `encode(s)` `decode(s)` `parse_query(s) -> Dict` |
+| `math` | `floor` `ceil` `round` `abs` `min(a,b)` `max(a,b)` `fixed(x, digits) -> string` |
+| `time` | `now()` (epoch ms) |
+| globals | `sleep(ms)` (await) `form_data([formElement]) -> Form` plus `len str int float range` |
+
+**Event kinds** for `listen`: `click dblclick mousedown mouseup mousemove mouseenter
+mouseleave wheel keydown keyup input change submit focus blur scroll` on
+elements and the document (they bubble; `capture=true` as 3rd argument listens in
+the capture phase; `event.stop()` stops propagation; `event.prevent()` cancels the
+default action: link navigation, form submit). Media elements add `play pause
+ended timeupdate seeking seeked loadedmetadata durationchange volumechange error
+waiting playing cuechange`. `<a href>`: after bubbling, if not prevented, Luxium
+navigates; a SPA intercepts with a `document.listen("click", ...)` handler that
+calls `event.prevent()` and `history.push(...)`.
+
+**Types (receivers).**
+
+`Element` — DOM: `text() set_text(s) html() set_html(s)` (parsed; `<script>` dropped)
+`append(e) prepend(e) remove() insert_before(new, ref) replace_with(e) clone([deep])
+attr(n) set_attr(n, v) remove_attr(n) has_attr(n) tag() id() child_count()
+query(sel) query_all(sel) closest(sel) matches(sel) parent() children() next() prev()
+contains(e) connected()` — style/state: `add_class remove_class toggle_class(n [, force])
+has_class set_style(prop, v) style(prop) data(n) set_data(n, v) hidden() set_hidden(b)` —
+forms: `value() set_value(s) selected_text() checked() set_checked(b) disabled()
+set_disabled(b) files() -> List<File> show_modal() close([value]) return_value()` —
+events/geometry: `click(fn) listen(kind, fn [, capture]) unlisten(kind, fn) dispatch(kind)
+focus() blur() rect() -> Dict{x,y,w,h} scroll_into_view() scroll_top() set_scroll_top(f)
+scroll_left() set_scroll_left(f)` — media (`<video>`/`<audio>`, backed by `media::own`):
+`play() pause() seek(t) current_time() duration() paused() ended() seeking() set_volume(v)
+volume() set_muted(b) muted() audio_tracks() -> List<Dict{index,label,current}>
+select_audio(i) text_tracks() select_text(i) cue() -> string set_src(url) src()`
+(`select_text(-1)` = off). Queries return `null` when nothing matches.
+
+`Response`: `status() ok() text() json() header(name) url()`.
+`Socket`: `send(s) close([code]) is_open() on_open(fn) on_message(fn) on_close(fn)`
+`await recv() -> string?` (`null` once closed and drained) `await wait_open() -> bool`.
+In `on_*` callbacks `event.message()` / `event.close_code()` carry the data.
+`Form`: `add(name, value) add_file(name, File)`. `File`: `name() size() path() content_type()`.
+
+**Host hooks (for B/C/shell).** The engine reaches layout, focus, scroll,
+fullscreen, clipboard and media through `page::Page`'s hook structs
+(`src/page/page.hpp`: `ShellHooks`, `MediaApi`); each is optional and has a
+no-layout fallback so the headless harness runs everything except geometry.
+Input is delivered with `Page::dispatch(kind, node, EventData)`.
+
 
 ## 4. Compilation and execution
 
