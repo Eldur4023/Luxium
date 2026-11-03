@@ -14,11 +14,16 @@
 
 #include <cef/cef_backend.hpp>
 #include <cef/sdl_input.hpp>
+#include "host/menubar.hpp"
+
 #include <render/images.hpp>
+#include <render/text.hpp>
 
 #include <SDL.h>
 #include <SDL_syswm.h>
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -251,7 +256,9 @@ struct AppWin {
     bool dev = false, dark = false;
     bool page_fs = false, user_fs = false;
     int cursor = -1;
-    unsigned long x11_display = 0;
+    unsigned long x11_display = 0, x11_window = 0;
+    std::unique_ptr<MenuBar> menu;   // set_menu; the page view sits below its bar
+    int view_bar = -1;               // bar height the page view was last sized for
     bool closing = false;
     Clock::time_point close_by;
     std::string app_id;
@@ -274,6 +281,11 @@ private:
     bool cef_up_ = false;
     Clock::time_point idle_since_ = Clock::now();
 
+    std::unique_ptr<render::Font> font_;   // menu bar text (main thread only)
+
+    static int bar_h(const AppWin* w) { return w->menu && !w->menu->empty() ? MenuBar::kBarH : 0; }
+    void fire_menu(AppWin* w, const MenuFire& f);
+    void cmd_set_menu(AppWin* w, const Obj& o);
     AppWin* by_sdl(Uint32 id) {
         for (auto& w : wins_) if (w->win && SDL_GetWindowID(w->win) == id) return w.get();
         return nullptr;
@@ -308,15 +320,29 @@ void Host::resize_surface(AppWin* w) {
     int nw = 0, nh = 0;
     SDL_GetWindowSize(w->win, &nw, &nh);
     if (nw <= 0 || nh <= 0) return;
-    if (nw == w->w && nh == w->h && w->tex) return;
+    const int bar = bar_h(w);
+    if (nw == w->w && nh == w->h && w->tex && bar == w->view_bar) return;
+    w->view_bar = bar;
     w->w = nw;
     w->h = nh;
     w->buf.assign((size_t)nw * nh * 4, 0xFF);
     if (w->tex) SDL_DestroyTexture(w->tex);
     w->tex = SDL_CreateTexture(w->ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, nw, nh);
-    cef::set_view(w->cw, nw, nh);
+    cef::set_view(w->cw, nw, std::max(1, nh - bar));
     w->dirty = true;
     if (w->conn >= 0) ev(w, "{\"ev\":\"resized\",\"width\":" + std::to_string(nw) + ",\"height\":" + std::to_string(nh) + "}");
+}
+
+// Dark title bar: the _GTK_THEME_VARIANT hint (honoured by GNOME/Mutter and GTK-aware window managers; the
+// host always runs on X11, XWayland included, so this is the only mechanism needed).
+static void set_x11_dark(const AppWin* w) {
+    if (!w->x11_display || !w->x11_window) return;
+    Display* d = (Display*)w->x11_display;
+    const Atom prop = XInternAtom(d, "_GTK_THEME_VARIANT", False);
+    if (w->dark) XChangeProperty(d, (Window)w->x11_window, prop, XInternAtom(d, "UTF8_STRING", False), 8, PropModeReplace,
+                                 (const unsigned char*)"dark", 4);
+    else XDeleteProperty(d, (Window)w->x11_window, prop);
+    XFlush(d);
 }
 
 void Host::cmd_open(int conn, const Obj& o) {
@@ -343,14 +369,16 @@ void Host::cmd_open(int conn, const Obj& o) {
     }
     if (resizable) SDL_SetWindowMinimumSize(w->win, std::max(1, geti(o, "min_width", 0)), std::max(1, geti(o, "min_height", 0)));
     const std::string icon = get(o, "icon");
-    if (!icon.empty())
-        if (const auto* bmp = render::load_image(icon)) {   // RGB only: alpha was flattened on white
-            if (SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(const_cast<uint8_t*>(bmp->rgb.data()), bmp->w, bmp->h,
-                                                                    24, bmp->w * 3, SDL_PIXELFORMAT_RGB24)) {
-                SDL_SetWindowIcon(w->win, s);
-                SDL_FreeSurface(s);
-            }
-        }
+    if (!icon.empty()) {
+        // RGBA when the PNG has alpha (SDL turns the surface into an ARGB _NET_WM_ICON), else the RGB bitmap.
+        SDL_Surface* sf = nullptr;
+        auto rgba = render::load_image_rgba(icon);
+        if (rgba && !rgba->rgba.empty())
+            sf = SDL_CreateRGBSurfaceWithFormatFrom(rgba->rgba.data(), rgba->w, rgba->h, 32, rgba->w * 4, SDL_PIXELFORMAT_RGBA32);
+        else if (const auto* bmp = render::load_image(icon))
+            sf = SDL_CreateRGBSurfaceWithFormatFrom(const_cast<uint8_t*>(bmp->rgb.data()), bmp->w, bmp->h, 24, bmp->w * 3, SDL_PIXELFORMAT_RGB24);
+        if (sf) { SDL_SetWindowIcon(w->win, sf); SDL_FreeSurface(sf); }
+    }
     w->ren = SDL_CreateRenderer(w->win, -1, 0);
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);
@@ -361,6 +389,15 @@ void Host::cmd_open(int conn, const Obj& o) {
         return;
     }
     w->x11_display = (unsigned long)wm.info.x11.display;
+    w->x11_window = (unsigned long)wm.info.x11.window;
+    set_x11_dark(w.get());
+    {   // SDL 2.30 ignores SDL_VIDEO_X11_WMCLASS here: set the class hint ourselves so the shell matches the
+        // window to its .desktop file (StartupWMClass). `wm_class` defaults to the app id.
+        std::string cls = get(o, "wm_class", app_id);
+        XClassHint ch{cls.data(), cls.data()};
+        XSetClassHint((Display*)w->x11_display, (Window)w->x11_window, &ch);
+        XFlush((Display*)w->x11_display);
+    }
 
     if (!cef_up_) {
         cef::set_profile_root(get(o, "profile_root", std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp") + "/.local/share/luxium/apps"));
@@ -484,13 +521,16 @@ void Host::pump_shared(AppWin* w) {
 void Host::render(AppWin* w) {
     if (w->closing || !w->tex) return;
     const int p = cef::paints(w->cw);
+    if (w->menu && w->menu->take_dirty()) w->dirty = true;
     if (p == w->last_paints && !w->dirty) return;
     w->last_paints = p;
     w->dirty = false;
     int fw = 0, fh = 0;
-    if (cef::copy_frame(w->cw, w->buf.data(), w->w * 4, w->w, w->h, &fw, &fh))
+    const int bar = bar_h(w);
+    if (cef::copy_frame(w->cw, w->buf.data() + (size_t)bar * w->w * 4, w->w * 4, w->w, std::max(1, w->h - bar), &fw, &fh)) {
+        if (bar) w->menu->draw((uint32_t*)w->buf.data(), w->w, w->h);
         SDL_UpdateTexture(w->tex, nullptr, w->buf.data(), w->w * 4);
-    else {   // nothing painted yet: no white flash on a dark app
+    } else {   // nothing painted yet: no white flash on a dark app
         if (w->dark) SDL_SetRenderDrawColor(w->ren, 0x1b, 0x1b, 0x1f, 255);
         else SDL_SetRenderDrawColor(w->ren, 255, 255, 255, 255);
         SDL_RenderClear(w->ren);
@@ -515,18 +555,25 @@ void Host::handle_sdl(const SDL_Event& e, bool& quit) {
         case SDL_WINDOWEVENT_EXPOSED: w->dirty = true; break;
         case SDL_WINDOWEVENT_FOCUS_GAINED: cef::set_focus(w->cw, true); break;
         case SDL_WINDOWEVENT_FOCUS_LOST: cef::set_focus(w->cw, false); break;
-        case SDL_WINDOWEVENT_LEAVE: cef::mouse_move(w->cw, 0, 0, true, 0); break;
+        case SDL_WINDOWEVENT_LEAVE:
+            if (w->menu) w->menu->on_leave();
+            cef::mouse_move(w->cw, 0, 0, true, 0);
+            break;
         }
         break;
     }
     case SDL_MOUSEMOTION:
-        if (AppWin* w = by_sdl(e.motion.windowID); w && !w->closing)
-            cef::mouse_move(w->cw, e.motion.x, e.motion.y, false, cef_mods_flags(SDL_GetModState(), false));
+        if (AppWin* w = by_sdl(e.motion.windowID); w && !w->closing) {
+            if (w->menu && w->menu->on_motion(e.motion.x, e.motion.y, w->w)) break;
+            cef::mouse_move(w->cw, e.motion.x, e.motion.y - bar_h(w), false, cef_mods_flags(SDL_GetModState(), false));
+        }
         break;
     case SDL_MOUSEWHEEL:
         if (AppWin* w = by_sdl(e.wheel.windowID); w && !w->closing) {
             int mx = 0, my = 0;
             SDL_GetMouseState(&mx, &my);
+            if (w->menu && (w->menu->open() || my < bar_h(w))) break;
+            my -= bar_h(w);
             float dy = e.wheel.preciseY, dx = e.wheel.preciseX;
             if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) { dy = -dy; dx = -dx; }
             cef::mouse_wheel(w->cw, mx, my, (int)(dx * 100), (int)(dy * 100), cef_mods_flags(SDL_GetModState(), false));
@@ -536,12 +583,18 @@ void Host::handle_sdl(const SDL_Event& e, bool& quit) {
     case SDL_MOUSEBUTTONUP:
         if (AppWin* w = by_sdl(e.button.windowID); w && !w->closing) {
             const int btn = e.button.button == SDL_BUTTON_LEFT ? 0 : e.button.button == SDL_BUTTON_MIDDLE ? 1 : 2;
-            cef::mouse_button(w->cw, e.button.x, e.button.y, btn, e.type == SDL_MOUSEBUTTONUP, e.button.clicks,
+            if (w->menu) {
+                MenuFire f;
+                const bool used = w->menu->on_button(e.button.x, e.button.y, e.type == SDL_MOUSEBUTTONDOWN, w->w, f);
+                fire_menu(w, f);
+                if (used) break;
+            }
+            cef::mouse_button(w->cw, e.button.x, e.button.y - bar_h(w), btn, e.type == SDL_MOUSEBUTTONUP, e.button.clicks,
                               cef_mods_flags(SDL_GetModState(), false));
         }
         break;
     case SDL_TEXTINPUT:
-        if (AppWin* w = by_sdl(e.text.windowID); w && !w->closing) {
+        if (AppWin* w = by_sdl(e.text.windowID); w && !w->closing && !(w->menu && w->menu->open())) {
             if ((unsigned char)e.text.text[0] < 0x80) cef::key(w->cw, 2, cef_mods_flags(SDL_GetModState(), false), 0, 0, e.text.text);
             else cef::ime_commit(w->cw, e.text.text);
         }
@@ -556,6 +609,13 @@ void Host::handle_sdl(const SDL_Event& e, bool& quit) {
         const SDL_Keysym& k = e.key.keysym;
         const bool down = e.type == SDL_KEYDOWN;
         if (down) {
+            // Menu accelerators fire before the page sees the key (and the open menu owns the keyboard).
+            if (w->menu) {
+                MenuFire f;
+                const bool used = w->menu->on_key(k, e.key.repeat != 0, f);
+                fire_menu(w, f);
+                if (used) break;
+            }
             if (w->page_fs && k.sym == SDLK_ESCAPE) { cef::exit_fullscreen(w->cw); break; }
             if (w->user_fs && k.sym == SDLK_ESCAPE) { w->user_fs = false; set_fullscreen(w); break; }
             if (w->dev && !w->parent && (k.sym == SDLK_F12 || ((k.mod & KMOD_CTRL) && (k.mod & KMOD_SHIFT) && k.sym == SDLK_i))) {
@@ -581,6 +641,22 @@ void Host::handle_sdl(const SDL_Event& e, bool& quit) {
     }
 }
 
+// Same contract as the WebKitGTK backend: a leaf activation reaches the client, which POSTs the item's action.
+void Host::fire_menu(AppWin* w, const MenuFire& f) {
+    if (!f.fired) return;
+    ev(w, "{\"ev\":\"menu\",\"action\":" + jq(f.action) + (f.checkable ? std::string(",\"checked\":") + (f.checked ? "true" : "false") : "") + "}");
+}
+
+void Host::cmd_set_menu(AppWin* w, const Obj& o) {
+    if (!font_) font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
+    if (!font_) { ev(w, "{\"ev\":\"error\",\"message\":\"menu: DejaVu fonts not found\"}"); return; }
+    if (!w->menu) w->menu = std::make_unique<MenuBar>(font_.get());
+    w->menu->set_dark(w->dark);
+    if (!w->menu->set_spec(get(o, "spec", "[]"))) ev(w, "{\"ev\":\"error\",\"message\":\"menu: bad spec\"}");
+    resize_surface(w);   // the page view shrinks or grows by the bar
+    w->dirty = true;
+}
+
 void Host::on_line(int conn, const std::string& line) {
     auto ci = conns_.find(conn);
     if (ci == conns_.end()) return;
@@ -599,6 +675,14 @@ void Host::on_line(int conn, const std::string& line) {
     else if (cmd == "post_message")   // delivered to the page as a 'luxium' CustomEvent whose detail is the string
         cef::run_js(w->cw, "window.dispatchEvent(new CustomEvent('luxium',{detail:" + jq(get(o, "data")) + "}))");
     else if (cmd == "devtools") open_devtools(w);
+    else if (cmd == "set_menu") cmd_set_menu(w, o);
+    else if (cmd == "set_dark") { w->dark = getb(o, "on", true); set_x11_dark(w); if (w->menu) w->menu->set_dark(w->dark); w->dirty = true; }
+    else if (cmd == "show") { SDL_ShowWindow(w->win); SDL_RaiseWindow(w->win); }
+    else if (cmd == "hide") SDL_HideWindow(w->win);
+    else if (cmd == "toggle") {   // tray click: hide a visible window, show (and raise) a hidden one
+        if (SDL_GetWindowFlags(w->win) & SDL_WINDOW_HIDDEN) { SDL_ShowWindow(w->win); SDL_RaiseWindow(w->win); }
+        else SDL_HideWindow(w->win);
+    }
     else if (cmd == "close") begin_close(w);
     else if (cmd == "minimize") SDL_MinimizeWindow(w->win);
     else if (cmd == "maximize") SDL_MaximizeWindow(w->win);
