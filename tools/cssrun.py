@@ -162,6 +162,13 @@ def _same_value(a: str, b: str) -> bool:
             return abs(float(a[:-2]) - float(b[:-2])) <= 0.51
         except ValueError:
             return False
+    if a.startswith("rgba(") and b.startswith("rgba("):   # alpha is stored in 8 bits: 0.3 vs 0.302
+        try:
+            pa = [float(x) for x in a[5:-1].split(",")]
+            pb = [float(x) for x in b[5:-1].split(",")]
+            return pa[:3] == pb[:3] and abs(pa[3] - pb[3]) <= 0.005
+        except ValueError:
+            return False
     return False
 
 

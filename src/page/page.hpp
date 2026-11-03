@@ -68,6 +68,7 @@ public:
     // -- or decoded from a .luxp.  The layout reads them every relayout.
     const std::vector<style::Rule>& rules() const { return sheet_; }
     bool uses_hover() const { return uses_hover_; }
+    bool dark_scheme() const { return dark_scheme_; }   // <meta name=color-scheme content=dark>
     const std::vector<ConsoleLine>& console_lines() const { return console_; }
     bool dirty() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
@@ -98,6 +99,7 @@ private:
     std::string                name_;
     std::vector<style::Rule>   sheet_;
     bool                       uses_hover_ = false;
+    bool                       dark_scheme_ = false;
     bool                       saw_js_ = false;
     std::string                source_;
     bool                       dirty_ = true;

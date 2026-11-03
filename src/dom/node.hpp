@@ -39,8 +39,11 @@ struct Node {
     std::vector<std::unique_ptr<Node>> children;
     int          line = 0;  // source line of the start tag (elements) / of the run (text)
     // dynamic pseudo-class state, set by the shell (hover chain, pressed, focus)
-    enum State : unsigned char { Hover = 1, Active = 2, Focus = 4 };
+    enum State : unsigned char { Hover = 1, Active = 2, Focus = 4, CaretOn = 8, FocusVisible = 16 };
     unsigned char state = 0;
+    // Edit state of a focused text control (caret/anchor are byte offsets into its value, scroll_x in px).
+    int   caret = 0, anchor = 0;
+    float scroll_x = 0;
 
     explicit Node(NodeType t) : type(t) {}
 

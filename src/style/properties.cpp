@@ -399,7 +399,7 @@ bool property_inherits(const std::string& n) {
         "color", "font-size", "font-weight", "font-style", "font-family", "font", "line-height",
         "text-align", "text-transform", "letter-spacing", "word-spacing", "text-indent", "white-space",
         "visibility", "cursor", "list-style", "list-style-type", "list-style-position", "border-collapse",
-        "border-spacing", "overflow-wrap", "word-wrap", "word-break", "pointer-events", "text-decoration-color"};
+        "border-spacing", "overflow-wrap", "word-wrap", "word-break", "pointer-events", "text-decoration-color", "accent-color"};
     return inh.count(n) > 0;
 }
 
@@ -1108,8 +1108,48 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         return true;
     }
     if (name == "cursor") {
-        s.cursor = v.find("pointer") != std::string::npos ? 1 : v.find("text") != std::string::npos ? 2 :
-                   v.find("default") != std::string::npos ? 3 : 0;
+        auto has = [&](const char* k) { return v.find(k) != std::string::npos; };
+        s.cursor = has("pointer") ? 1 : has("text") ? 2 : has("default") ? 3 : has("not-allowed") ? 4 :
+                   has("grabbing") ? 6 : has("grab") ? 5 : 0;
+        return true;
+    }
+    if (name == "accent-color") {
+        uint32_t c = 0;
+        if (v != "auto" && !parse_color(v, c)) return false;
+        s.accent = v == "auto" ? 0 : c;
+        return true;
+    }
+    if (name == "appearance" || name == "-webkit-appearance" || name == "-moz-appearance") {
+        s.appearance_none = v == "none";
+        return true;
+    }
+    if (name == "aspect-ratio") {
+        float r = 0;
+        for (const auto& tk : t) {
+            if (tk == "auto" || tk == "/") continue;
+            char* e = nullptr;
+            const float a = std::strtof(tk.c_str(), &e);
+            if (e == tk.c_str()) return false;
+            if (r == 0) r = a; else if (a > 0) r /= a;
+            if (*e == '/') { const float b = std::strtof(e + 1, nullptr); if (b > 0) r /= b; }
+        }
+        s.aspect_ratio = v == "auto" ? 0 : r;
+        return true;
+    }
+    if (name == "outline" || name == "outline-style" || name == "outline-width" || name == "outline-color" ||
+        name == "outline-offset") {
+        if (name == "outline-offset") { Len l; if (!parse_length(v, env, l, false)) return false; s.outline_offset = l.px; return true; }
+        if (name == "outline") { s.outline_style = BorderStyle::None; s.outline_auto = false; s.outline_w = 3; s.outline_current = true; }
+        for (const auto& tk : t) {
+            BorderStyle b2; float w2; uint32_t c;
+            if (tk == "auto") { s.outline_auto = true; s.outline_style = BorderStyle::Solid; }
+            else if (name != "outline-width" && name != "outline-color" && parse_bstyle(tk, b2)) { s.outline_style = b2; s.outline_auto = false; }
+            else if (name != "outline-style" && name != "outline-color" && parse_bwidth(tk, env, w2)) s.outline_w = w2;
+            else if (name != "outline-style" && name != "outline-width" && tk == "currentcolor") s.outline_current = true;
+            else if (name != "outline-style" && name != "outline-width" && parse_color(tk, c)) { s.outline_color = c; s.outline_current = false; }
+            else if (tk == "invert") {}
+            else return false;
+        }
         return true;
     }
     if (name == "pointer-events") { s.pointer_events = v != "none"; return true; }
@@ -1192,6 +1232,8 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("border-collapse", border_collapse) CP("table-layout", table_fixed)
     if (n == "border-spacing") { d.border_spacing_h = src.border_spacing_h; d.border_spacing_v = src.border_spacing_v; return true; }
     CP("cursor", cursor) CP("pointer-events", pointer_events)
+    CP("accent-color", accent) CP("aspect-ratio", aspect_ratio) CP("outline-offset", outline_offset)
+    if (n == "outline") { d.outline_style = src.outline_style; d.outline_auto = src.outline_auto; d.outline_w = src.outline_w; d.outline_color = src.outline_color; d.outline_current = src.outline_current; return true; }
 #undef CP
     return false;
 }

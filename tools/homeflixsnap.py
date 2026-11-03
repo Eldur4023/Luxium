@@ -99,7 +99,7 @@ def main():
             pg.eval(f"history.pushState({{}}, '', {json.dumps(path)}); renderRoute(true).then(()=>1)")
             time.sleep(1.0)
             html = pg.eval(SERIALISE)
-            page = ('<!doctype html>\n<html lang="es"><head><meta charset="utf-8"><title>Homeflix %s</title>\n'
+            page = ('<!doctype html>\n<html lang="es"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Homeflix %s</title>\n'
                     '<link rel="stylesheet" href="style.css"></head>\n<body>\n%s\n</body></html>\n') % (name, html)
             open(os.path.join(OUT, f"t-hf-{name}.html"), "w").write(page)
             print("snapshot", name, len(html))

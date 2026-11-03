@@ -300,7 +300,9 @@ struct Painter {
         const float x0 = sn(b.ax), y0 = sn(b.ay), x1 = sn(b.ax + b.w), y1 = sn(b.ay + b.h);
         Rect r{x0, y0, x1 - x0, y1 - y0};
         if (r.w <= 0 || r.h <= 0) return;
-        const Radii rad = radii_of(s, r.w, r.h);
+        const bool native = native_border(b);
+        const float nr = b.ctl ? 2.f : 3.f;
+        const Radii rad = native ? Radii{nr, nr, nr, nr} : radii_of(s, r.w, r.h);
         // outer shadows (first shadow on top -> paint last to first)
         for (size_t i = s.box_shadow.size(); i-- > 0;) {
             const style::Shadow& sh = s.box_shadow[i];
@@ -345,7 +347,23 @@ struct Painter {
             it.blur = sh.blur; it.color = sh.color;
             dl->push_back(std::move(it));
         }
-        if (!b.border_collapsed) borders(b, r, rad);
+        if (native) {
+            Item it; it.kind = Item::Kind::Border; it.x = r.x; it.y = r.y; it.w = r.w; it.h = r.h; it.radii = rad;
+            const uint32_t col = s.border_color[0];
+            for (int i = 0; i < 4; ++i) { it.bw[i] = 1; it.bc[i] = col; it.bs[i] = style::BorderStyle::Solid; }
+            dl->push_back(std::move(it));
+        } else if (!b.border_collapsed) borders(b, r, rad);
+    }
+
+    // Unstyled text fields/buttons keep the UA's `2px inset/outset #767676` in the cascade, but Chromium draws
+    // them natively: a 1px #767676 hairline, 2px radius (3px for buttons).
+    static bool native_border(const Box& b) {
+        const ComputedStyle& s = *b.st;
+        if (!b.node || b.border.t != 2 || b.border.l != 2) return false;
+        const bool field = b.ctl && (b.ctl->type == Control::Type::Text || b.ctl->type == Control::Type::Password) &&
+                           s.border_style[0] == style::BorderStyle::Inset;
+        const bool button = (b.node->name == "button" || (b.node->name == "input" && !b.ctl)) && s.border_style[0] == style::BorderStyle::Outset;
+        return (field || button) && s.border_color[0] == 0xFF767676;
     }
 
     void table_edges(Box& t) {
@@ -363,6 +381,7 @@ struct Painter {
 
     void replaced(Box& b) {
         const ComputedStyle& s = *b.st;
+        if (b.ctl) { if (s.visibility == Visibility::Visible) paint_control(b); return; }
         if (s.visibility != Visibility::Visible || (!b.img && !b.media)) return;
         const float cx = sn(b.ax + b.border.l + b.padding.l), cy = sn(b.ay + b.border.t + b.padding.t);
         const float cw = sn(b.ax + b.w - b.border.r - b.padding.r) - cx, ch = sn(b.ay + b.h - b.border.b - b.padding.b) - cy;
@@ -400,6 +419,145 @@ struct Painter {
             } else { it.kind = Item::Kind::Rect; it.color = 0xFF000000; }
         }
         dl->push_back(std::move(it));
+    }
+
+    // ── form controls ───────────────────────────────────────────────────────
+    void text_item(const std::string& txt, const ComputedStyle& s, float x, float baseline, uint32_t color) {
+        if (txt.empty()) return;
+        auto run = std::make_shared<render::ShapedRun>(env.font.shape_at(txt, face_of(env, s), s.font_size));
+        if (run->positions.empty()) return;
+        Item it; it.kind = Item::Kind::Text; it.x = x; it.baseline = baseline; it.run = run; it.face = face_of(env, s);
+        it.px = s.font_size; it.color = color;
+        dl->push_back(std::move(it));
+    }
+    float text_width(const std::string& txt, const ComputedStyle& s) {
+        return txt.empty() ? 0.f : env.font.shape_at(txt, face_of(env, s), s.font_size).width;
+    }
+    static uint32_t fade(uint32_t c, float k) {   // scale alpha
+        return (uint32_t(float(c >> 24) * k) << 24) | (c & 0xFFFFFF);
+    }
+    void circle(float x, float y, float d, uint32_t color) { rect(x, y, d, d, color, {d / 2, d / 2, d / 2, d / 2}); }
+
+    void paint_control(Box& b) {
+        using T = Control::Type;
+        const ComputedStyle& s = *b.st;
+        const Control& c = *b.ctl;
+        const float cx = sn(b.ax + b.border.l + b.padding.l), cy = sn(b.ay + b.border.t + b.padding.t);
+        const float cw = sn(b.ax + b.w - b.border.r - b.padding.r) - cx, ch = sn(b.ay + b.h - b.border.b - b.padding.b) - cy;
+        const uint32_t accent = s.accent ? s.accent : 0xFF0075FF;
+        const float dim = c.disabled ? 0.38f : 1.f;
+        const render::FaceMetrics m = env.font.metrics(face_of(env, s), s.font_size);
+        const float line = line_height_px(env, s);
+        const float base = cy + m.ascent + (line - (m.ascent + m.descent)) / 2;
+        const bool focused = b.node && (b.node->state & dom::Node::Focus);
+        switch (c.type) {
+        case T::Checkbox: {
+            if (s.appearance_none) break;
+            const uint32_t edge = c.checked ? accent : fade(0xFF767676, dim);
+            rect(cx, cy, 13, 13, edge, {2, 2, 2, 2});
+            rect(cx + 1, cy + 1, 11, 11, c.checked ? accent : fade(0xFFFFFFFF, dim), {1, 1, 1, 1});
+            if (c.checked) {   // tick: two strokes stamped as 2x2 squares
+                const float pts[][2] = {{3, 6}, {4, 7}, {5, 8}, {6, 9}, {7, 8}, {8, 7}, {9, 6}, {10, 5}, {10, 4}};
+                for (auto& p : pts) rect(cx + p[0] - 0.f, cy + p[1] - 1.f, 2, 2, 0xFFFFFFFF);
+            }
+            break;
+        }
+        case T::Radio: {
+            if (s.appearance_none) break;
+            circle(cx, cy, 13, c.checked ? accent : fade(0xFF767676, dim));
+            circle(cx + 1, cy + 1, 11, fade(0xFFFFFFFF, dim));
+            if (c.checked) { circle(cx + 2, cy + 2, 9, accent); circle(cx + 3, cy + 3, 7, 0xFFFFFFFF); circle(cx + 4, cy + 4, 5, accent); }
+            break;
+        }
+        case T::Range: {
+            if (s.appearance_none) break;
+            const float tx = cx + 1, tw = cw - 2, ty = cy + ch / 2 - 2, tf = tx + c.frac * (tw - 16) + 8;
+            rect(tx, ty, tw, 4, fade(0xFFB9B9B9, dim), {2, 2, 2, 2});
+            rect(tx, ty, tf - tx, 4, fade(accent, dim), {2, 0, 0, 2});
+            circle(tf - 8, cy, 16, fade(accent, dim));
+            break;
+        }
+        case T::File: {
+            const float bw = text_width("Choose File", s) + 16;
+            rect(cx, cy, bw, ch, fade(0xFFEFEFEF, dim), {3, 3, 3, 3});
+            Item ring; ring.kind = Item::Kind::Border; ring.x = cx; ring.y = cy; ring.w = bw; ring.h = ch; ring.radii = {3, 3, 3, 3};
+            for (int i = 0; i < 4; ++i) { ring.bw[i] = 1; ring.bc[i] = fade(0xFF767676, dim); ring.bs[i] = style::BorderStyle::Solid; }
+            dl->push_back(std::move(ring));
+            text_item("Choose File", s, cx + 8, cy + 3 + m.ascent, s.color);
+            text_item(c.text.empty() ? "No file chosen" : c.text, s, cx + bw + 4, cy + 3 + m.ascent, s.color);
+            break;
+        }
+        case T::Select: {
+            clip_push(cx, cy, cw, ch);
+            text_item(c.text, s, cx + (s.appearance_none ? 0.f : 4.f), cy + (s.appearance_none ? 0.f : 1.f) + m.ascent, s.color);
+            clip_pop();
+            if (!s.appearance_none) {   // chevron at the right edge
+                const float ax = b.ax + b.w - b.border.r - 15, ay = cy + ch / 2 - 1;
+                for (int i = 0; i < 4; ++i) rect(ax + i, ay + i - 1, 2, 2, fade(0xFF101010, dim));
+                for (int i = 0; i < 4; ++i) rect(ax + 7 - i, ay + i - 1, 2, 2, fade(0xFF101010, dim));
+            }
+            break;
+        }
+        case T::Text: case T::Password: case T::Textarea: {
+            const bool pw = c.type == T::Password;
+            const std::string shown = pw ? password_mask(c.text) : c.text;
+            const bool multi = c.type == T::Textarea;
+            clip_push(cx, cy, cw, ch);
+            const uint32_t fg = s.color;
+            if (shown.empty() && !c.placeholder.empty() && !(focused && false))
+                text_item(c.placeholder, s, cx, base, c.ph_color);
+            const float sx = (b.node ? b.node->scroll_x : 0.f);
+            if (!multi) {
+                // selection + caret positions are byte offsets in the VALUE; password bullets are 3 bytes each
+                auto at = [&](int byte) {
+                    if (!pw) return text_width(shown.substr(0, size_t(std::min<int>(byte, int(shown.size())))), s);
+                    int n = 0;
+                    for (int i = 0; i < byte && i < int(c.text.size()); ++i) if ((static_cast<unsigned char>(c.text[i]) & 0xC0) != 0x80) ++n;
+                    return text_width(shown.substr(0, size_t(n) * 3), s);
+                };
+                if (focused && b.node->caret != b.node->anchor) {
+                    const float a = at(std::min(b.node->caret, b.node->anchor)), z = at(std::max(b.node->caret, b.node->anchor));
+                    rect(cx - sx + a, cy, z - a, line, 0xFFB3D4FC);
+                }
+                text_item(shown, s, cx - sx, base, fg);
+                if (focused && (b.node->state & dom::Node::CaretOn) && !c.readonly)
+                    rect(cx - sx + at(b.node->caret), cy, 1, line, s.color);
+            } else {
+                size_t pos = 0; float y = base;
+                std::string rest = shown;
+                for (;;) {
+                    const size_t nl = rest.find('\n', pos);
+                    text_item(rest.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos), s, cx, y, fg);
+                    if (nl == std::string::npos) break;
+                    pos = nl + 1; y += line;
+                }
+            }
+            clip_pop();
+            break;
+        }
+        }
+    }
+
+    // outline: outside the border edge (+ offset); `auto` is the keyboard focus ring.
+    void outline(Box& b) {
+        const ComputedStyle& s = *b.st;
+        if (s.visibility != Visibility::Visible || s.outline_style == style::BorderStyle::None) return;
+        float w = s.outline_w, off = s.outline_offset;
+        uint32_t col = s.outline_current ? s.color : s.outline_color;
+        if (s.outline_auto) { w = 2; col = 0xFF101010; off = 0; }
+        if (w <= 0 || !has_alpha(col)) return;
+        const float x0 = sn(b.ax - off - w), y0 = sn(b.ay - off - w), x1 = sn(b.ax + b.w + off + w), y1 = sn(b.ay + b.h + off + w);
+        Item it; it.kind = Item::Kind::Border; it.x = x0; it.y = y0; it.w = x1 - x0; it.h = y1 - y0;
+        const Radii rr = radii_of(s, b.w, b.h);
+        const float g = w + off;
+        it.radii = {rr.tl > 0 ? rr.tl + g : 0, rr.tr > 0 ? rr.tr + g : 0, rr.br > 0 ? rr.br + g : 0, rr.bl > 0 ? rr.bl + g : 0};
+        for (int i = 0; i < 4; ++i) { it.bw[i] = w; it.bc[i] = col; it.bs[i] = s.outline_auto ? style::BorderStyle::Solid : s.outline_style; }
+        dl->push_back(std::move(it));
+        if (s.outline_auto) {   // white inner halo like Chromium's two-tone ring
+            Item in = it; in.x = x0 + w; in.y = y0 + w; in.w -= 2 * w; in.h -= 2 * w; in.radii = {};
+            for (int i = 0; i < 4; ++i) { in.bw[i] = 1; in.bc[i] = 0xFFFFFFFF; }
+            dl->push_back(std::move(in));
+        }
     }
 
     // ── text and inline content ─────────────────────────────────────────────
@@ -542,6 +700,7 @@ struct Painter {
     void self(Box& b, bool bg = true) {
         decor(b, bg && !(prop_body && &b == tree.body_box));
         if (b.kind == Box::Kind::Replaced) replaced(b);
+        outline(b);
         if (b.node && b.kind != Box::Kind::Inline && !b.anonymous) {
             const std::string& tg = b.node->name;
             if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media)

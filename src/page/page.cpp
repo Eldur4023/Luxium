@@ -116,6 +116,13 @@ static bool sel_uses_hover(const style::Selector& sel) {
 
 void Page::set_rules(std::vector<style::Rule> rules) {
     sheet_ = std::move(rules);
+    // <meta name="color-scheme" content="dark">: tag <html> so the UA sheet themes controls and the shell the scrollbars
+    dark_scheme_ = false;
+    if (root_)
+        for (dom::Node* m : root_->find_all("meta"))
+            if (m->attr_or("name") == "color-scheme" && m->attr_or("content").find("dark") != std::string::npos) dark_scheme_ = true;
+    if (root_ && dark_scheme_)
+        if (dom::Node* h = root_->find_first("html")) h->attrs.emplace_back("data-luxium-scheme", "dark");
     uses_hover_ = false;
     for (const auto& r : sheet_)
         for (const auto& sel : r.selectors) uses_hover_ = uses_hover_ || sel_uses_hover(sel);

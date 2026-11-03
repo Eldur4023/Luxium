@@ -1459,13 +1459,14 @@ void Shell::draw_scrollbar() {
     const float page = page_h();
     if (content_h_ <= page || page <= 0) return;
     const int x0 = win_w_ - 15, top = url_h(), h = static_cast<int>(page);
+    const bool dark = page_.dark_scheme();
     auto put = [&](int x, int y, uint32_t c) {
         if (x < 0 || x >= win_w_ || y < top || y >= top + h) return;
         fb_[static_cast<size_t>(y) * win_w_ + x] = c;
     };
     for (int y = top; y < top + h; ++y)
-        for (int x = x0; x < win_w_; ++x) put(x, y, 0xFFFCFCFC);
-    const uint32_t k = 0xFF8B8B8B;
+        for (int x = x0; x < win_w_; ++x) put(x, y, dark ? 0xFF2C2C2C : 0xFFFCFCFC);
+    const uint32_t k = dark ? 0xFF9F9F9F : 0xFF8B8B8B;
     for (int i = 0; i < 5; ++i) {   // up arrow: apex at row 6, base at row 10
         for (int dx = -i; dx <= i; ++dx) put(x0 + 7 + dx, top + 6 + i, k);
         for (int dx = -(4 - i); dx <= 4 - i; ++dx) put(x0 + 7 + dx, top + h - 12 + i, k);   // down arrow

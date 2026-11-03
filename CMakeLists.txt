@@ -118,6 +118,7 @@ add_executable(luxium
     src/layout/paint.cpp
     src/layout/layout.cpp
     src/layout/media_ui.cpp
+    src/layout/controls.cpp
     src/paint/raster.cpp
     src/shell/shell.cpp
     src/page/page.cpp

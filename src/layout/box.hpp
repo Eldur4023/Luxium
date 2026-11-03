@@ -70,6 +70,21 @@ struct LineBox {
     std::vector<LineFrag> frags;
 };
 
+// A form control drawn by the engine itself (<input>, <textarea>, <select>): the box is a replaced
+// element whose intrinsic size comes from the font, and the paint pass draws its text/glyphs.
+struct Control {
+    enum class Type { Text, Password, Textarea, Select, Checkbox, Radio, Range, File } type = Type::Text;
+    std::string text;                   // value / selected option / file name; "" when empty
+    std::string placeholder;
+    bool checked = false, disabled = false, readonly = false;
+    int size = 20, cols = 20, rows = 2; // text: size attr; textarea: cols/rows
+    float frac = 0;                     // range: position 0..1
+    std::vector<std::string> options;   // select: option labels (popup)
+    int selected = 0;                   // select: index into options
+    bool multi = false;
+    uint32_t ph_color = 0xFF757575;     // ::placeholder colour
+};
+
 struct Box {
     enum class Kind { Block, Inline, Text, Replaced, Break, Marker } kind = Kind::Block;
     const dom::Node* node = nullptr;
@@ -86,6 +101,7 @@ struct Box {
     bool broken_img = false;
     bool media = false;                 // <video>/<audio>: img is the poster, the shell patches in the frames
     bool media_controls = false;
+    std::shared_ptr<Control> ctl;       // form control (kind == Replaced)
     // list marker
     int marker_shape = 0;               // 0 text, 1 disc, 2 circle, 3 square
 
@@ -94,6 +110,7 @@ struct Box {
     Edges margin, border, padding;
     bool mar_l_auto = false, mar_r_auto = false, mar_t_auto = false, mar_b_auto = false;
     float baseline = -1;                // distance from border-box top to the (last) baseline; <0 = none
+    float ctl_baseline = 0;             // controls: baseline from the content-box top
     std::vector<LineBox> lines;
     Strut bottom_strut;                 // margin sticking out below (collapsed with last child)
     bool has_inline_content = false;
@@ -203,6 +220,11 @@ float place_atom_static(Box& b);
 bool establishes_bfc(const Box& b);
 bool is_block_flow(const Box& b);                      // lays out as block container
 float last_baseline(const Box& b);
+
+// ── controls.cpp ────────────────────────────────────────────────────────────
+// Fills nat_w/nat_h/baseline of a form-control box from the font (idempotent).
+void ctl_metrics(Env& env, Box& b);
+std::string password_mask(const std::string& value);
 
 // ── inline.cpp ──────────────────────────────────────────────────────────────
 // Lays out the inline content of block container `b` (children are inline-level).

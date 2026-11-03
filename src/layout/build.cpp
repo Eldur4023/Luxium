@@ -155,6 +155,81 @@ struct Builder {
         else { b.nat_w = 300; b.nat_h = 150; }
     }
 
+    static std::string lower_attr(const dom::Node& el, const char* k) {
+        std::string v = el.attr_or(k);
+        for (char& c : v) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return v;
+    }
+    static int int_attr(const dom::Node& el, const char* k, int def) {
+        const std::string v = el.attr_or(k);
+        const int n = v.empty() ? 0 : std::atoi(v.c_str());
+        return n > 0 ? n : def;
+    }
+
+    // <input>/<textarea>/<select>.  Button-like inputs become a block with a text child (like <button>);
+    // everything else a replaced box carrying a Control.  False: not handled here (falls through to a plain box).
+    bool build_control(const dom::Node& el, const ComputedStyle* st, Box& into) {
+        const std::string tag = el.name;
+        auto c = std::make_shared<Control>();
+        c->disabled = el.has_attr("disabled");
+        c->readonly = el.has_attr("readonly");
+        c->placeholder = el.attr_or("placeholder");
+        if (!c->placeholder.empty()) {
+            const ComputedStyle ph = res.compute(el, st, style::Pseudo::Placeholder);
+            if (ph.color != st->color) c->ph_color = ph.color;
+        }
+        if (tag == "input") {
+            const std::string ty = lower_attr(el, "type");
+            if (ty == "hidden") return true;
+            if (ty == "submit" || ty == "button" || ty == "reset") {
+                auto b = make(Box::Kind::Block, &el, st);
+                auto t = make(Box::Kind::Text, nullptr, st, true);
+                t->text = el.has_attr("value") ? el.attr_or("value") : ty == "submit" ? "Submit" : ty == "reset" ? "Reset" : "";
+                if (!t->text.empty()) adopt(*b, std::move(t));
+                adopt(into, std::move(b));
+                return true;
+            }
+            c->text = el.attr_or("value");
+            c->size = int_attr(el, "size", 20);
+            if (ty == "checkbox" || ty == "radio") { c->type = ty == "radio" ? Control::Type::Radio : Control::Type::Checkbox; c->checked = el.has_attr("checked"); }
+            else if (ty == "range") {
+                c->type = Control::Type::Range;
+                const double lo = el.has_attr("min") ? std::atof(el.attr_or("min").c_str()) : 0, hi = el.has_attr("max") ? std::atof(el.attr_or("max").c_str()) : 100;
+                const double v = el.has_attr("value") ? std::atof(el.attr_or("value").c_str()) : (lo + hi) / 2;
+                c->frac = hi > lo ? float(std::clamp((v - lo) / (hi - lo), 0.0, 1.0)) : 0.f;
+            }
+            else if (ty == "file") { c->type = Control::Type::File; c->text = el.attr_or("data-files"); }
+            else if (ty == "password") c->type = Control::Type::Password;
+        } else if (tag == "textarea") {
+            c->type = Control::Type::Textarea;
+            c->text = el.text_content();
+            if (c->text.starts_with("\n")) c->text.erase(0, 1);
+            c->cols = int_attr(el, "cols", 20);
+            c->rows = int_attr(el, "rows", 2);
+        } else {
+            c->type = Control::Type::Select;
+            c->multi = el.has_attr("multiple");
+            int i = 0;
+            auto scan = [&](auto&& self, const dom::Node& n) -> void {
+                for (const auto& ch : n.children) {
+                    if (!ch->is_element()) continue;
+                    if (ch->name == "option") {
+                        std::string label = ch->has_attr("label") ? ch->attr_or("label") : ch->text_content();
+                        c->options.push_back(label);
+                        if (ch->has_attr("selected")) c->selected = i;
+                        ++i;
+                    } else if (ch->name == "optgroup") self(self, *ch);
+                }
+            };
+            scan(scan, el);
+            if (c->selected < int(c->options.size())) c->text = c->options.empty() ? "" : c->options[c->selected];
+        }
+        auto b = make(Box::Kind::Replaced, &el, st);
+        b->ctl = std::move(c);
+        adopt(into, std::move(b));
+        return true;
+    }
+
     void build_element(const dom::Node& el, const ComputedStyle& parent_st, Box& into,
                        int* list_counter, int list_step) {
         ComputedStyle cs = res.compute(el, &parent_st);
@@ -182,6 +257,9 @@ struct Builder {
             return;
         }
         if (tag == "audio") return;   // no controls: nothing to show
+        if (tag == "input" || tag == "textarea" || tag == "select") {
+            if (build_control(el, st, into)) return;
+        }
         if (tag == "img") {
             b = make(Box::Kind::Replaced, &el, st);
             load_replaced(*b, el);

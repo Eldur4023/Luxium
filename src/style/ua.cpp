@@ -66,8 +66,30 @@ th { font-weight: bold; text-align: center }
 caption { text-align: center }
 
 button { font-family: Arial; font-size: 13.333px; color: black; background-color: #efefef; padding: 1px 6px;
-         border: 2px outset #767676; text-align: center; border-radius: 3px }
-input, textarea, select { font-family: Arial; font-size: 13.333px }
+         border: 2px outset #767676; text-align: center }
+button, input, textarea, select { line-height: normal }
+input, textarea, select { font-family: Arial; font-size: 13.333px; color: black; margin: 0; text-align: start }
+input { padding: 1px 2px; border: 2px inset #767676; background-color: white; overflow: clip }
+input[type=checkbox], input[type=radio] { box-sizing: border-box; padding: 0; border: none; background-color: transparent;
+                                          margin: 3px 3px 3px 4px; overflow: visible }
+input[type=radio] { margin: 3px 3px 0 5px }
+input[type=range] { padding: 0; border: none; margin: 2px; overflow: visible; color: rgb(157, 150, 142) }
+input[type=search] { box-sizing: border-box }
+input[type=file] { padding: 0; border: none; background-color: transparent; white-space: pre; align-items: baseline }
+input[type=submit], input[type=button], input[type=reset] { box-sizing: border-box; text-align: center; white-space: pre;
+         padding: 1px 6px; border: 2px outset #767676; background-color: #efefef; overflow: visible }
+textarea { font-family: monospace; padding: 2px; border: 1px solid #767676; background-color: white; white-space: pre-wrap; overflow: auto }
+select { box-sizing: border-box; border: 1px solid #767676; background-color: #efefef; white-space: pre; align-items: center }
+input:disabled, textarea:disabled, select:disabled { color: #545454; background-color: rgba(239, 239, 239, 0.3);
+                                                      border-color: rgba(118, 118, 118, 0.3) }
+button:disabled { color: rgba(16, 16, 16, 0.3); background-color: rgba(239, 239, 239, 0.3); border-color: rgba(118, 118, 118, 0.3) }
+input[type=hidden] { display: none }
+html[data-luxium-scheme=dark] { color: white; background-color: #121212 }
+html[data-luxium-scheme=dark] input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=submit]):not([type=button]):not([type=reset]), html[data-luxium-scheme=dark] textarea { color: white; background-color: #3b3b3b; border-color: #858585 }
+html[data-luxium-scheme=dark] select, html[data-luxium-scheme=dark] button, html[data-luxium-scheme=dark] input[type=submit] {
+    color: white; background-color: #6b6b6b; border-color: #858585 }
+:focus-visible { outline: auto 1px -webkit-focus-ring-color }
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offset: 0 }
 img { overflow: clip }
 [hidden] { display: none }
 dialog:not([open]) { display: none }

@@ -38,6 +38,7 @@ struct FaceKey {
 struct FaceMetrics {         // Blink rounds ascent/descent to whole pixels
     float ascent = 0, descent = 0, line_gap = 0;
     float x_height = 0;
+    float avg_char = 0, max_char = 0;   // OS/2 xAvgCharWidth and the bbox width: what Blink sizes text fields with
 };
 
 class Font {

@@ -191,12 +191,13 @@ void place_float(Env& env, Box& f, Bfc& bfc, float content_w, float ox, float oy
 
 // ── replaced elements ───────────────────────────────────────────────────────
 
-static void layout_replaced(Env&, Box& b, const Constraint& c) {
+static void layout_replaced(Env& env, Box& b, const Constraint& c) {
     const ComputedStyle& s = *b.st;
+    if (b.ctl) ctl_metrics(env, b);
     resolve_edges(b, c.cb_w);
     const float bp_h = b.border.h() + b.padding.h(), bp_v = b.border.v() + b.padding.v();
     auto adj = [&](float v, float bp) { return s.box_sizing == style::BoxSizing::Border ? std::max(0.f, v - bp) : v; };
-    const float ratio = (b.nat_w > 0 && b.nat_h > 0) ? b.nat_w / b.nat_h : 0;
+    const float ratio = (b.nat_w > 0 && b.nat_h > 0 && !b.ctl) ? b.nat_w / b.nat_h : 0;
     const bool wa = s.width.is_auto || (s.width.has_pct() && c.cb_w < 0);
     const bool ha = s.height.is_auto || (s.height.has_pct() && c.cb_h < 0);
     float w = 0, h = 0;
@@ -222,7 +223,7 @@ static void layout_replaced(Env&, Box& b, const Constraint& c) {
     if (c.forced_h >= 0) h = std::max(0.f, c.forced_h - bp_v);
     b.w = w + bp_h;
     b.h = h + bp_v;
-    b.baseline = -1;
+    b.baseline = b.ctl && b.ctl_baseline >= 0 ? b.border.t + b.padding.t + b.ctl_baseline : -1;
 }
 
 // ── intrinsic sizes ─────────────────────────────────────────────────────────
@@ -251,6 +252,7 @@ Intrinsic intrinsic_widths(Env& env, Box& b) {
     Intrinsic r;
     if (b.kind == Box::Kind::Replaced) {
         const ComputedStyle& s = *b.st;
+        if (b.ctl) ctl_metrics(env, b);
         float w = b.nat_w;
         if (!s.width.is_auto && !s.width.has_pct()) w = s.width.px;
         else if (!s.height.is_auto && !s.height.has_pct() && b.nat_w > 0 && b.nat_h > 0) w = s.height.px * b.nat_w / b.nat_h;

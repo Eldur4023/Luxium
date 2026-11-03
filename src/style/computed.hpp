@@ -195,8 +195,17 @@ struct ComputedStyle {
     // ── generated content / misc ────────────────────────────────────────────
     bool     has_content = false;       // ::before/::after generate a box iff true
     std::string content;
-    int      cursor = 0;                // 0 auto, 1 pointer, 2 text, 3 default
+    int      cursor = 0;                // 0 auto, 1 pointer, 2 text, 3 default, 4 not-allowed, 5 grab, 6 grabbing
     bool     pointer_events = true;
+    uint32_t accent = 0;                // accent-color (0 = auto)
+    bool     appearance_none = false;   // appearance: none (controls keep only their CSS look)
+    float    aspect_ratio = 0;          // aspect-ratio (width/height); 0 = auto
+    // outline: drawn outside the border edge, never affects layout.  `auto` = the focus ring.
+    BorderStyle outline_style = BorderStyle::None;
+    bool     outline_auto = false;
+    float    outline_w = 3, outline_offset = 0;
+    uint32_t outline_color = 0xFF000000;
+    bool     outline_current = true;
     std::map<std::string, std::string> custom;   // --x: raw value (inherited)
 
     // line-height in px for THIS element's font

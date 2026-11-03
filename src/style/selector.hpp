@@ -18,7 +18,7 @@
 
 namespace luxium::style {
 
-enum class Pseudo { None, Before, After };
+enum class Pseudo { None, Before, After, Placeholder };
 
 struct Selector;   // complex selector
 

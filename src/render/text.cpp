@@ -110,6 +110,9 @@ FaceMetrics Font::metrics(FaceKey key, float px) const {
     if (auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(f->ft, ft_sfnt_os2)))
         if (os2->version >= 2 && os2->sxHeight > 0) xh = static_cast<float>(os2->sxHeight) / upem;
     m.x_height = xh * px;
+    if (auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(f->ft, ft_sfnt_os2)))
+        m.avg_char = static_cast<float>(os2->xAvgCharWidth) * px / upem;
+    m.max_char = std::round(static_cast<float>(f->ft->bbox.xMax - f->ft->bbox.xMin) * px / upem);
     return m;
 }
 

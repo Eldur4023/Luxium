@@ -38,7 +38,7 @@ ComputedStyle inherited_style(const ComputedStyle& p) {
     s.border_collapse = p.border_collapse;
     s.border_spacing_h = p.border_spacing_h; s.border_spacing_v = p.border_spacing_v;
     s.overflow_wrap = p.overflow_wrap; s.word_break = p.word_break;
-    s.pointer_events = p.pointer_events;
+    s.pointer_events = p.pointer_events; s.accent = p.accent;
     s.text_overflow_ellipsis = false;
     s.custom = p.custom;
     for (float& w : s.border_w) w = 0;   // style none: computes to 0 (the struct default is `medium`)
@@ -331,6 +331,18 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
         case Display::InlineTable: s.display = Display::Table; break;
         default: break;
         }
+    }
+    // overflow: when only one axis scrolls/clips, `visible` computes to auto and `clip` to hidden on the other
+    {
+        auto plain = [](Overflow o) { return o == Overflow::Visible || o == Overflow::Clip; };
+        if (plain(s.overflow_x) != plain(s.overflow_y)) {
+            Overflow& p = plain(s.overflow_x) ? s.overflow_x : s.overflow_y;
+            p = p == Overflow::Visible ? Overflow::Auto : Overflow::Hidden;
+        }
+    }
+    if (el.name == "input") {   // Blink: clipping on an <input> is always `clip`
+        if (s.overflow_x == Overflow::Hidden) s.overflow_x = Overflow::Clip;
+        if (s.overflow_y == Overflow::Hidden) s.overflow_y = Overflow::Clip;
     }
     if (s.position == Position::Absolute || s.position == Position::Fixed) s.float_ = Float::None;
     if (pseudo != Pseudo::None && !s.has_content) s.display = Display::None;

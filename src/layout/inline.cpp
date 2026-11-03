@@ -675,7 +675,7 @@ struct LineBuilder {
                 for (size_t q = open_now.size(); q-- > 0;) if (open_now[q] == t.box) { open_now.erase(open_now.begin() + q); break; }
             } else if (t.k == K::Atom) {
                 Box* a = t.box;
-                float bo = a->baseline >= 0 && a->kind != Box::Kind::Replaced ? a->margin.t + a->baseline
+                float bo = a->baseline >= 0 && (a->kind != Box::Kind::Replaced || a->ctl) ? a->margin.t + a->baseline
                                                                                 : a->margin.t + a->h + a->margin.b;
                 const float below = a->outer_h() - bo;
                 const ComputedStyle& pst = t.ibox ? *t.ibox->st : bs;
