@@ -25,11 +25,16 @@
 
 namespace luxium::shell {
 
+// SIGTERM/SIGINT become a normal quit, so CEF shuts down and flushes the profile.
+static std::atomic<bool> g_term{false};
+static void on_term(int) { g_term = true; }
+
 using luxium::render::ImageBitmap;
 using namespace luxium::cef_input;
 
 
 Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cfg)) {
+    app_ = cfg_.app;
     // Clicks on <a href> come back here from the page, whatever the run mode.
     page_.on_navigate = [this](const std::string& href) { navigate_to(href, true); };
     page_.on_media_click = [](const dom::Node* n) { media::own::toggle(n); };
@@ -40,8 +45,9 @@ Shell::~Shell() {
     if (cursor_hand_) SDL_FreeCursor(cursor_hand_);
     if (texture_)  SDL_DestroyTexture(texture_);
     if (renderer_) SDL_DestroyRenderer(renderer_);
-    if (window_)   SDL_DestroyWindow(window_);
-    SDL_Quit();
+    if (window_ && !owns_window_ && !renderer_) SDL_DestroyWindowSurface(window_);   // the host may give the window to a renderer next
+    if (window_ && owns_window_) SDL_DestroyWindow(window_);
+    if (owns_window_) SDL_Quit();
 }
 
 void Shell::ensure_surface() {
@@ -57,10 +63,12 @@ void Shell::ensure_surface() {
     if (engine_cef_)
         cef::set_view(win_w_, win_h_ - bottom_h() - url_h());
 #endif
+    need_paint_ = true;
     fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFAFAF7u);
     if (texture_) SDL_DestroyTexture(texture_);
-    texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
-                                 SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_);
+    texture_ = renderer_ ? SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
+                                             SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_)
+                         : nullptr;
     relayout();
 }
 
@@ -68,10 +76,29 @@ void Shell::ensure_surface() {
 // visible (F12).  La pagina ocupa todo lo demas.
 int Shell::bottom_h() const {
     if (fullscreen_) return 0;
-    return 20 + (console_visible_ ? console_h_ : 0);
+    return status_h() + (console_visible_ ? console_h_ : 0);
 }
 
-int Shell::url_h() const { return fullscreen_ ? 0 : kUrlH; }
+int Shell::url_h() const { return fullscreen_ ? 0 : app_ ? top_inset_ : kUrlH; }
+
+// The host window around an own-engine app page: SDL, the window and its events belong to the host.
+void Shell::attach(SDL_Window* window) {
+    window_ = window;
+    owns_window_ = false;
+    // No SDL_Renderer: it drags in libGL + Mesa (~40 MB of private pages per process) even in software mode.
+    // frame() copies the framebuffer into the window surface instead (X11 shared memory).
+    SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
+    cursor_hand_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
+    font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
+    ensure_surface();
+}
+
+void Shell::set_top_inset(int px) {
+    if (px == top_inset_) return;
+    top_inset_ = px;
+    win_w_ = 0;   // rebuild the surface for the new page area
+    ensure_surface();
+}
 
 // The page took fullscreen (a video player, a web app): the window follows and
 // the chrome around the page disappears; the view is the whole window.
@@ -243,7 +270,8 @@ void Shell::after_load() {
     scroll_ = 0;
     std::string t = "Luxium";
     if (!page_.page_title().empty()) t += " \xE2\x80\x94 " + page_.page_title();
-    if (window_) SDL_SetWindowTitle(window_, t.c_str());
+    if (window_ && !app_) SDL_SetWindowTitle(window_, t.c_str());
+    need_paint_ = true;
     relayout();
 }
 
@@ -475,6 +503,9 @@ bool Shell::cef_available() const {
 
 void Shell::open_in_cef(const std::string& url) {
 #ifdef LUXIUM_CEF
+    cef::init(cef_display_, cef_parent_);   // first JavaScript page: Chromium starts now, not before
+    std::signal(SIGTERM, on_term);          // CEF's init replaced the handlers
+    std::signal(SIGINT, on_term);
     cef::attach(cef_display_, cef_parent_, url);
     cef::set_view(win_w_, win_h_ - bottom_h() - url_h());
     cef::set_focus(true);
@@ -486,7 +517,12 @@ void Shell::open_in_cef(const std::string& url) {
 }
 
 void Shell::maybe_cef_handoff() {
-    if (!page_.used_javascript() || !cef_available()) return;
+    if (!page_.used_javascript()) return;
+    if (app_) {   // the host decides what to do with a JavaScript page (open it in Chromium)
+        if (web_handler_) web_handler_(page_.name());
+        return;
+    }
+    if (!cef_available()) return;
     std::string target = page_.name();
     if (target.rfind("http", 0) != 0) {
         std::error_code ec;
@@ -747,9 +783,6 @@ static void forward_cef_key(const SDL_Keysym& k, int type, unsigned long display
 }
 #endif // LUXIUM_CEF
 
-// SIGTERM/SIGINT become a normal quit, so CEF shuts down and flushes the profile.
-static std::atomic<bool> g_term{false};
-static void on_term(int) { g_term = true; }
 
 int Shell::run() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
@@ -793,9 +826,6 @@ int Shell::run() {
         if (SDL_GetWindowWMInfo(window_, &wm)) {
             cef_display_ = (unsigned long)wm.info.x11.display;
             cef_parent_  = (unsigned long)wm.info.x11.window;
-            cef::init(cef_display_, cef_parent_);
-            std::signal(SIGTERM, on_term);   // CEF's init replaced the handlers
-            std::signal(SIGINT, on_term);
         }
     }
     maybe_cef_handoff();   // la pagina inicial tambien se juzga (lux vs js)
@@ -805,7 +835,21 @@ int Shell::run() {
     while (!quit) {
         if (g_term) quit = true;
         SDL_Event e;
-        while (SDL_PollEvent(&e)) {
+        while (SDL_PollEvent(&e))
+            if (handle_event(e)) quit = true;
+        frame();
+        SDL_Delay(8);   // ~120fps cap; the CPU is idle at this size anyway
+    }
+#ifdef LUXIUM_CEF
+    cef::shutdown();
+#endif
+    return 0;
+}
+
+// One window event.  Returns true when the user asked to quit.
+bool Shell::handle_event(const SDL_Event& e) {
+    bool quit = false;
+    need_paint_ = true;
             switch (e.type) {
             case SDL_QUIT:
                 quit = true;
@@ -929,7 +973,7 @@ int Shell::run() {
                     break;
                 }
 #endif
-                if (e.key.keysym.sym == SDLK_F12) {   // consola: mostrar/ocultar
+                if (e.key.keysym.sym == SDLK_F12 && (!app_ || cfg_.devtools)) {   // consola: mostrar/ocultar
                     toggle_console();
                     break;
                 }
@@ -1009,7 +1053,7 @@ int Shell::run() {
                     }
                     break;   // focused: the page does not see keys
                 }
-                if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_l) {
+                if (!app_ && e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_l) {
                     url_focus_ = true;
                     std::string shown;
 #ifdef LUXIUM_CEF
@@ -1028,7 +1072,7 @@ int Shell::run() {
                     else navigate_to(hist_[hist_idx_], false);
                     break;
                 }
-                if (e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_u) {
+                if (!app_ && e.key.keysym.mod & KMOD_CTRL && e.key.keysym.sym == SDLK_u) {
                     toggle_view_source();
                     break;
                 }
@@ -1068,7 +1112,7 @@ int Shell::run() {
                 }
 #endif
                 switch (e.key.keysym.sym) {
-                case SDLK_ESCAPE: quit = true; break;
+                case SDLK_ESCAPE: if (!app_) quit = true; break;
                 case SDLK_PAGEUP:   scroll_ = std::max(0.f, scroll_ - page_h() * 0.8f); break;
                 case SDLK_PAGEDOWN: scroll_ = std::min(std::max(0.f, content_h_ - page_h()),
                                                        scroll_ + page_h() * 0.8f); break;
@@ -1083,8 +1127,11 @@ int Shell::run() {
                 break;
 #endif
             }
-        }
+    return quit;
+}
 
+// One iteration of everything that is not input: fetches, timers, layout, paint, present.
+void Shell::frame() {
         poll_fetch();          // network pages land here when the worker ends
 #ifdef LUXIUM_CEF
         if (engine_cef_) {
@@ -1111,14 +1158,31 @@ int Shell::run() {
         if (page_.dirty()) {
             relayout();
             console_scroll_ = 0;   // new output snaps the pane to the tail
+            need_paint_ = true;
         }
+        // App windows sit idle between events: repaint only when something changed (video overlays animate).
+        if (app_ && !need_paint_ && layout_.media.empty() && !std::getenv("LUXIUM_DUMP_FRAME")) return;
+        need_paint_ = false;
         repaint();
+        if (overlay_ && !fb_.empty()) overlay_(fb_.data(), win_w_, win_h_);
 
-        if (texture_ && !fb_.empty()) {
-            SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
-            SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+        if (!renderer_) {   // app window: blit into the window surface
+            SDL_Surface* sf = fb_.empty() ? nullptr : SDL_GetWindowSurface(window_);
+            if (sf && sf->w == win_w_ && sf->h == win_h_ && sf->format->BytesPerPixel == 4) {
+                SDL_LockSurface(sf);
+                for (int y = 0; y < win_h_; ++y)
+                    std::memcpy(static_cast<uint8_t*>(sf->pixels) + static_cast<size_t>(y) * sf->pitch,
+                                fb_.data() + static_cast<size_t>(y) * win_w_, static_cast<size_t>(win_w_) * 4);
+                SDL_UnlockSurface(sf);
+                SDL_UpdateWindowSurface(window_);
+            }
+        } else {
+            if (texture_ && !fb_.empty()) {
+                SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
+                SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+            }
+            SDL_RenderPresent(renderer_);
         }
-        SDL_RenderPresent(renderer_);
 
         // Debug hook: dump the real windowed loop's framebuffer (what the
         // user's screen gets) -- LUXIUM_DUMP_FRAME=/path/out.ppm.  Dumps
@@ -1148,12 +1212,6 @@ int Shell::run() {
                 }
             }
         }
-        SDL_Delay(8);   // ~120fps cap; the CPU is idle at this size anyway
-    }
-#ifdef LUXIUM_CEF
-    cef::shutdown();
-#endif
-    return 0;
 }
 
 // [{"t":"name","x":..,"y":..,"w":..,"h":..},...]  (mismo formato que la sonda)
@@ -1384,6 +1442,7 @@ void Shell::relayout() {
 }
 
 bool Shell::handle_click(int mx, int my, int clicks) {
+    if (app_ && my < url_h()) return false;
     if (my < url_h()) {   // the address strip: caret placement + selection
         if (!url_focus_) {
             url_focus_  = true;
@@ -1491,7 +1550,7 @@ void Shell::draw_scrollbar() {
 void Shell::draw_console() {
     if (!console_visible_) return;
     const int y0 = win_h_ - bottom_h();
-    const int y_end = win_h_ - 20;   // la tira de estado sigue debajo
+    const int y_end = win_h_ - status_h();   // la tira de estado sigue debajo
     // pane background + its top border
     for (int y = y0 + 1; y < y_end; ++y) {
         uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
@@ -1573,7 +1632,7 @@ void Shell::repaint() {
                 cef::copy_frame(page, win_w_ * 4, win_w_, ph, &fw, &fh);
         }
 #endif
-        if (!fullscreen_) {
+        if (!fullscreen_ && !app_) {
             draw_url_bar();
             draw_status();
             draw_console();
@@ -1582,7 +1641,8 @@ void Shell::repaint() {
         return;
     }
     if (!page_.page_root()) {
-        draw_url_bar();
+        if (app_) std::fill(fb_.begin(), fb_.end(), 0xFFFFFFFFu);   // nothing loaded yet
+        else draw_url_bar();
         return;
     }
     const int page_top    = url_h();
@@ -1631,10 +1691,10 @@ void Shell::repaint() {
         paint::rasterize(render::media_overlay(layout_, true, *font_), cv, *font_);
     }
 
-    draw_status();
+    if (!app_) draw_status();
     draw_scrollbar();
     draw_console();
-    draw_url_bar();
+    if (!app_) draw_url_bar();
     ++frames_;
 }
 

@@ -79,6 +79,7 @@ target_compile_options(lux_script PRIVATE -w)   # vendored code: Lux owns its wa
 # The engine (src/media) is a static lib shared by the browser and the self-test.
 if(LUXIUM_MEDIA)
     add_library(luxium_media STATIC src/media/player.cpp src/media/own_media.cpp)
+    set_target_properties(luxium_media PROPERTIES POSITION_INDEPENDENT_CODE ON)   # also linked into the Chromium plugin
     target_include_directories(luxium_media PUBLIC src ${FFMPEG_INCLUDE_DIR} ${SDL2_INCLUDE_DIRS})
     target_link_libraries(luxium_media PUBLIC ${FFMPEG_LIBS} ${SDL2_LIBRARIES} pthread)
     target_compile_options(luxium_media PRIVATE -Wall -Wextra)
@@ -131,7 +132,7 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/media/shim.js" _shim_js)
 file(WRITE "${CMAKE_BINARY_DIR}/gen/shim_js.inc" "R\"LXSHIM(${_shim_js})LXSHIM\"\n")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/media/shim.js")
 if(LUXIUM_CEF)
-    list(APPEND LUXIUM_SRCS src/cef/cef_backend.cpp src/cef/media_bridge.cpp src/host/app_host.cpp src/host/menubar.cpp)
+    list(APPEND LUXIUM_SRCS src/cef/cef_lazy.cpp src/host/app_host.cpp src/host/menubar.cpp)
 else()
     list(APPEND LUXIUM_SRCS src/cef/cef_backend_stub.cpp)
 endif()
@@ -150,8 +151,19 @@ if(LUXIUM_CEF)
     target_compile_definitions(luxium PRIVATE LUXIUM_CEF=1)
     target_include_directories(luxium SYSTEM PRIVATE ${CEF_ROOT})
     target_include_directories(luxium PRIVATE "${CMAKE_BINARY_DIR}/gen")
-    target_link_libraries(luxium PRIVATE libcef_lib libcef_dll_wrapper X11)
-    set_target_properties(luxium PROPERTIES BUILD_RPATH "$ORIGIN")   # libcef.so + its resources are copied next to the binary
+    target_link_libraries(luxium PRIVATE X11 ${CMAKE_DL_LIBS})
+    set_target_properties(luxium PROPERTIES BUILD_RPATH "$ORIGIN")
+    # Chromium lives in a plugin the binary dlopen()s on the first JavaScript page (src/cef/cef_lazy.cpp):
+    # own-engine windows never map libcef.so.  libcef.so + its resources are copied next to the binary.
+    add_library(luxium_cef SHARED src/cef/cef_backend.cpp src/cef/media_bridge.cpp src/cef/cef_plugin.cpp)
+    target_include_directories(luxium_cef PRIVATE src "${CMAKE_BINARY_DIR}/gen" ${SDL2_INCLUDE_DIRS})
+    target_include_directories(luxium_cef SYSTEM PRIVATE ${CEF_ROOT})
+    target_compile_definitions(luxium_cef PRIVATE LUXIUM_CEF=1)
+    target_compile_options(luxium_cef PRIVATE -Wall -Wextra -fPIC)
+    target_link_libraries(luxium_cef PRIVATE libcef_lib libcef_dll_wrapper luxium_media X11)
+    target_link_options(luxium_cef PRIVATE -Wl,-Bsymbolic-functions)
+    set_target_properties(luxium_cef PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN" LIBRARY_OUTPUT_NAME luxium_cef)
+    add_dependencies(luxium luxium_cef)
     add_custom_command(TARGET luxium POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_ROOT}/Resources" "$<TARGET_FILE_DIR:luxium>"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_ROOT}/Release" "$<TARGET_FILE_DIR:luxium>"
