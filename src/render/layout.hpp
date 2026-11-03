@@ -91,7 +91,7 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::vector<style::Rule>& author_rules,
                     const std::string& base_dir = "",
                     float vp_y = 38.f, float vp_h = 762.f,
-                    std::function<bool(const dom::Node&, style::ComputedStyle&)> style_hook = nullptr,
+                    std::function<bool(const dom::Node&, style::ComputedStyle&, int)> style_hook = nullptr,
                     bool assume_gutter = false);
 
 // Own-engine media (layout/media_ui.cpp): swap the current pictures into the

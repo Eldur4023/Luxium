@@ -34,6 +34,7 @@ integration/t-int-blog
 integration/t-int-cards
 integration/t-int-dashboard
 integration/t-int-newsletter
+paint/t-paint-animation
 paint/t-paint-bg-image
 paint/t-paint-box-shadow
 paint/t-paint-gradient-linear
@@ -44,6 +45,8 @@ paint/t-paint-opacity
 paint/t-paint-order-overlap
 paint/t-paint-overflow-auto
 paint/t-paint-overflow-hidden
+paint/t-paint-svg
+paint/t-paint-transform
 paint/t-paint-visibility
 paint/t-paint-zindex
 pos/t-pos-absolute-in-relative
@@ -98,6 +101,7 @@ text/t-text-align-justify
 text/t-text-decoration
 text/t-text-ellipsis
 text/t-text-em-strong
+text/t-text-emoji
 text/t-text-line-boxes
 text/t-text-overflow-wrap
 text/t-text-spacing

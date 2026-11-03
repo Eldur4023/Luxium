@@ -278,10 +278,12 @@ bool Shell::animate_keyframes(NodeAnim& a, style::ComputedStyle& s) {
     return changed;
 }
 
-bool Shell::style_hook(const dom::Node& el, style::ComputedStyle& s) {
-    auto found = anims_.find(&el);
+bool Shell::style_hook(const dom::Node& el, style::ComputedStyle& s, int pseudo) {
+    // ::before/::after animate separately from their element: the key is the node address nudged by the pseudo id
+    const dom::Node* key = reinterpret_cast<const dom::Node*>(reinterpret_cast<uintptr_t>(&el) + uintptr_t(pseudo));
+    auto found = anims_.find(key);
     if (found == anims_.end() && s.transitions.empty() && s.animations.empty()) return false;
-    NodeAnim& a = found != anims_.end() ? found->second : anims_[&el];
+    NodeAnim& a = found != anims_.end() ? found->second : anims_[key];
     a.seen = anim_frame_;
     bool changed = false;
     const AnimVals cur = vals_of(s);

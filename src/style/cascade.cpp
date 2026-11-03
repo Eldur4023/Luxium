@@ -320,7 +320,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
             auto hit = cache_.find(ckey);
             if (hit != cache_.end()) {
                 ComputedStyle r = hit->second;
-                if (pseudo == Pseudo::None && post_hook && post_hook(el, r)) r.cache_id = ++next_id_;
+                if (post_hook && post_hook(el, r, int(pseudo))) r.cache_id = ++next_id_;
                 return r;
             }
         }
@@ -441,7 +441,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
     }
     s.cache_id = ++next_id_;
     if (cacheable && !ckey.empty()) cache_.emplace(ckey, s);
-    if (pseudo == Pseudo::None && post_hook && post_hook(el, s)) s.cache_id = ++next_id_;
+    if (post_hook && post_hook(el, s, int(pseudo))) s.cache_id = ++next_id_;
     return s;
 }
 

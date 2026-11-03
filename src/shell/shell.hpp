@@ -290,7 +290,7 @@ private:
     std::unordered_map<const dom::Node*, NodeAnim> anims_;
     uint64_t anim_frame_ = 0;
     bool    anim_active_ = false;
-    bool    style_hook(const dom::Node& el, style::ComputedStyle& s);
+    bool    style_hook(const dom::Node& el, style::ComputedStyle& s, int pseudo);
     void    wire_form_hooks();                         // ShellHooks: rect, scroll, focus, live values, files
     const render::HitBox* box_of(const dom::Node* n) const;
     bool    key_dispatched_ = false;                   // page_key_down already delivered this keydown to scripts

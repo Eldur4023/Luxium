@@ -1594,7 +1594,7 @@ void Shell::relayout() {
                              page_.base_dir(),
                              static_cast<float>(url_h()),
                              static_cast<float>(win_h_ - bottom_h()),
-                             [this](const dom::Node& el, style::ComputedStyle& st) { return style_hook(el, st); },
+                             [this](const dom::Node& el, style::ComputedStyle& st, int pseudo) { return style_hook(el, st, pseudo); },
                              layout_.gutter);
     // forget animation state of elements that are gone; keep the frame loop alive while a tween runs
     ++anim_frame_;

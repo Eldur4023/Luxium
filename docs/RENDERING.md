@@ -1,6 +1,6 @@
 # Renderizado de Luxium: motor propio, oráculo y tests
 
-Estado: el motor propio pasa **118/118** casos de `css-tests/` contra Chromium
+Estado: el motor propio pasa **122/122** casos de `css-tests/` (más 3 instantáneas de Homeflix que fallan en detalles conocidos, §3) contra Chromium
 (rects ±1px, estilos computados exactos, píxeles, color).  Este documento
 sustituye a `plan-css.md` / `plan-css-tests.md` (que quedan como histórico).
 
@@ -26,7 +26,9 @@ DOM ──► style/ ──► layout/build ──► layout/{block,inline,flex,
 | `src/layout/table.cpp` | Tablas: auto/colspan/rowspan, `border-spacing`, `border-collapse` con conflictos de bordes |
 | `src/layout/paint.cpp` | Posiciones absolutas, Apéndice E de CSS 2.1 con contextos de apilamiento, fondos/bordes/sombras/texto |
 | `src/paint/raster.*` | Rasterizador software: SDF con AA, clip redondeado, capas de opacidad, texto LCD |
-| `src/render/text.*` | FreeType + HarfBuzz + fontconfig: resolución de fuentes como Chromium, fallback por glifo |
+| `src/render/text.*` | FreeType + HarfBuzz + fontconfig: resolución de fuentes como Chromium, fallback por cluster (secuencias emoji: VS16, ZWJ, tonos, banderas, keycaps), emoji a color (tiras CBDT escaladas con filtro de caja y avance entero de la tira) |
+| `src/render/svg.*` | Rasterizador SVG propio (AA por supermuestreo vertical + cobertura horizontal exacta): paths (todos los comandos y arcos), formas, fill/stroke (caps, joins, dash), opacidad, `<g>/<use>`, transformaciones, degradados lineal/radial, `viewBox`/`preserveAspectRatio`, `<style>` mínimo. Se re-rasteriza al tamaño con que se coloca (fondo, `<img>`, `<svg>` inline) |
+| `src/shell/shell_anim.cpp` | `transition` y `@keyframes`/`animation` (reloj del bucle de frames; solo repinta mientras algo anima) |
 
 Fuentes: `font-family` pasa por fontconfig y solo se acepta la familia pedida o
 una **métricamente compatible** (misma regla que Skia: Arial/Arimo/Liberation
@@ -93,14 +95,24 @@ search, number, range, checkbox, radio, file), `<textarea>`, `<select>` con popu
 caret/selección/portapapeles/IME; `:hover :focus :focus-visible :focus-within :checked :disabled :has() :placeholder-shown
 ::placeholder`; `cursor`; `outline`; `accent-color`; `appearance`; `aspect-ratio`; `min()/max()/clamp()` mezclando `%` y px;
 `dvh/svh/lvh`; `overflow: auto/scroll` con rueda, barras y arrastre; `position: sticky` (contra el scroll de página);
-`transform: translate()`; `transition` de opacity/transform/colores; `<details>`; imágenes JPEG y WebP; esquema oscuro
+`transform` 2D completo (translate/scale/rotate/skew/matrix + `transform-origin`, en pintura, hit-testing y `getBoundingClientRect`;
+una traslación pura se encaja a píxeles enteros, lo demás se pinta en una capa remuestreada); `transition` (shorthand y longhands) de
+opacity/transform/colores/longitudes (width, height, margin, padding, inset); `@keyframes` + `animation` (shorthand y longhands, `cubic-bezier`/`steps`/
+palabras clave, `infinite`, direcciones, `fill-mode`, `play-state`, varias animaciones por elemento, también en `::before/::after`, `var()` en los
+fotogramas) sobre esas mismas propiedades; SVG (§1); emoji a color y fallback monocromo por cluster; `<details>`; imágenes JPEG y WebP; esquema oscuro
 (`<meta name=color-scheme content=dark>`).
 
-Sin implementar (se ve como diferencia visual o se ignora): `transform` con scale/rotate/skew (se parsea y no hace nada),
-`@keyframes`/`animation` (el spinner de carga no gira), `mask-image`, `backdrop-filter`, `::first-line/::first-letter`,
+Animaciones: el reloj de `@keyframes` es el del bucle de frames; `LUXIUM_ANIM_TIME=ms` lo congela en ese instante desde el
+inicio de cada animación (volcados deterministas).  Los tests usan `animation-play-state: paused` con retraso negativo, que Chromium
+y el motor propio muestran igual; `cssrun` admite `skipstyle=` (las propiedades que anima `@keyframes` no se comparan como estilo
+computado, `--styles` no tiene reloj).  Cada frame de una animación hace relayout completo (como las transiciones).  Las
+transformaciones no 3D se interpolan función a función (mismo número y tipo de funciones; si no, salto a mitad); `perspective`,
+`rotateX/Y`, `translateZ` se ignoran.  SVG: sin `clip-path`/`mask`/`filter`/`pattern`/`<text>`/`<image>`/`marker` ni `<symbol>` con `viewBox`.
+Emoji: solo la tira CBDT de Noto Color Emoji (sin COLRv1/sbix), con el mismo orden de fontconfig que Chromium para elegir la fuente.
+
+Sin implementar (se ve como diferencia visual o se ignora): `mask-image`, `backdrop-filter`, `::first-line/::first-letter`,
 contadores CSS, `text-shadow`, filtros y `mix-blend-mode`, `object-position`, multicolumna, `writing-mode`, `@font-face`
-remotas, SVG (los chevrones de `<select appearance:none>` en `background-image` no salen), PNG entrelazado/16 bits, emoji a
-color (`Noto Color Emoji`: se mide con el avance de la fuente de reserva y no se pinta), `cqw` (se aproxima con el viewport),
+remotas, PNG entrelazado/16 bits (y el alfa de PNG/WebP se compone sobre blanco; solo las imágenes vectoriales mezclan con alfa), `cqw` (se aproxima con el viewport),
 posición estática de hijos absolutos de un contenedor flex/grid (siempre 0,0), barra de scroll horizontal arrastrable,
 barras de cajas internas como *overlay* (no reservan hueco, a diferencia de Chromium), `caption-side: bottom`.
 Pendiente de método: importar un subconjunto de los reftests de web-platform-tests.

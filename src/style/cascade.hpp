@@ -34,9 +34,9 @@ public:
     void set_author_rules(const std::vector<Rule>* rules) { author_ = rules ? rules : &kNoRules; author_idx_.build(*author_); }
 
     void set_viewport(float w, float h) { vw_ = w; vh_ = h; }
-    // Called with every element's final style (Pseudo::None); the shell animates transitions through it.
+    // Called with every element's (and ::before/::after's: `pseudo` = Pseudo as int) final style; the shell animates through it.
     // Returns true when it changed the style (then the style gets a fresh identity).
-    std::function<bool(const dom::Node&, ComputedStyle&)> post_hook;
+    std::function<bool(const dom::Node&, ComputedStyle&, int pseudo)> post_hook;
     float viewport_w() const { return vw_; }
     float viewport_h() const { return vh_; }
 

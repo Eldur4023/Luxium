@@ -17,7 +17,7 @@ namespace {
 
 LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
                          const std::vector<style::Rule>& rules, const std::string& base_dir,
-                         const std::function<bool(const dom::Node&, style::ComputedStyle&)>& hook) {
+                         const std::function<bool(const dom::Node&, style::ComputedStyle&, int)>& hook) {
     using namespace luxium::layout;
     style::Resolver res;
     res.set_viewport(vw, vh);
@@ -93,7 +93,7 @@ constexpr float kScrollbarW = 15.f;   // Chromium's classic scrollbar
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::vector<style::Rule>& page_css,
                     const std::string& base_dir, float vp_y, float vp_h,
-                    std::function<bool(const dom::Node&, style::ComputedStyle&)> style_hook,
+                    std::function<bool(const dom::Node&, style::ComputedStyle&, int)> style_hook,
                     bool assume_gutter) {
     const float vh = vp_h - vp_y;
     // The vertical scrollbar takes its gutter from the layout width.  Whether one is needed is only known after
