@@ -23,6 +23,7 @@ mkdir -p "$stage"
 cp -a "$cef/Release/." "$stage/"
 cp -a "$cef/Resources/." "$stage/"
 cp "$build/luxium" "$stage/luxium"
+cp "$build/libluxium_cef.so" "$stage/libluxium_cef.so"   # Chromium backend, loaded on the first JavaScript page
 rm -f "$stage/chrome-sandbox"        # we run with no_sandbox: nothing to make setuid
 # libcef ships with symbols (1.4 GB); the runtime does not need them.
 command -v strip >/dev/null 2>&1 && strip --strip-unneeded "$stage/libcef.so" 2>/dev/null || true
