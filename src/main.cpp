@@ -19,6 +19,7 @@
 #include <style/dump.hpp>
 #ifdef LUXIUM_CEF
 #include <cef/cef_backend.hpp>
+#include <host/app_host.hpp>
 #endif
 
 #include <algorithm>
@@ -80,6 +81,11 @@ int main(int argc, char** argv) {
     // dentro y NUNCA se llega al parser de argumentos.
     if (const int cef_code = luxium::cef::early(argc, argv); cef_code >= 0)
         return cef_code;
+#endif
+
+#ifdef LUXIUM_CEF
+    if (argc >= 2 && std::strcmp(argv[1], "--host") == 0)   // app host: one browser, one window per client app
+        return luxium::host::run();
 #endif
 
     if (argc == 3 && std::strcmp(argv[1], "--dump") == 0) {   // the entry page's tree and rule count
