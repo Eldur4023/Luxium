@@ -180,7 +180,7 @@ std::vector<Decl> presentational_hints(const dom::Node& el) {
         if (al == "left" || al == "right" || al == "center") add("text-align", al);
         const std::string va = lower_ascii(el.attr_or("valign"));
         if (va == "top" || va == "middle" || va == "bottom" || va == "baseline") add("vertical-align", va);
-    } else if (tag == "img") {
+    } else if (tag == "img" || tag == "video") {
         if (el.has_attr("width")) { const auto d = dim(el.attr_or("width")); if (!d.empty()) add("width", d); }
         if (el.has_attr("height")) { const auto d = dim(el.attr_or("height")); if (!d.empty()) add("height", d); }
     } else if (tag == "div" || tag == "p" || tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" ||

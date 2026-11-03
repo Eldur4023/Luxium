@@ -3,6 +3,7 @@
 // (inline runs inside blocks, flex/grid items, table structure).
 
 #include <layout/box.hpp>
+#include <media/own_media.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -123,6 +124,37 @@ struct Builder {
         b.nat_h = static_cast<float>(bm->h);
     }
 
+    // <video>/<audio>: a replaced box whose picture the shell patches in.  Size:
+    // the video's own once the player knows it, else the poster's, else 300x150
+    // (audio: 300x54 controls bar, and nothing without `controls`).
+    void load_media(Box& b, const dom::Node& el) {
+        const bool audio = el.name == "audio";
+        b.media = true;
+        b.media_controls = el.has_attr("controls");
+        media::own::Elem e;
+        std::string src = el.attr_or("src");
+        if (src.empty())
+            for (const auto& c : el.children)
+                if (c->is_element() && c->name == "source" && !c->attr_or("src").empty()) { src = c->attr_or("src"); break; }
+        e.local = !(src.starts_with("http://") || src.starts_with("https://"));
+        if (src.starts_with("file://")) src = src.substr(7);
+        if (e.local && !src.empty() && !src.starts_with('/')) src = base_dir + src;
+        e.src = src;
+        e.autoplay = el.has_attr("autoplay");
+        e.loop = el.has_attr("loop");
+        e.muted = el.has_attr("muted");
+        const media::own::Info in = media::own::attach(&el, e);
+        const std::string poster = el.attr_or("poster");
+        if (!audio && !poster.empty() && !poster.starts_with("http") && !poster.starts_with("data:")) {
+            if (const render::ImageBitmap* bm = render::load_image(poster.starts_with('/') ? poster : base_dir + poster))
+                b.img = std::shared_ptr<const render::ImageBitmap>(bm, [](const render::ImageBitmap*) {});
+        }
+        if (audio) { b.nat_w = 300; b.nat_h = 54; }
+        else if (in.w > 0 && in.h > 0) { b.nat_w = in.w; b.nat_h = in.h; }
+        else if (b.img) { b.nat_w = float(b.img->w); b.nat_h = float(b.img->h); }
+        else { b.nat_w = 300; b.nat_h = 150; }
+    }
+
     void build_element(const dom::Node& el, const ComputedStyle& parent_st, Box& into,
                        int* list_counter, int list_step) {
         ComputedStyle cs = res.compute(el, &parent_st);
@@ -143,6 +175,13 @@ struct Builder {
             adopt(into, std::move(b));
             return;
         }
+        if (tag == "video" || (tag == "audio" && el.has_attr("controls"))) {
+            b = make(Box::Kind::Replaced, &el, st);
+            load_media(*b, el);
+            adopt(into, std::move(b));
+            return;
+        }
+        if (tag == "audio") return;   // no controls: nothing to show
         if (tag == "img") {
             b = make(Box::Kind::Replaced, &el, st);
             load_replaced(*b, el);
@@ -383,6 +422,7 @@ std::unique_ptr<Tree> build_tree(const dom::Node& document, const style::Resolve
     for (auto& k : tree->root->kids)
         if (k->node && k->node->name == "body") { tree->body_box = k.get(); tree->body_style = k->st; }
     bd.number(*tree->root);
+    media::own::sweep();   // players of elements that left the tree stop here
     return tree;
 }
 

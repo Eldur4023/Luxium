@@ -11,6 +11,7 @@
 
 #include <dom/node.hpp>
 #include <render/images.hpp>
+#include <render/layout.hpp>
 #include <render/text.hpp>
 #include <paint/display_list.hpp>
 #include <style/cascade.hpp>
@@ -83,6 +84,8 @@ struct Box {
     std::shared_ptr<const render::ImageBitmap> img;
     float nat_w = 0, nat_h = 0;
     bool broken_img = false;
+    bool media = false;                 // <video>/<audio>: img is the poster, the shell patches in the frames
+    bool media_controls = false;
     // list marker
     int marker_shape = 0;               // 0 text, 1 disc, 2 circle, 3 square
 
@@ -227,12 +230,14 @@ Intrinsic table_intrinsic(Env& env, Box& b);
 struct HitRect { const dom::Node* node = nullptr; float x = 0, y = 0, w = 0, h = 0; bool button = false; };
 struct NamedRect { std::string name; float x = 0, y = 0, w = 0, h = 0; };
 struct WordRect { std::string text; float x = 0, y = 0, w = 0, h = 0; };
+using MediaRect = render::MediaBox;
 struct PaintOutput {
     paint::DisplayList main, fixed;
     std::vector<HitRect> hits;
     std::vector<HitRect> areas;
     std::vector<NamedRect> boxes;
     std::vector<WordRect> words;
+    std::vector<MediaRect> media;
     uint32_t canvas_bg = 0xFFFFFFFF;
 };
 void finalize_positions(Env& env, Tree& tree);

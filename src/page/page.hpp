@@ -39,6 +39,8 @@ public:
     // The shell sets this: a click on (or under) an <a href> calls it with
     // the raw href.  The shell decides what it means (file, http, #anchor).
     std::function<void(const std::string& href)> on_navigate;
+    // A click landed on a <video>/<audio> (not on its controls): play/pause.
+    std::function<void(const dom::Node* media)> on_media_click;
 
     // The bytes currently displayed (view-source).
     const std::string& source() const { return source_; }

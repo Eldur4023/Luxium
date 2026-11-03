@@ -5,6 +5,7 @@
 #include <style/dump.hpp>
 #include <paint/raster.hpp>
 #include <render/images.hpp>
+#include <media/own_media.hpp>
 
 #ifdef LUXIUM_CEF
 #include <SDL_syswm.h>
@@ -29,9 +30,11 @@ using luxium::render::ImageBitmap;
 Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cfg)) {
     // Clicks on <a href> come back here from the page, whatever the run mode.
     page_.on_navigate = [this](const std::string& href) { navigate_to(href, true); };
+    page_.on_media_click = [](const dom::Node* n) { media::own::toggle(n); };
 }
 
 Shell::~Shell() {
+    media::own::reset();
     if (cursor_hand_) SDL_FreeCursor(cursor_hand_);
     if (texture_)  SDL_DestroyTexture(texture_);
     if (renderer_) SDL_DestroyRenderer(renderer_);
@@ -228,7 +231,12 @@ void Shell::navigate_to(const std::string& href, bool push_history) {
     }
 }
 
+void Shell::tick_media() {
+    if (media::own::tick() & 2) relayout();   // a video learned its size
+}
+
 void Shell::after_load() {
+    media::own::reset();     // players of the old document stop here
     hover_node_ = nullptr;   // the old DOM is gone
     scroll_ = 0;
     std::string t = "Luxium";
@@ -1193,6 +1201,7 @@ int Shell::run() {
         }
 #endif
         page_.tick();          // timers (page.after) fire here, frame-driven
+        tick_media();
         if (page_.dirty()) {
             relayout();
             console_scroll_ = 0;   // new output snaps the pane to the tail
@@ -1271,6 +1280,23 @@ int Shell::screenshot(const std::string& ppm_path) {
     font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
     if (!font_) return 1;
     ensure_surface();
+    // Let media play: players decode on their own threads, we only pump them.
+    // Clicks fire at their own time (ms after start), the shot after the last.
+    const uint32_t t0 = SDL_GetTicks();
+    unsigned end = shot_wait_ms_;
+    for (const auto& c : shot_clicks_) end = std::max(end, c.at_ms);
+    size_t next = 0;
+    std::sort(shot_clicks_.begin(), shot_clicks_.end(), [](const auto& a, const auto& b) { return a.at_ms < b.at_ms; });
+    while (SDL_GetTicks() - t0 < end || next < shot_clicks_.size()) {
+        while (next < shot_clicks_.size() && SDL_GetTicks() - t0 >= shot_clicks_[next].at_ms) {
+            handle_click(shot_clicks_[next].x, shot_clicks_[next].y);
+            ++next;
+        }
+        page_.tick();
+        tick_media();
+        repaint();   // overlays read the clock when drawn
+        SDL_Delay(10);
+    }
     // clicks may have navigated to an http page: give the worker a chance
     for (int i = 0; i < 250 && fetch_ && !fetch_->done(); ++i)
         SDL_Delay(20);
@@ -1488,6 +1514,8 @@ bool Shell::handle_click(int mx, int my, int clicks) {
     url_drag_  = false;
     const float doc_x = static_cast<float>(mx);
     const float doc_y = static_cast<float>(my - url_h()) + scroll_;
+    for (auto it = layout_.media.rbegin(); it != layout_.media.rend(); ++it)   // control bars
+        if (render::media_click(*it, doc_x, it->fixed ? static_cast<float>(my - url_h()) : doc_y)) return true;
     if (const dom::Node* n = render::hit_test(layout_, doc_x, doc_y)) {
         page_.click(n);
         return true;
@@ -1680,7 +1708,9 @@ void Shell::repaint() {
         cv.w = win_w_; cv.h = win_h_;
         cv.clip = {0, page_top, win_w_, page_bottom};
         cv.ox = 0; cv.oy = static_cast<float>(page_top) - scroll_;
+        render::media_patch(layout_);
         paint::rasterize(layout_.list, cv, *font_);
+        paint::rasterize(render::media_overlay(layout_, false, *font_), cv, *font_);
         if (hover) {   // the hovered button lightens: an overlay over its box
             paint::DisplayList ov;
             paint::Item it; it.kind = paint::Item::Kind::Rect;
@@ -1691,6 +1721,7 @@ void Shell::repaint() {
         }
         cv.oy = static_cast<float>(page_top);
         paint::rasterize(layout_.fixed, cv, *font_);
+        paint::rasterize(render::media_overlay(layout_, true, *font_), cv, *font_);
     }
 
     draw_status();
