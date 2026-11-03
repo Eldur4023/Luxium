@@ -67,6 +67,16 @@ bool copy_frame(uint8_t* dst, int dst_stride, int dst_w, int dst_h,
 // Current cursor type (cef_cursor_type_t: 0 pointer, 2 hand, 3 ibeam...).
 int cursor();
 
+// Did the page ask for element fullscreen (video player, F11 of a web app)?
+// The shell then takes the window fullscreen and gives the page the whole
+// window; exit_fullscreen() is what Esc calls.
+// Input method: preedit text (SDL_TEXTEDITING) and committed text.
+void ime_compose(const std::string& utf8, int caret);
+void ime_commit(const std::string& utf8);
+void edit(char cmd);   // 'c' copy, 'x' cut, 'v' paste, 'a' select all
+bool fullscreen();
+void exit_fullscreen();
+
 // Cuantos frames ha entregado OnPaint (para esperas estables del oraculo).
 int paints();
 
