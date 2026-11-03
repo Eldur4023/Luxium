@@ -1,8 +1,11 @@
 # App host (`luxium --host`)
 
-One Luxium browser process serves every desktop app that wants a window
-(Lux Desktop on Linux). One Chromium instance, one chrome-less SDL window per
-app, one private persistent profile per app.
+One Luxium process serves every desktop app that wants a window (Lux Desktop on
+Linux), one chrome-less SDL window per app. Windows render with **Luxium's own
+engine** (a `shell::Shell` + `page::Page` per window, all in this process, no
+Chromium). Chromium is a plugin (`libluxium_cef.so`, `src/cef/cef_lazy.cpp`)
+loaded and started only when a window really needs JavaScript; until then no
+`libcef.so` is mapped and no subprocess exists.
 
 ```
 luxium --host
@@ -33,14 +36,14 @@ Client to host:
 
 | cmd | fields |
 |---|---|
-| `open` | `url`, `title`, `width`, `height`, `min_width`, `min_height`, `resizable`, `dark`, `devtools`, `icon` (absolute path; PNG alpha is kept), `app_id` (profile key: `<profile root>/<app_id>`), `wm_class` (X11 WM_CLASS name and class, default `app_id`; match it to the `.desktop` file's `StartupWMClass`) |
+| `open` | `url`, `title`, `engine` (`auto` default, `luxium`, `web`; see Engines), `width`, `height`, `min_width`, `min_height`, `resizable`, `dark`, `devtools`, `icon` (absolute path; PNG alpha is kept), `app_id` (profile key: `<profile root>/<app_id>`), `wm_class` (X11 WM_CLASS name and class, default `app_id`; match it to the `.desktop` file's `StartupWMClass`) |
 | `navigate` | `url` |
 | `reload`, `close`, `minimize`, `maximize`, `restore`, `devtools` | |
 | `set_title` | `title` |
 | `resize` | `width`, `height` |
 | `fullscreen`, `always_on_top` | `on` |
-| `eval` | `code` (JavaScript, fire and forget) |
-| `post_message` | `data` (string; page gets a `luxium` CustomEvent, `event.detail`) |
+| `eval` | `code` (JavaScript, fire and forget; Chromium windows only, own-engine windows answer `error`) |
+| `post_message` | `data` (string; page gets a `luxium` CustomEvent, `event.detail`; Chromium windows only) |
 | `set_menu` | `spec` (string: JSON list as in Lux's `window.set_menu()`; `[]` removes the bar) |
 | `set_dark` | `on` (dark title bar hint and menu colours) |
 | `show`, `hide`, `toggle` | (`toggle`: hide a visible window, show and raise a hidden one; for tray clicks) |
@@ -54,12 +57,29 @@ Host to client: `opened {width,height}`, `resized {width,height}`,
 `menu {action[,checked]}` (a menu item was activated; `checked` = new state, only for check items), `result {id,value}`, `closed` (window gone; the host then drops the connection),
 `error {message}`, `pong`.
 
+## Engines
+
+`engine` in `open`:
+
+- `luxium`: own engine only. The URL is fetched (http(s) or a local path) and rendered by Luxium; JavaScript never runs.
+- `web`: Chromium from the start (starts it on the first such window).
+- `auto` (default): own engine first. If the page that loads uses JavaScript (`Page::used_javascript()`: a
+  non-LuxScript `<script>` or `<script src>`), the window is handed to Chromium (same SDL window, same connection,
+  reloaded there). Pages without JavaScript never start Chromium.
+
+Own-engine windows: F5 / Ctrl+R reload and F12 (console pane) when `devtools` is set; `eval`, `post_message` and
+`devtools` commands are not available (Lux-Local POSTs menu actions to its own server itself). The own-engine
+frame is presented through the SDL window surface (X11 shared memory), not an SDL renderer: an `SDL_Renderer`
+loads libGL and Mesa (~40 MB private per process).
+Measured idle (private PSS, one skeleton app per window): 1 app 30 MB, 2 apps 42 MB, 4 apps 66 MB, host included;
+WebKitGTK ~246 MB for two.
+
 ## Windows
 
 - Page fills the whole window; no URL bar, status line or console.
 - `devtools:true` enables F12 / Ctrl+Shift+I (inspector in a second window) and F5 / Ctrl+R reload.
 - Ctrl+C/X/V/A work as in the browser; Esc leaves fullscreen.
-- Each `app_id` has its own request context (cookies, localStorage, cache) under
+- Chromium windows: each `app_id` has its own request context (cookies, localStorage, cache) under
   `~/.local/share/luxium/apps/<app_id>`, separate from the normal browser's profile.
 - WM_CLASS is the `app_id`, so desktop shells group and pin apps separately.
 

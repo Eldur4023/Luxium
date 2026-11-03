@@ -21,10 +21,12 @@
 #include <render/layout.hpp>
 #include <render/text.hpp>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+union SDL_Event;
 struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Texture;
@@ -47,12 +49,33 @@ struct ShellConfig {
     std::string font_bold    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
     std::string font_mono    = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
     std::string title        = "Luxium";
+    // App-window mode (the app host, src/host): no address strip, status strip
+    // or handoff to Chromium by itself; the caller owns SDL and the window.
+    bool app      = false;
+    bool devtools = false;   // app mode: F12 shows the console pane
 };
 
 class Shell {
 public:
     explicit Shell(page::Page& page, ShellConfig cfg = {});
     ~Shell();
+
+    // ── App-window mode (cfg.app) ──────────────────────────────────────────
+    // The host owns SDL and one SDL window per Shell; it feeds events and calls
+    // frame().  Several Shells live in one process.
+    void attach(SDL_Window* window);
+    bool handle_event(const SDL_Event& e);   // true: the user asked to quit
+    void frame();                            // fetches, timers, layout, paint, present
+    void set_top_inset(int px);              // rows above the page the host paints (menu bar)
+    void invalidate() { need_paint_ = true; }
+    // Painted after the page, before the frame is presented (the menu bar and its drop-downs).
+    void set_overlay(std::function<void(uint32_t* argb, int w, int h)> f) { overlay_ = std::move(f); }
+    // The page asked for JavaScript (a document only Chromium can run): called with the URL.
+    void set_web_handler(std::function<void(const std::string& url)> f) { web_handler_ = std::move(f); }
+    bool has_page() const { return page_.page_root() != nullptr; }
+    std::string page_title() const { return page_.page_title(); }
+    const std::string& page_name() const { return page_.name(); }
+    void reload() { navigate_to(hist_.empty() ? page_.name() : hist_[hist_idx_], false); }
 
     // Opens the window and runs until closed.  Returns the process exit code.
     int run();
@@ -180,6 +203,12 @@ private:
     unsigned long cef_display_ = 0, cef_parent_ = 0;
     void    maybe_cef_handoff();
     bool    cef_available() const;
+    bool    app_ = false, owns_window_ = true;
+    int     top_inset_ = 0;
+    bool    need_paint_ = true;
+    std::function<void(uint32_t*, int, int)> overlay_;
+    std::function<void(const std::string&)>  web_handler_;
+    int     status_h() const { return app_ ? 0 : 20; }
     void    open_in_cef(const std::string& url);
 };
 

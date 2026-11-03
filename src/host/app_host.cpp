@@ -16,6 +16,8 @@
 #include <cef/sdl_input.hpp>
 #include "host/menubar.hpp"
 
+#include <page/page.hpp>
+#include <shell/shell.hpp>
 #include <render/images.hpp>
 #include <render/text.hpp>
 
@@ -241,7 +243,18 @@ struct Shared {
     std::atomic<bool> closed{false};
 };
 
+// A window rendered by Luxium's own engine: a Page and the Shell that paints it into the host's SDL window.
+// No Chromium involved; `wants_web` is set when the page turned out to need JavaScript (engine "auto").
+struct Own {
+    page::Page page;                       // declared first: destroyed after the shell that points at it
+    std::unique_ptr<shell::Shell> shell;
+    bool wants_web = false;
+};
+
 struct AppWin {
+    std::unique_ptr<Own> own;      // own-engine window (no cw); else a Chromium window
+    std::string open_url, profile_root;
+    std::string last_title;
     int conn = -1;                 // owning connection, -1 for DevTools windows
     AppWin* parent = nullptr;      // DevTools: the inspected window
     SDL_Window* win = nullptr;
@@ -292,6 +305,10 @@ private:
     }
     void on_line(int conn, const std::string& line);
     void cmd_open(int conn, const Obj& o);
+    void start_own(AppWin* w, bool auto_engine);
+    void start_web(AppWin* w);
+    void handle_own(AppWin* w, const SDL_Event& e);
+    AppWin* event_win(const SDL_Event& e);
     void resize_surface(AppWin* w);
     void begin_close(AppWin* w);
     void reap();
@@ -321,14 +338,19 @@ void Host::resize_surface(AppWin* w) {
     SDL_GetWindowSize(w->win, &nw, &nh);
     if (nw <= 0 || nh <= 0) return;
     const int bar = bar_h(w);
-    if (nw == w->w && nh == w->h && w->tex && bar == w->view_bar) return;
+    if (nw == w->w && nh == w->h && (w->own || w->tex) && bar == w->view_bar) return;
     w->view_bar = bar;
     w->w = nw;
     w->h = nh;
-    w->buf.assign((size_t)nw * nh * 4, 0xFF);
-    if (w->tex) SDL_DestroyTexture(w->tex);
-    w->tex = SDL_CreateTexture(w->ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, nw, nh);
-    cef::set_view(w->cw, nw, std::max(1, nh - bar));
+    if (w->own) {   // the Shell keeps its own framebuffer; the bar is a top inset it leaves free
+        w->own->shell->set_top_inset(bar);
+        w->own->shell->invalidate();
+    } else {
+        w->buf.assign((size_t)nw * nh * 4, 0xFF);
+        if (w->tex) SDL_DestroyTexture(w->tex);
+        w->tex = SDL_CreateTexture(w->ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, nw, nh);
+        cef::set_view(w->cw, nw, std::max(1, nh - bar));
+    }
     w->dirty = true;
     if (w->conn >= 0) ev(w, "{\"ev\":\"resized\",\"width\":" + std::to_string(nw) + ",\"height\":" + std::to_string(nh) + "}");
 }
@@ -379,12 +401,10 @@ void Host::cmd_open(int conn, const Obj& o) {
             sf = SDL_CreateRGBSurfaceWithFormatFrom(const_cast<uint8_t*>(bmp->rgb.data()), bmp->w, bmp->h, 24, bmp->w * 3, SDL_PIXELFORMAT_RGB24);
         if (sf) { SDL_SetWindowIcon(w->win, sf); SDL_FreeSurface(sf); }
     }
-    w->ren = SDL_CreateRenderer(w->win, -1, 0);
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);
     if (!SDL_GetWindowWMInfo(w->win, &wm) || wm.subsystem != SDL_SYSWM_X11) {
         send_line(c.fd, "{\"ev\":\"error\",\"message\":\"no X11 display\"}");
-        SDL_DestroyRenderer(w->ren);
         SDL_DestroyWindow(w->win);
         return;
     }
@@ -399,24 +419,51 @@ void Host::cmd_open(int conn, const Obj& o) {
         XFlush((Display*)w->x11_display);
     }
 
-    if (!cef_up_) {
-        cef::set_profile_root(get(o, "profile_root", std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp") + "/.local/share/luxium/apps"));
-        cef_up_ = true;
-    }
-    cef::OpenParams p;
-    p.url = get(o, "url", "about:blank");
-    p.profile_id = app_id;
-    p.display = w->x11_display;
-    p.parent = (unsigned long)wm.info.x11.window;
-    p.events = make_events(w.get());
-    w->cw = cef::open_window(p);
-    std::signal(SIGTERM, on_term);   // CEF's init replaced the handlers
-    std::signal(SIGINT, on_term);
+    w->open_url = get(o, "url", "about:blank");
+    w->profile_root = get(o, "profile_root", std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp") + "/.local/share/luxium/apps");
+    // engine: "luxium" = own engine always, "web" = Chromium, "auto" (default) = own engine, and Chromium
+    // only if the page turns out to run JavaScript (decided by the Page after it loads).
+    const std::string engine = get(o, "engine", "auto");
+    if (engine == "web") start_web(w.get());
+    else start_own(w.get(), engine != "luxium");
     resize_surface(w.get());
-    cef::set_focus(w->cw, true);
+    if (w->cw) cef::set_focus(w->cw, true);
     c.win = w.get();
     send_line(c.fd, "{\"ev\":\"opened\",\"width\":" + std::to_string(w->w) + ",\"height\":" + std::to_string(w->h) + "}");
     wins_.push_back(std::move(w));
+}
+
+void Host::start_own(AppWin* w, bool auto_engine) {
+    w->own = std::make_unique<Own>();
+    Own* own = w->own.get();
+    shell::ShellConfig cfg;
+    cfg.app = true;
+    cfg.devtools = w->dev;
+    own->shell = std::make_unique<shell::Shell>(own->page, cfg);
+    own->shell->attach(w->win);
+    own->shell->set_overlay([this, w](uint32_t* fb, int ww, int hh) {
+        if (w->menu && bar_h(w)) w->menu->draw(fb, ww, hh);
+    });
+    if (auto_engine) own->shell->set_web_handler([own](const std::string&) { own->wants_web = true; });
+    own->shell->navigate_to(w->open_url, true);
+}
+
+// Chromium window on the already-created SDL window (the first call starts Chromium; nothing before does).
+void Host::start_web(AppWin* w) {
+    w->ren = SDL_CreateRenderer(w->win, -1, 0);
+    if (!cef_up_) {
+        cef::set_profile_root(w->profile_root);
+        cef_up_ = true;
+    }
+    cef::OpenParams p;
+    p.url = w->open_url;
+    p.profile_id = w->app_id;
+    p.display = w->x11_display;
+    p.parent = (unsigned long)w->x11_window;
+    p.events = make_events(w);
+    w->cw = cef::open_window(p);
+    std::signal(SIGTERM, on_term);   // CEF's init replaced the handlers
+    std::signal(SIGINT, on_term);
 }
 
 void Host::open_devtools(AppWin* par) {
@@ -446,7 +493,8 @@ void Host::begin_close(AppWin* w) {
         auto it = conns_.find(w->conn);
         if (it != conns_.end()) it->second.win = nullptr;   // no more events to this client
     }
-    cef::close_window(w->cw);
+    if (w->cw) cef::close_window(w->cw);
+    else w->sh->closed = true;   // own-engine window: nothing asynchronous to wait for
     for (auto& x : wins_) if (x->parent == w) begin_close(x.get());
 }
 
@@ -458,7 +506,7 @@ void Host::reap() {
         if (!w->closing) { ++i; continue; }
         const bool done = w->sh->closed.load();
         if (!done && now < w->close_by) {
-            cef::close_window(w->cw);   // no-op once closed; covers a browser still being created
+            if (w->cw) cef::close_window(w->cw);   // no-op once closed; covers a browser still being created
             ++i;
             continue;
         }
@@ -466,7 +514,8 @@ void Host::reap() {
             auto it = conns_.find(w->conn);
             if (it != conns_.end()) ::shutdown(it->second.fd, SHUT_RDWR);   // reader sees EOF -> main closes fd
         }
-        if (done) cef::destroy_window(w->cw);   // else leaked on purpose: CEF may still call back into it
+        if (w->cw && done) cef::destroy_window(w->cw);   // else leaked on purpose: CEF may still call back into it
+        w->own.reset();   // the Shell frees its renderer before the window goes
         if (w->tex) SDL_DestroyTexture(w->tex);
         if (w->ren) SDL_DestroyRenderer(w->ren);
         if (w->win) SDL_DestroyWindow(w->win);
@@ -479,6 +528,17 @@ void Host::set_fullscreen(AppWin* w) {
 }
 
 void Host::pump_shared(AppWin* w) {
+    if (w->own) {   // own engine: read the page directly
+        Own& o = *w->own;
+        const std::string t = o.shell->page_title();
+        if (t != w->last_title) { w->last_title = t; ev(w, "{\"ev\":\"title\",\"title\":" + jq(t) + "}"); }
+        if (!w->loaded_sent && o.shell->has_page()) {
+            w->loaded_sent = true;
+            ev(w, "{\"ev\":\"url\",\"url\":" + jq(w->open_url) + "}");
+            ev(w, "{\"ev\":\"loaded\"}");
+        }
+        return;
+    }
     std::string title, addr;
     bool td = false, ad = false;
     std::deque<std::string> msgs;
@@ -519,6 +579,11 @@ void Host::pump_shared(AppWin* w) {
 }
 
 void Host::render(AppWin* w) {
+    if (w->own) {
+        if (w->menu && w->menu->take_dirty()) w->own->shell->invalidate();
+        w->own->shell->frame();
+        return;
+    }
     if (w->closing || !w->tex) return;
     const int p = cef::paints(w->cw);
     if (w->menu && w->menu->take_dirty()) w->dirty = true;
@@ -541,8 +606,72 @@ void Host::render(AppWin* w) {
     SDL_RenderPresent(w->ren);
 }
 
+AppWin* Host::event_win(const SDL_Event& e) {
+    switch (e.type) {
+    case SDL_WINDOWEVENT: return by_sdl(e.window.windowID);
+    case SDL_MOUSEMOTION: return by_sdl(e.motion.windowID);
+    case SDL_MOUSEWHEEL: return by_sdl(e.wheel.windowID);
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP: return by_sdl(e.button.windowID);
+    case SDL_TEXTINPUT: return by_sdl(e.text.windowID);
+    case SDL_TEXTEDITING: return by_sdl(e.edit.windowID);
+    case SDL_KEYDOWN:
+    case SDL_KEYUP: return by_sdl(e.key.windowID);
+    default: return nullptr;
+    }
+}
+
+// Input for an own-engine window: the menu bar sees it first, then the Shell.
+void Host::handle_own(AppWin* w, const SDL_Event& e) {
+    shell::Shell& sh = *w->own->shell;
+    switch (e.type) {
+    case SDL_WINDOWEVENT:
+        switch (e.window.event) {
+        case SDL_WINDOWEVENT_CLOSE: begin_close(w); return;
+        case SDL_WINDOWEVENT_SIZE_CHANGED:
+        case SDL_WINDOWEVENT_RESIZED: resize_surface(w); break;
+        case SDL_WINDOWEVENT_LEAVE: if (w->menu) w->menu->on_leave(); break;
+        }
+        break;
+    case SDL_MOUSEMOTION:
+        if (w->menu && w->menu->on_motion(e.motion.x, e.motion.y, w->w)) return;
+        break;
+    case SDL_MOUSEWHEEL: {
+        int mx = 0, my = 0;
+        SDL_GetMouseState(&mx, &my);
+        if (w->menu && (w->menu->open() || my < bar_h(w))) return;
+        break;
+    }
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        if (w->menu) {
+            MenuFire f;
+            const bool used = w->menu->on_button(e.button.x, e.button.y, e.type == SDL_MOUSEBUTTONDOWN, w->w, f);
+            fire_menu(w, f);
+            if (used) return;
+        }
+        break;
+    case SDL_TEXTINPUT:
+        if (w->menu && w->menu->open()) return;
+        break;
+    case SDL_KEYDOWN:
+        if (w->menu) {
+            MenuFire f;
+            const bool used = w->menu->on_key(e.key.keysym, e.key.repeat != 0, f);
+            fire_menu(w, f);
+            if (used) return;
+        }
+        if (w->user_fs && e.key.keysym.sym == SDLK_ESCAPE) { w->user_fs = false; set_fullscreen(w); return; }
+        if (w->dev && (e.key.keysym.sym == SDLK_F5 || ((e.key.keysym.mod & KMOD_CTRL) && e.key.keysym.sym == SDLK_r))) { sh.reload(); return; }
+        break;
+    default: break;
+    }
+    sh.handle_event(e);
+}
+
 void Host::handle_sdl(const SDL_Event& e, bool& quit) {
     using namespace cef_input;
+    if (AppWin* ow = event_win(e); ow && ow->own && !ow->closing) { handle_own(ow, e); return; }
     switch (e.type) {
     case SDL_QUIT: quit = true; break;
     case SDL_WINDOWEVENT: {
@@ -667,8 +796,12 @@ void Host::on_line(int conn, const std::string& line) {
     if (cmd == "ping") { send_line(ci->second.fd, "{\"ev\":\"pong\"}"); return; }
     AppWin* w = ci->second.win;
     if (!w || w->closing) return;
-    if (cmd == "navigate") cef::navigate(w->cw, get(o, "url"));
-    else if (cmd == "reload") cef::reload(w->cw);
+    if (w->own && (cmd == "eval" || cmd == "post_message" || cmd == "devtools")) {
+        send_line(ci->second.fd, "{\"ev\":\"error\",\"message\":\"" + cmd + " is not available on own-engine windows\"}");
+        return;
+    }
+    if (cmd == "navigate") { if (w->own) w->own->shell->navigate_to(get(o, "url"), true); else cef::navigate(w->cw, get(o, "url")); }
+    else if (cmd == "reload") { if (w->own) w->own->shell->reload(); else cef::reload(w->cw); }
     else if (cmd == "set_title") SDL_SetWindowTitle(w->win, get(o, "title").c_str());
     else if (cmd == "resize") SDL_SetWindowSize(w->win, std::clamp(geti(o, "width", w->w), 100, 10000), std::clamp(geti(o, "height", w->h), 100, 10000));
     else if (cmd == "eval") cef::run_js(w->cw, get(o, "code"));
@@ -740,7 +873,9 @@ int Host::run() {
     bool quit = false;
     while (!quit) {
         SDL_Event e;
-        if (SDL_WaitEventTimeout(&e, 50)) {
+        bool any_own = false;
+        for (auto& x : wins_) if (x->own) any_own = true;
+        if (SDL_WaitEventTimeout(&e, any_own ? 16 : 50)) {
             do handle_sdl(e, quit); while (SDL_PollEvent(&e));
         }
         if (g_term) quit = true;
@@ -764,6 +899,14 @@ int Host::run() {
         }
         for (auto& w : std::vector<AppWin*>([&] { std::vector<AppWin*> v; for (auto& x : wins_) v.push_back(x.get()); return v; }())) {
             if (!w->closing) { pump_shared(w); render(w); }
+            if (w->own && w->own->wants_web && !w->closing) {   // engine "auto": the page runs JavaScript, hand the window to Chromium
+                w->own.reset();
+                w->w = 0;
+                w->loaded_sent = false;
+                start_web(w);
+                resize_surface(w);
+                cef::set_focus(w->cw, true);
+            }
         }
         reap();
         if (!wins_.empty() || !conns_.empty()) idle_since_ = Clock::now();
