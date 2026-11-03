@@ -144,6 +144,9 @@ struct Player::Impl {
     int vi = -1, ai = -1;
     AVCodecContext *vctx = nullptr, *actx = nullptr;
     AVBufferRef* hwdev = nullptr;
+    AVRational vtb{1, 1000}, atb{1, 1000};   // stream time bases, kept so the decoders never touch `fmt`
+    AVCodecParameters* vpar = nullptr;       // for the software fallback
+    AVIOContext* mem_pb = nullptr;           // playlist served from memory after an HLS seek
     AVPixelFormat hw_pix = AV_PIX_FMT_NONE;
     std::atomic<bool> hw_on{false};
     double start_off = 0;                // container start_time, subtracted from every pts
@@ -162,6 +165,7 @@ struct Player::Impl {
     std::atomic<double> v_end{0}, a_end{0};   // pts end of the last packet queued
     std::atomic<double> buf_start{0};
     std::atomic<bool> reading{false};
+    bool logged_pkt = false;
 
     // decoded video
     std::mutex vm;
@@ -200,7 +204,7 @@ struct Player::Impl {
     double last_timeupdate = 0, last_progress = 0, last_buf_end = -1, last_dur = -1;
     int last_vw = 0, last_vh = 0;
     bool seeked_pending = false;
-    bool data_ok = false;                // first frame/audio of this load or seek is in
+    std::atomic<bool> data_ok{false};                // first frame/audio of this load or seek is in
     std::string err_sent;
 
     void emit(const char* type, const std::string& detail = {}) {
@@ -258,7 +262,9 @@ struct Player::Impl {
         const size_t want = len / (2 * sizeof(float));
         size_t done = 0;
         const float vol = d->P.muted_ ? 0.f : (float)d->P.volume_.load();
-        {
+        // Hold the sound until the picture of this load/seek is ready, so A/V start together.
+        const bool hold = d->P.seeking_ || (d->P.has_video_ && !d->data_ok);
+        if (!hold) {
             std::lock_guard<std::mutex> lk(d->am);
             while (done < want && !d->aq.empty()) {
                 AChunk& c = d->aq.front();
@@ -291,12 +297,12 @@ struct Player::Impl {
         return d->abort || d->seek_req;
     }
 
-    bool open_codec(AVCodecContext*& ctx, AVStream* st, bool try_hw) {
-        const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
+    bool open_codec(AVCodecContext*& ctx, AVCodecParameters* par, AVRational tb, bool try_hw) {
+        const AVCodec* codec = avcodec_find_decoder(par->codec_id);
         if (!codec) return false;
         ctx = avcodec_alloc_context3(codec);
-        avcodec_parameters_to_context(ctx, st->codecpar);
-        ctx->pkt_timebase = st->time_base;
+        avcodec_parameters_to_context(ctx, par);
+        ctx->pkt_timebase = tb;
         ctx->thread_count = 0;           // let libavcodec pick
         ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         if (try_hw && codec->type == AVMEDIA_TYPE_VIDEO && !getenv_off("LUXIUM_MEDIA_HW")) {
@@ -325,16 +331,14 @@ struct Player::Impl {
             avcodec_free_context(&ctx);
             if (hw_on) {                 // hardware refused this profile: software
                 hw_on = false;
-                return open_codec(ctx, st, false);
+                return open_codec(ctx, par, tb, false);
             }
             return false;
         }
         return true;
     }
 
-    void demux_main() {
-        fmt = avformat_alloc_context();
-        fmt->interrupt_callback = {&Impl::interrupt_cb, this};
+    AVDictionary* make_opts() {
         AVDictionary* o = nullptr;
         if (!headers.empty()) av_dict_set(&o, "headers", headers.c_str(), 0);
         av_dict_set(&o, "reconnect", "1", 0);
@@ -346,6 +350,124 @@ struct Player::Impl {
         av_dict_set(&o, "analyzeduration", "4000000", 0);
         av_dict_set(&o, "protocol_whitelist",
                     allow_file ? "file,http,https,tcp,tls,crypto" : "http,https,tcp,tls,crypto", 0);
+        return o;
+    }
+
+    // ── HLS seeking by reopening ─────────────────────────────────────────────
+    // FFmpeg 6.1's hls demuxer cannot seek into fMP4 segments it has not read
+    // yet ("partial file": the mov demuxer keeps fragment tables from before the
+    // seek).  So a seek in a media playlist rewrites the playlist to start at the
+    // segment holding the target and opens a fresh demuxer on it; the decoders
+    // then drop frames up to the exact target like after any other seek.
+    // The rewritten playlist comes from memory, so the segment requests of the
+    // new demuxer carry no custom headers (Cookie/Referer): shortcut, see MEDIA.md.
+    static int mem_read(void* o, uint8_t* buf, int n) {
+        auto* s = (std::pair<std::string, size_t>*)o;
+        const size_t left = s->first.size() - s->second;
+        if (!left) return AVERROR_EOF;
+        const size_t k = std::min<size_t>(left, n);
+        std::memcpy(buf, s->first.data() + s->second, k);
+        s->second += k;
+        return (int)k;
+    }
+    std::pair<std::string, size_t> mem_data;
+    double dur_base = 0;                     // the reopened playlist starts this far into the media
+    void free_mem_pb() {
+        if (mem_pb) { av_freep(&mem_pb->buffer); avio_context_free(&mem_pb); }
+    }
+
+    std::string fetch_playlist() {
+        AVIOContext* io = nullptr;
+        AVDictionary* o = make_opts();
+        AVIOInterruptCB icb{&Impl::interrupt_cb, this};
+        const int r = avio_open2(&io, url.c_str(), AVIO_FLAG_READ, &icb, &o);
+        av_dict_free(&o);
+        if (r < 0) return {};
+        std::string text;
+        char buf[8192];
+        for (int n; (n = avio_read(io, (unsigned char*)buf, sizeof buf)) > 0 && text.size() < (8u << 20);) text.append(buf, n);
+        avio_closep(&io);
+        return text;
+    }
+
+    bool reopen_hls_at(double t) {
+        std::string text = fetch_playlist();
+        if (text.rfind("#EXTM3U", 0) != 0 || text.find("#EXT-X-STREAM-INF") != std::string::npos) return false;
+        std::vector<std::string> lines;
+        for (size_t i = 0; i < text.size();) {
+            size_t j = text.find('\n', i);
+            if (j == std::string::npos) j = text.size();
+            std::string l = text.substr(i, j - i);
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            lines.push_back(l);
+            i = j + 1;
+        }
+        // walk the segments: [index of its EXTINF line, start time]
+        double at = 0, dur = 0;
+        long seq0 = 0;
+        int first_seg_line = -1, pick = -1, seg_no = 0;
+        std::vector<std::pair<int, double>> segs;   // line of the URI, start time
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const std::string& l = lines[i];
+            if (l.rfind("#EXT-X-MEDIA-SEQUENCE:", 0) == 0) seq0 = std::atol(l.c_str() + 22);
+            else if (l.rfind("#EXTINF:", 0) == 0) dur = std::atof(l.c_str() + 8);
+            else if (!l.empty() && l[0] != '#') {
+                if (first_seg_line < 0) first_seg_line = (int)i;
+                segs.push_back({(int)i, at});
+                if (at <= t + 0.001) pick = seg_no;
+                at += dur;
+                ++seg_no;
+            }
+        }
+        if (pick < 0 || segs.empty()) return false;
+        // header tags (everything before the first segment except what we replace) + the tail from `pick`
+        std::string out;
+        for (int i = 0; i < first_seg_line; ++i) {
+            const std::string& l = lines[i];
+            if (l.rfind("#EXT-X-MEDIA-SEQUENCE:", 0) == 0 || l.rfind("#EXTINF:", 0) == 0 ||
+                l.rfind("#EXT-X-DISCONTINUITY", 0) == 0 || l.rfind("#EXT-X-PROGRAM-DATE-TIME", 0) == 0) continue;
+            out += l + "\n";
+        }
+        out += "#EXT-X-MEDIA-SEQUENCE:" + std::to_string(seq0 + pick) + "\n";
+        // the EXTINF line of segment `pick` is the line before its URI (tags like BYTERANGE may sit between)
+        int from = segs[pick].first;
+        while (from > 0 && lines[from - 1].rfind("#EXTINF:", 0) != 0 && lines[from - 1][0] == '#') --from;
+        if (from > 0 && lines[from - 1].rfind("#EXTINF:", 0) == 0) --from;
+        for (size_t i = from; i < lines.size(); ++i) out += lines[i] + "\n";
+
+        AVFormatContext* nf = avformat_alloc_context();
+        nf->interrupt_callback = {&Impl::interrupt_cb, this};
+        AVIOContext* old_pb = mem_pb;
+        mem_data = {out, 0};
+        auto* buf = (unsigned char*)av_malloc(32768);
+        mem_pb = avio_alloc_context(buf, 32768, 0, &mem_data, &Impl::mem_read, nullptr, nullptr);
+        nf->pb = mem_pb;
+        nf->flags |= AVFMT_FLAG_CUSTOM_IO;
+        AVDictionary* o = make_opts();
+        int r = avformat_open_input(&nf, url.c_str(), nullptr, &o);
+        av_dict_free(&o);
+        if (r >= 0) r = avformat_find_stream_info(nf, nullptr);
+        if (r < 0 || (int)nf->nb_streams <= std::max(vi, ai)) {
+            if (nf) avformat_close_input(&nf);
+            free_mem_pb();
+            mem_pb = old_pb;
+            return false;
+        }
+        for (unsigned i = 0; i < nf->nb_streams; ++i) nf->streams[i]->discard = AVDISCARD_ALL;
+        if (vi >= 0) nf->streams[vi]->discard = AVDISCARD_DEFAULT;
+        if (ai >= 0) nf->streams[ai]->discard = AVDISCARD_DEFAULT;
+        dur_base = segs[pick].second;
+        AVFormatContext* prev = fmt;
+        fmt = nf;
+        avformat_close_input(&prev);
+        if (old_pb) { av_freep(&old_pb->buffer); avio_context_free(&old_pb); }
+        return true;
+    }
+
+    void demux_main() {
+        fmt = avformat_alloc_context();
+        fmt->interrupt_callback = {&Impl::interrupt_cb, this};
+        AVDictionary* o = make_opts();
         int r = avformat_open_input(&fmt, url.c_str(), nullptr, &o);
         av_dict_free(&o);
         if (r < 0) {
@@ -365,7 +487,10 @@ struct Player::Impl {
 
         if (vi >= 0) {
             AVStream* st = fmt->streams[vi];
-            if (!open_codec(vctx, st, true)) { fail(4, "no decoder for the video stream"); return; }
+            vtb = st->time_base;
+            vpar = avcodec_parameters_alloc();
+            avcodec_parameters_copy(vpar, st->codecpar);
+            if (!open_codec(vctx, st->codecpar, vtb, true)) { fail(4, "no decoder for the video stream"); return; }
             st->discard = AVDISCARD_DEFAULT;
             const AVRational fr = st->avg_frame_rate.num ? st->avg_frame_rate : st->r_frame_rate;
             if (fr.num && fr.den) v_frame_dur = 1.0 / av_q2d(fr);
@@ -378,7 +503,8 @@ struct Player::Impl {
         }
         if (ai >= 0) {
             AVStream* st = fmt->streams[ai];
-            if (!open_codec(actx, st, false)) {
+            atb = st->time_base;
+            if (!open_codec(actx, st->codecpar, atb, false)) {
                 if (vi < 0) { fail(4, "no decoder for the audio stream"); return; }
                 ai = -1;                 // video plays without sound
             } else {
@@ -476,6 +602,7 @@ struct Player::Impl {
             AVStream* st = fmt->streams[si];
             const double secs = pkt->duration > 0 ? pkt->duration * av_q2d(st->time_base) : 0;
             double pts = to_sec(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts, st->time_base);
+            if (debug() && !logged_pkt) { logged_pkt = true; std::fprintf(stderr, "[media] first packet after open/seek: stream %d pts=%.3f\n", si, pts); }
             if (!std::isnan(pts)) (si == vi ? v_end : a_end) = pts + secs;
             Item it;
             it.pkt = pkt;
@@ -491,7 +618,7 @@ struct Player::Impl {
     void refresh_duration() {
         if (!fmt || fmt->duration == AV_NOPTS_VALUE) return;
         if (fmt->duration != AV_NOPTS_VALUE) {
-            const double d = fmt->duration / (double)AV_TIME_BASE;
+            const double d = fmt->duration / (double)AV_TIME_BASE + dur_base;
             if (std::fabs(d - dur.load()) > 0.01 || std::isinf(dur.load())) dur = d;
         }
     }
@@ -507,9 +634,15 @@ struct Player::Impl {
         const double d = dur;
         if (std::isfinite(d)) t = std::min(t, d);
         t = std::max(0.0, t);
-        const int64_t ts = (int64_t)((t + start_off) * AV_TIME_BASE);
-        int r = avformat_seek_file(fmt, -1, INT64_MIN, ts, ts, 0);
-        if (r < 0) r = av_seek_frame(fmt, -1, ts, AVSEEK_FLAG_BACKWARD);
+        int r;
+        if (std::strstr(fmt->iformat->name, "hls") && t > 0.5 && reopen_hls_at(t)) {
+            r = 0;
+        } else {
+            const int64_t ts = (int64_t)((t + start_off) * AV_TIME_BASE);
+            dur_base = 0;
+            r = avformat_seek_file(fmt, -1, INT64_MIN, ts, ts, 0);
+            if (r < 0) r = av_seek_frame(fmt, -1, ts, AVSEEK_FLAG_BACKWARD);
+        }
         if (debug()) std::fprintf(stderr, "[media] seek to %.3f -> %d (%s)\n", t, r, r < 0 ? av_err(r).c_str() : "ok");
         vpq.clear();
         apq.clear();
@@ -522,6 +655,7 @@ struct Player::Impl {
         if (ai >= 0) apq.put(f);
         v_end = a_end = t;
         buf_start = t;
+        logged_pkt = false;
     }
 
     // ── video decode ─────────────────────────────────────────────────────────
@@ -553,7 +687,7 @@ struct Player::Impl {
                     sw->colorspace = fr->colorspace;
                     src = sw;
                 }
-                const double pts = to_sec(src->best_effort_timestamp, fmt->streams[vi]->time_base);
+                const double pts = to_sec(src->best_effort_timestamp, vtb);
                 const bool skip = cur_serial != serial.load() ||
                                   (!std::isnan(pts) && pts + v_frame_dur <= discard_until + 1e-6);
                 if (!skip) {
@@ -602,7 +736,7 @@ struct Player::Impl {
     void switch_to_software() {
         hw_on = false;
         AVCodecContext* n = nullptr;
-        if (open_codec(n, fmt->streams[vi], false)) {
+        if (open_codec(n, vpar, vtb, false)) {
             AVCodecContext* old = vctx;
             vctx = n;
             avcodec_free_context(&old);
@@ -674,7 +808,7 @@ struct Player::Impl {
                 if (cur_serial != serial.load()) { av_frame_unref(fr); continue; }
                 if (!swr || swr_rate != P.rate_) make_swr();
                 if (!swr) { av_frame_unref(fr); continue; }
-                double pts = to_sec(fr->best_effort_timestamp, fmt->streams[ai]->time_base);
+                double pts = to_sec(fr->best_effort_timestamp, atb);
                 if (std::isnan(pts)) pts = next_pts;
                 const double media_len = (double)fr->nb_samples / fr->sample_rate;
                 next_pts = pts + media_len;
@@ -775,6 +909,8 @@ struct Player::Impl {
         if (actx) avcodec_free_context(&actx);
         if (hwdev) av_buffer_unref(&hwdev);
         if (fmt) avformat_close_input(&fmt);
+        free_mem_pb();
+        if (vpar) avcodec_parameters_free(&vpar);
     }
 };
 
