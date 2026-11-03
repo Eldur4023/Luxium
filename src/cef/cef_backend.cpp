@@ -38,6 +38,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <utility>
 #include <unistd.h>
@@ -45,24 +46,32 @@
 
 namespace luxium::cef {
 
-// ── handoff state (CEF UI thread <-> our frame loop) ────────────────────────
+// ── per-window state (CEF UI thread <-> our frame loop) ─────────────────────
+// One Win per browser.  The classic single-window browser uses def(); the
+// app host (src/host) opens one Win per app window.
+struct Win {
+    std::mutex              m;                  // url/title/loaded/browser/console
+    std::string             url, title;
+    bool                    loaded = false;
+    CefRefPtr<CefBrowser>   browser;
+    CefRefPtr<CefClient>    client;
+    std::atomic<int>        view_w{1}, view_h{1};
+    std::atomic<int>        cursor_type{0};
+    std::atomic<int>        paints{0};
+    std::atomic<bool>       fullscreen{false};
+    std::atomic<bool>       closed{false};
+    std::mutex              paint_m;            // guards pixels/pw/ph
+    std::vector<uint8_t>    pixels;             // BGRA, pw * ph * 4
+    int                     pw = 0, ph = 0;
+    std::deque<std::pair<int, std::string>> console;   // under m
+    Events                  ev;
+};
+
 namespace {
-std::mutex              g_mutex;
-std::string             g_url, g_title;
-bool                    g_loaded = false;
-CefRefPtr<CefBrowser>   g_browser;
 unsigned long           g_display = 0, g_parent = 0;
-std::atomic<int>        g_view_w{1}, g_view_h{1};
-std::atomic<int>        g_cursor_type{0};
-std::atomic<int>        g_paints{0};
-std::atomic<bool>       g_fullscreen{false};
 float                   g_scale = 1.0f;     // HiDPI factor, applied as page zoom (see OnLoadEnd)
-
-std::mutex              g_paint_mutex;      // guards g_pixels/g_pw/g_ph
-std::vector<uint8_t>    g_pixels;           // BGRA, g_pw * g_ph * 4
-int                     g_pw = 0, g_ph = 0;
-
-std::deque<std::pair<int, std::string>> g_console;   // under g_mutex
+std::string             g_profile_root;     // set_profile_root(): overrides LUXIUM_PROFILE
+bool                    g_host_mode = false;
 
 // traza OSR (LUXIUM_DEBUG_CEF=1): cuenta GetViewRect / OnPaint / copy_frame
 static bool dbg() {
@@ -130,9 +139,9 @@ std::string downloads_dir() {
     return std::string(home ? home : "/tmp") + "/Downloads";
 }
 
-void console_note(int level, const std::string& text) {
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (g_console.size() < 200) g_console.emplace_back(level, text);
+void console_note(Win* w, int level, const std::string& text) {
+    std::lock_guard<std::mutex> lk(w->m);
+    if (w->console.size() < 200) w->console.emplace_back(level, text);
 }
 
 class LuxClient : public CefClient,
@@ -145,6 +154,7 @@ class LuxClient : public CefClient,
                   public CefDownloadHandler,
                   public CefPermissionHandler {
 public:
+    explicit LuxClient(Win* w) : w_(w) {}
     // CefClient
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefDisplayHandler>  GetDisplayHandler()  override { return this; }
@@ -230,13 +240,13 @@ public:
                                                          : base.substr(0, dot) + " (" + std::to_string(i) + ")" + base.substr(dot));
         }
         cb->Continue(path, false);
-        console_note(0, "download -> " + path);
+        console_note(w_, 0, "download -> " + path);
         return true;
     }
     void OnDownloadUpdated(CefRefPtr<CefBrowser>, CefRefPtr<CefDownloadItem> item,
                            CefRefPtr<CefDownloadItemCallback>) override {
-        if (item->IsComplete()) console_note(0, "download complete: " + item->GetFullPath().ToString());
-        else if (item->IsCanceled()) console_note(1, "download canceled: " + item->GetURL().ToString());
+        if (item->IsComplete()) console_note(w_, 0, "download complete: " + item->GetFullPath().ToString());
+        else if (item->IsCanceled()) console_note(w_, 1, "download canceled: " + item->GetURL().ToString());
     }
 
     // CefPermissionHandler: clipboard and the like yes; sensors, location, camera no.
@@ -253,8 +263,11 @@ public:
     // CefLifeSpanHandler
     void OnAfterCreated(CefRefPtr<CefBrowser> b) override {
         dbgf("OnAfterCreated pid=%d", (int)b->GetIdentifier());
-        std::lock_guard<std::mutex> lk(g_mutex);
-        g_browser = b;
+        {
+            std::lock_guard<std::mutex> lk(w_->m);
+            w_->browser = b;
+        }
+        if (w_->ev.wake) w_->ev.wake();
     }
     // target=_blank / window.open: one window, so the target loads here.
     bool OnBeforePopup(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame>, int, const CefString& url,
@@ -265,58 +278,80 @@ public:
         return true;
     }
     void OnBeforeClose(CefRefPtr<CefBrowser>) override {
-        std::lock_guard<std::mutex> lk(g_mutex);
-        g_browser = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(w_->m);
+            w_->browser = nullptr;
+        }
+        w_->closed = true;
+        if (w_->ev.on_closed) w_->ev.on_closed();
+        if (w_->ev.wake) w_->ev.wake();
     }
 
     // CefDisplayHandler
     void OnAddressChange(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                          const CefString& url) override {
-        std::lock_guard<std::mutex> lk(g_mutex);
-        g_url = url;
+        {
+            std::lock_guard<std::mutex> lk(w_->m);
+            w_->url = url;
+        }
+        if (w_->ev.on_address) w_->ev.on_address(url);
+        if (w_->ev.wake) w_->ev.wake();
     }
     void OnTitleChange(CefRefPtr<CefBrowser>, const CefString& title) override {
-        std::lock_guard<std::mutex> lk(g_mutex);
-        g_title = title;
+        {
+            std::lock_guard<std::mutex> lk(w_->m);
+            w_->title = title;
+        }
+        if (w_->ev.on_title) w_->ev.on_title(title);
+        if (w_->ev.wake) w_->ev.wake();
     }
     void OnFullscreenModeChange(CefRefPtr<CefBrowser>, bool fullscreen) override {
-        g_fullscreen = fullscreen;
+        w_->fullscreen = fullscreen;
+        if (w_->ev.wake) w_->ev.wake();
     }
     bool OnCursorChange(CefRefPtr<CefBrowser>, CefCursorHandle,
                         cef_cursor_type_t type, const CefCursorInfo&) override {
-        g_cursor_type = (int)type;
+        w_->cursor_type = (int)type;
         return true;
     }
     bool OnConsoleMessage(CefRefPtr<CefBrowser>, cef_log_severity_t level,
                           const CefString& message, const CefString&,
                           int) override {
+        // JS -> native channel for app windows: console.debug("luxium-msg:<payload>")
+        if (w_->ev.on_message && message.length() > 11 && message.ToString().rfind("luxium-msg:", 0) == 0) {
+            w_->ev.on_message(message.ToString().substr(11));
+            return true;
+        }
         int lv = 0;
         if (level == LOGSEVERITY_WARNING)     lv = 1;
         else if (level >= LOGSEVERITY_ERROR)  lv = 2;
-        std::lock_guard<std::mutex> lk(g_mutex);
-        if (g_console.size() < 200)
-            g_console.emplace_back(lv, message.ToString());
+        std::lock_guard<std::mutex> lk(w_->m);
+        if (w_->console.size() < 200)
+            w_->console.emplace_back(lv, message.ToString());
         return true;   // ya lo mostramos nosotros en nuestro panel
     }
 
     // CefLoadHandler
     void OnLoadStart(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                      TransitionType) override {
-        std::lock_guard<std::mutex> lk(g_mutex);
-        g_loaded = false;
+        std::lock_guard<std::mutex> lk(w_->m);
+        w_->loaded = false;
     }
     void OnLoadEnd(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame>, int) override {
         // OSR ignores GetScreenInfo's device_scale_factor in this CEF (devicePixelRatio stays 1),
         // so HiDPI is page zoom: log(scale)/log(1.2) is Chromium's zoom-level unit.
         if (g_scale != 1.0f && b) b->GetHost()->SetZoomLevel(std::log(g_scale) / std::log(1.2));
-        std::lock_guard<std::mutex> lk(g_mutex);
-        g_loaded = true;
+        {
+            std::lock_guard<std::mutex> lk(w_->m);
+            w_->loaded = true;
+        }
+        if (w_->ev.on_loaded) w_->ev.on_loaded();
     }
 
     // CefRenderHandler
     void GetViewRect(CefRefPtr<CefBrowser>, CefRect& rect) override {
-        const int w = std::max(1, g_view_w.load());
-        const int h = std::max(1, g_view_h.load());
+        const int w = std::max(1, w_->view_w.load());
+        const int h = std::max(1, w_->view_h.load());
         {   // traza rara (una de cada 300) para ver el tamano pedido
             static std::atomic<int> n{0};
             int k = n++;
@@ -335,15 +370,17 @@ public:
                 dbgf("OnPaint #%d type=%d %dx%d", k, (int)type, width, height);
         }
         if (type != PET_VIEW || width <= 0 || height <= 0) return;
-        std::lock_guard<std::mutex> lk(g_paint_mutex);
-        g_pixels.resize((size_t)width * height * 4);
-        std::memcpy(g_pixels.data(), buffer, g_pixels.size());
-        g_pw = width;
-        g_ph = height;
-        ++g_paints;
+        std::lock_guard<std::mutex> lk(w_->paint_m);
+        w_->pixels.resize((size_t)width * height * 4);
+        std::memcpy(w_->pixels.data(), buffer, w_->pixels.size());
+        w_->pw = width;
+        w_->ph = height;
+        ++w_->paints;
+        if (w_->ev.wake) w_->ev.wake();
     }
 
 private:
+    Win* w_;
     IMPLEMENT_REFCOUNTING(LuxClient);
 };
 
@@ -363,6 +400,8 @@ public:
     // SwiftShader.  LUXIUM_CEF_FLAGS="--a --b=c" appends raw switches.
     void OnBeforeCommandLineProcessing(const CefString&,
                                        CefRefPtr<CefCommandLine> cl) override {
+        // Our windows are X11 (SDL); without this Chromium picks Wayland when WAYLAND_DISPLAY is set.
+        if (!cl->HasSwitch("ozone-platform")) cl->AppendSwitchWithValue("ozone-platform", "x11");
         const char* gpu = std::getenv("LUXIUM_GPU");
         if (gpu && gpu[0] == '0') {
             cl->AppendSwitch("disable-gpu");
@@ -389,14 +428,36 @@ CefRefPtr<LuxApp>& app() {
     static CefRefPtr<LuxApp> a = new LuxApp();
     return a;
 }
-CefRefPtr<LuxClient>& client() {
-    static CefRefPtr<LuxClient> cl = new LuxClient();
-    return cl;
+// The one window of the classic single-window browser.
+Win* def() {
+    static Win* d = [] { Win* w = new Win; w->client = new LuxClient(w); return w; }();
+    return d;
 }
 
-CefRefPtr<CefBrowser> browser() {
-    std::lock_guard<std::mutex> lk(g_mutex);
-    return g_browser;
+CefRefPtr<CefBrowser> browser(Win* w) {
+    std::lock_guard<std::mutex> lk(w->m);
+    return w->browser;
+}
+
+std::mutex g_ctx_mutex;
+std::map<std::string, CefRefPtr<CefRequestContext>> g_ctx;   // profile_id -> private context
+
+// A persistent context per app, its cache under <root cache path>/<id> (Chromium
+// requires that: the global root_cache_path is the profile root in host mode).
+CefRefPtr<CefRequestContext> context_for(const std::string& id) {
+    if (id.empty() || g_profile_root.empty()) return nullptr;
+    std::lock_guard<std::mutex> lk(g_ctx_mutex);
+    auto it = g_ctx.find(id);
+    if (it != g_ctx.end()) return it->second;
+    std::string dir = g_profile_root + "/" + id;
+    for (size_t i = g_profile_root.size() + 1; i <= dir.size(); ++i)
+        if (i == dir.size() || dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0755);
+    CefRequestContextSettings rs;
+    CefString(&rs.cache_path) = dir;
+    rs.persist_session_cookies = true;
+    CefRefPtr<CefRequestContext> ctx = CefRequestContext::CreateContext(rs, nullptr);
+    g_ctx[id] = ctx;
+    return ctx;
 }
 
 CefMouseEvent mouse_event(int x, int y, uint32_t mods) {
@@ -451,6 +512,8 @@ static float detect_scale(unsigned long display) {
     return 1.0f;
 }
 
+void set_profile_root(const std::string& dir) { g_profile_root = dir; g_host_mode = true; }
+
 void init(unsigned long display, unsigned long parent) {
     g_scale = detect_scale(display);
     static bool done = false;
@@ -485,8 +548,10 @@ void init(unsigned long display, unsigned long parent) {
     // Persistent profile (cookies, localStorage, cache): LUXIUM_PROFILE picks the
     // directory, "none" means a throw-away in-memory profile.  Chromium allows one
     // process per profile; a second Luxium on the same profile falls back to memory.
+    // The app host (set_profile_root) keeps its per-app profiles under its own root.
     std::string profile;
-    if (const char* p = std::getenv("LUXIUM_PROFILE")) profile = p;
+    if (!g_profile_root.empty()) profile = g_profile_root;
+    else if (const char* p = std::getenv("LUXIUM_PROFILE")) profile = p;
     else if (const char* h = std::getenv("HOME")) profile = std::string(h) + "/.local/share/luxium/profile";
     if (profile == "none") profile.clear();
     if (!profile.empty()) {
@@ -501,47 +566,83 @@ void init(unsigned long display, unsigned long parent) {
         std::fprintf(stderr, "luxium: profile %s is in use by another instance; using a temporary one\n", profile.c_str());
         CefString(&settings.root_cache_path) = "";
         CefString(&settings.cache_path) = "";
+        g_profile_root.clear();   // no private contexts without a root
         CefInitialize(args, settings, app(), nullptr);
     }
 }
 
+static void create_browser(Win* w, const std::string& url, CefRefPtr<CefRequestContext> ctx) {
+    CefWindowInfo info;
+    info.SetAsWindowless((::Window)g_parent);   // parent: dialogs/IME only
+    CefBrowserSettings bs;
+    bs.background_color = 0xFFFFFFFF;           // opaco: blanco antes del 1er paint
+    bs.windowless_frame_rate = 60;              // video and animations: 30 is the default
+    CefBrowserHost::CreateBrowser(info, w->client, url, bs, nullptr, ctx);
+}
+
 void attach(unsigned long display, unsigned long parent, const std::string& url) {
     init(display, parent);
-    if (!browser()) {
-        CefWindowInfo info;
-        info.SetAsWindowless((::Window)parent);   // parent: dialogs/IME only
-        CefBrowserSettings bs;
-        bs.background_color = 0xFFFFFFFF;         // opaco: blanco antes del 1er paint
-        bs.windowless_frame_rate = 60;            // video and animations: 30 is the default
-        CefBrowserHost::CreateBrowser(info, client(), url, bs, nullptr, nullptr);
+    Win* w = def();
+    if (!browser(w)) {
+        create_browser(w, url, nullptr);
         return;
     }
     navigate(url);
 }
 
-void navigate(const std::string& url) {
-    CefRefPtr<CefBrowser> b = browser();
-    if (b) b->GetMainFrame()->LoadURL(CefString(url));
+Win* open_window(const OpenParams& p) {
+    init(p.display, p.parent);
+    Win* w = new Win;
+    w->ev = p.events;
+    w->client = new LuxClient(w);
+    create_browser(w, p.url, context_for(p.profile_id));
+    return w;
 }
 
-void go_back()    { CefRefPtr<CefBrowser> b = browser(); if (b) b->GoBack(); }
-void go_forward() { CefRefPtr<CefBrowser> b = browser(); if (b) b->GoForward(); }
-void reload()     { CefRefPtr<CefBrowser> b = browser(); if (b) b->Reload(); }
+void set_events(Win* w, const Events& ev) { w->ev = ev; }
 
-void run_js(const std::string& code) {
-    CefRefPtr<CefBrowser> b = browser();
+void close_window(Win* w) {
+    CefRefPtr<CefBrowser> b = browser(w);
+    if (b) b->GetHost()->CloseBrowser(true);
+    else w->closed = true;   // never created / already gone
+}
+
+void destroy_window(Win* w) { delete w; }
+
+Win* open_devtools(Win* parent, const Events& ev) {
+    CefRefPtr<CefBrowser> b = browser(parent);
+    if (!b) return nullptr;
+    Win* d = new Win;
+    d->ev = ev;
+    d->client = new LuxClient(d);
+    CefWindowInfo info;
+    info.SetAsWindowless((::Window)g_parent);
+    CefBrowserSettings bs;
+    bs.background_color = 0xFFFFFFFF;
+    b->GetHost()->ShowDevTools(info, d->client, bs, CefPoint());
+    return d;
+}
+
+void navigate(Win* w, const std::string& url) {
+    CefRefPtr<CefBrowser> b = browser(w);
+    if (b) b->GetMainFrame()->LoadURL(CefString(url));
+}
+void reload(Win* w) { CefRefPtr<CefBrowser> b = browser(w); if (b) b->Reload(); }
+
+void run_js(Win* w, const std::string& code) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (b) b->GetMainFrame()->ExecuteJavaScript(CefString(code), CefString("luxium://probe"), 0);
 }
 
-void set_view(int w, int h) {
+void set_view(Win* win, int w, int h) {
     w = std::max(1, w);
     h = std::max(1, h);
     // dos exchanges SEPARADOS: con && cortocircuitaria y la altura no se
-    // actualizaria nunca (g_view_h se quedaria en 1 -> pintado de 1px).
-    const int ow = g_view_w.exchange(w);
-    const int oh = g_view_h.exchange(h);
+    // actualizaria nunca (view_h se quedaria en 1 -> pintado de 1px).
+    const int ow = win->view_w.exchange(w);
+    const int oh = win->view_h.exchange(h);
     const bool same = (ow == w && oh == h);
-    CefRefPtr<CefBrowser> b = browser();
+    CefRefPtr<CefBrowser> b = browser(win);
     dbgf("set_view %dx%d same=%d browser=%d", w, h, (int)same, b ? 1 : 0);
     if (same) return;
     if (b) b->GetHost()->WasResized();
@@ -549,27 +650,27 @@ void set_view(int w, int h) {
 
 // ── input forwarding (our SDL loop -> Chromium) ─────────────────────────────
 
-void mouse_move(int x, int y, bool leave, uint32_t mods) {
-    CefRefPtr<CefBrowser> b = browser();
+void mouse_move(Win* w, int x, int y, bool leave, uint32_t mods) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (b) b->GetHost()->SendMouseMoveEvent(mouse_event(x, y, mods), leave);
 }
 
-void mouse_button(int x, int y, int button, bool up, int clicks, uint32_t mods) {
-    CefRefPtr<CefBrowser> b = browser();
+void mouse_button(Win* w, int x, int y, int button, bool up, int clicks, uint32_t mods) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (!b) return;
     b->GetHost()->SendMouseClickEvent(mouse_event(x, y, mods),
                                       (cef_mouse_button_type_t)button, up,
                                       std::max(1, clicks));
 }
 
-void mouse_wheel(int x, int y, int dx, int dy, uint32_t mods) {
-    CefRefPtr<CefBrowser> b = browser();
+void mouse_wheel(Win* w, int x, int y, int dx, int dy, uint32_t mods) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (b) b->GetHost()->SendMouseWheelEvent(mouse_event(x, y, mods), dx, dy);
 }
 
-void key(int type, uint32_t mods, uint32_t windows_vk, uint32_t native_key,
+void key(Win* w, int type, uint32_t mods, uint32_t windows_vk, uint32_t native_key,
          const char* utf8) {
-    CefRefPtr<CefBrowser> b = browser();
+    CefRefPtr<CefBrowser> b = browser(w);
     if (!b) return;
     CefKeyEvent e;
     e.modifiers = mods;
@@ -588,64 +689,65 @@ void key(int type, uint32_t mods, uint32_t windows_vk, uint32_t native_key,
     b->GetHost()->SendKeyEvent(e);
 }
 
-void set_focus(bool focused) {
-    CefRefPtr<CefBrowser> b = browser();
+void set_focus(Win* w, bool focused) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (b) b->GetHost()->SetFocus(focused);
 }
 
 // ── frames (CEF UI thread -> our framebuffer) ───────────────────────────────
 
-bool copy_frame(uint8_t* dst, int dst_stride, int dst_w, int dst_h,
+bool copy_frame(Win* w, uint8_t* dst, int dst_stride, int dst_w, int dst_h,
                 int* frame_w, int* frame_h) {
-    std::lock_guard<std::mutex> lk(g_paint_mutex);
-    if (g_pixels.empty() || g_pw <= 0 || g_ph <= 0) {
+    std::lock_guard<std::mutex> lk(w->paint_m);
+    if (w->pixels.empty() || w->pw <= 0 || w->ph <= 0) {
         static std::atomic<int> n{0};
         int k = n++;
         if (k < 5 || k % 600 == 0)
-            dbgf("copy_frame vacio #%d (pw=%d ph=%d)", k, g_pw, g_ph);
+            dbgf("copy_frame vacio #%d (pw=%d ph=%d)", k, w->pw, w->ph);
         return false;
     }
     {
         static bool once = false;
-        if (!once) { once = true; dbgf("copy_frame PRIMERO %dx%d", g_pw, g_ph); }
+        if (!once) { once = true; dbgf("copy_frame PRIMERO %dx%d", w->pw, w->ph); }
     }
-    if (frame_w) *frame_w = g_pw;
-    if (frame_h) *frame_h = g_ph;
-    const int rows = std::min(dst_h, g_ph);
-    const int cols = std::min(dst_w, g_pw) * 4;
+    if (frame_w) *frame_w = w->pw;
+    if (frame_h) *frame_h = w->ph;
+    const int rows = std::min(dst_h, w->ph);
+    const int cols = std::min(dst_w, w->pw) * 4;
     for (int r = 0; r < rows; ++r)
         std::memcpy(dst + (size_t)r * dst_stride,
-                    g_pixels.data() + (size_t)r * g_pw * 4, cols);
+                    w->pixels.data() + (size_t)r * w->pw * 4, cols);
     return true;
 }
 
-int cursor() { return g_cursor_type.load(); }
+int cursor(Win* w) { return w->cursor_type.load(); }
 
-bool fullscreen() { return g_fullscreen.load(); }
-void exit_fullscreen() {
-    CefRefPtr<CefBrowser> b = browser();
+bool fullscreen(Win* w) { return w->fullscreen.load(); }
+void exit_fullscreen(Win* w) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (b) b->GetHost()->ExitFullscreen(true);
 }
 
-int paints() { return g_paints.load(); }
+int paints(Win* w) { return w->paints.load(); }
+bool is_closed(Win* w) { return w->closed.load(); }
 
 bool pop_console(int* level, std::string* text) {
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (g_console.empty()) return false;
-    if (level) *level = g_console.front().first;
-    if (text)  *text  = std::move(g_console.front().second);
-    g_console.pop_front();
+    Win* w = def();
+    std::lock_guard<std::mutex> lk(w->m);
+    if (w->console.empty()) return false;
+    if (level) *level = w->console.front().first;
+    if (text)  *text  = std::move(w->console.front().second);
+    w->console.pop_front();
     return true;
 }
 
-std::string url()    { std::lock_guard<std::mutex> lk(g_mutex); return g_url; }
-std::string title()  { std::lock_guard<std::mutex> lk(g_mutex); return g_title; }
-bool loaded()        { std::lock_guard<std::mutex> lk(g_mutex); return g_loaded; }
+std::string url(Win* w)    { std::lock_guard<std::mutex> lk(w->m); return w->url; }
+std::string title(Win* w)  { std::lock_guard<std::mutex> lk(w->m); return w->title; }
 
 // Ctrl+C/X/V/A: OSR gets no editing shortcuts from raw key events, so the shell
 // maps them to frame commands.
-void edit(char cmd) {
-    CefRefPtr<CefBrowser> b = browser();
+void edit(Win* w, char cmd) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (!b) return;
     CefRefPtr<CefFrame> f = b->GetFocusedFrame() ? b->GetFocusedFrame() : b->GetMainFrame();
     switch (cmd) {
@@ -657,22 +759,31 @@ void edit(char cmd) {
 }
 
 // Cookies are written lazily; wait (bounded) until they are on disk.
-void flush_cookies() {
+static void flush_manager(CefRefPtr<CefCookieManager> cm) {
     struct Done : CefCompletionCallback {
         std::promise<void> p;
         void OnComplete() override { p.set_value(); }
         IMPLEMENT_REFCOUNTING(Done);
     };
-    CefRefPtr<CefCookieManager> cm = CefCookieManager::GetGlobalManager(nullptr);
     if (!cm) return;
     CefRefPtr<Done> d = new Done;
     std::future<void> f = d->p.get_future();
     const bool started = cm->FlushStore(d);
     if (started) f.wait_for(std::chrono::seconds(3));
 }
+void flush_cookies() { flush_manager(CefCookieManager::GetGlobalManager(nullptr)); }
 
-void ime_compose(const std::string& utf8, int caret) {
-    CefRefPtr<CefBrowser> b = browser();
+void flush_all() {
+    std::vector<CefRefPtr<CefRequestContext>> v;
+    {
+        std::lock_guard<std::mutex> lk(g_ctx_mutex);
+        for (auto& kv : g_ctx) v.push_back(kv.second);
+    }
+    for (auto& c : v) flush_manager(c->GetCookieManager(nullptr));
+}
+
+void ime_compose(Win* w, const std::string& utf8, int caret) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (!b) return;
     std::vector<CefCompositionUnderline> ul;
     CefCompositionUnderline u;
@@ -681,18 +792,47 @@ void ime_compose(const std::string& utf8, int caret) {
     ul.push_back(u);
     b->GetHost()->ImeSetComposition(utf8, ul, CefRange(UINT32_MAX, UINT32_MAX), CefRange(caret, caret));
 }
-void ime_commit(const std::string& utf8) {
-    CefRefPtr<CefBrowser> b = browser();
+void ime_commit(Win* w, const std::string& utf8) {
+    CefRefPtr<CefBrowser> b = browser(w);
     if (b) b->GetHost()->ImeCommitText(utf8, CefRange(UINT32_MAX, UINT32_MAX), 0);
 }
 
 void shutdown() {
     {
-        CefRefPtr<CefBrowser> b = browser();
+        CefRefPtr<CefBrowser> b = browser(def());
         if (b) b->GetHost()->CloseBrowser(true);
     }
     flush_cookies();
+    flush_all();
+    {
+        std::lock_guard<std::mutex> lk(g_ctx_mutex);
+        g_ctx.clear();
+    }
     CefShutdown();
 }
+
+// ── classic single-window API: the default window ──────────────────────────
+void navigate(const std::string& url) { navigate(def(), url); }
+void go_back()    { CefRefPtr<CefBrowser> b = browser(def()); if (b) b->GoBack(); }
+void go_forward() { CefRefPtr<CefBrowser> b = browser(def()); if (b) b->GoForward(); }
+void reload()     { reload(def()); }
+void run_js(const std::string& code) { run_js(def(), code); }
+void set_view(int w, int h) { set_view(def(), w, h); }
+void mouse_move(int x, int y, bool leave, uint32_t mods) { mouse_move(def(), x, y, leave, mods); }
+void mouse_button(int x, int y, int button, bool up, int clicks, uint32_t mods) { mouse_button(def(), x, y, button, up, clicks, mods); }
+void mouse_wheel(int x, int y, int dx, int dy, uint32_t mods) { mouse_wheel(def(), x, y, dx, dy, mods); }
+void key(int type, uint32_t mods, uint32_t vk, uint32_t native_key, const char* utf8) { key(def(), type, mods, vk, native_key, utf8); }
+void set_focus(bool focused) { set_focus(def(), focused); }
+bool copy_frame(uint8_t* dst, int dst_stride, int dst_w, int dst_h, int* frame_w, int* frame_h) { return copy_frame(def(), dst, dst_stride, dst_w, dst_h, frame_w, frame_h); }
+int cursor() { return cursor(def()); }
+bool fullscreen() { return fullscreen(def()); }
+void exit_fullscreen() { exit_fullscreen(def()); }
+int paints() { return paints(def()); }
+std::string url()    { return url(def()); }
+std::string title()  { return title(def()); }
+bool loaded()        { Win* w = def(); std::lock_guard<std::mutex> lk(w->m); return w->loaded; }
+void edit(char cmd) { edit(def(), cmd); }
+void ime_compose(const std::string& utf8, int caret) { ime_compose(def(), utf8, caret); }
+void ime_commit(const std::string& utf8) { ime_commit(def(), utf8); }
 
 } // namespace luxium::cef

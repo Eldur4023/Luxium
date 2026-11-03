@@ -14,9 +14,48 @@
 // to our engine+curl.
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace luxium::cef {
+
+// ── Multiple windows (app host, src/host) ───────────────────────────────────
+// Every function below that takes no Win* acts on the one window of the
+// classic browser (def()).  The overloads further down take a Win* from
+// open_window(): one CefBrowser + pixel buffer + request context each.
+struct Win;
+
+// Callbacks fired on CEF's UI thread (keep them cheap and thread-safe).
+struct Events {
+    std::function<void()>                   wake;        // anything changed: poke the main loop
+    std::function<void(const std::string&)> on_title;
+    std::function<void(const std::string&)> on_address;
+    std::function<void(const std::string&)> on_message;  // console.debug("luxium-msg:<payload>")
+    std::function<void()>                   on_loaded;
+    std::function<void()>                   on_closed;   // browser fully closed
+};
+
+struct OpenParams {
+    std::string url;
+    std::string profile_id;   // "" = the default (global) request context; else a private
+                              // persistent context under <root>/<profile_id>
+    unsigned long display = 0, parent = 0;   // X11 Display*/Window of the SDL window
+    Events      events;
+};
+
+// Root of the per-app profiles (call before the first init/open_window).
+void set_profile_root(const std::string& dir);
+// Creates a window's browser (initializes Chromium on first use).
+Win* open_window(const OpenParams& p);
+// Closes the browser; the Win stays valid until destroy_window().
+void close_window(Win*);
+void destroy_window(Win*);
+// Opens Chromium's DevTools for w as another windowless browser.  Returns it
+// (events are installed by the caller through the returned Win's set_events()).
+Win* open_devtools(Win* w, const Events& ev);
+void set_events(Win*, const Events&);
+// Flushes every private profile's cookies to disk (bounded wait).
+void flush_all();
 
 // Was this binary built with CEF?
 bool built();
@@ -91,5 +130,27 @@ std::string title();    // last known title
 bool loaded();
 
 void shutdown();
+
+// Window-addressed versions of the calls above.
+void navigate(Win*, const std::string& url);
+void reload(Win*);
+void run_js(Win*, const std::string& code);
+void set_view(Win*, int w, int h);
+void mouse_move(Win*, int x, int y, bool leave, uint32_t mods);
+void mouse_button(Win*, int x, int y, int button, bool up, int clicks, uint32_t mods);
+void mouse_wheel(Win*, int x, int y, int dx, int dy, uint32_t mods);
+void key(Win*, int type, uint32_t mods, uint32_t windows_vk, uint32_t native_key, const char* utf8);
+void set_focus(Win*, bool focused);
+bool copy_frame(Win*, uint8_t* dst, int dst_stride, int dst_w, int dst_h, int* frame_w, int* frame_h);
+int  cursor(Win*);
+void ime_compose(Win*, const std::string& utf8, int caret);
+void ime_commit(Win*, const std::string& utf8);
+void edit(Win*, char cmd);
+bool fullscreen(Win*);
+void exit_fullscreen(Win*);
+int  paints(Win*);
+std::string url(Win*);
+std::string title(Win*);
+bool is_closed(Win*);
 
 } // namespace luxium::cef
