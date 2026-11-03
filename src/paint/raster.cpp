@@ -23,6 +23,7 @@ struct State {
     std::vector<IRect> rects;              // intersected clip rects (stack)
     std::vector<std::vector<RoundClip>> rounds;
     std::vector<Target> targets;
+    std::vector<std::pair<float, float>> shifts;
     std::vector<std::vector<uint32_t>> layer_bufs;
     struct LayerInfo { IRect bounds; float alpha; };
     std::vector<LayerInfo> layers;
@@ -386,6 +387,10 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
             s.rounds.push_back(std::move(rc));
             break;
         }
+        case Item::Kind::ShiftPush: s.shifts.push_back({it.x, it.y}); s.ox += it.x; s.oy += it.y; break;
+        case Item::Kind::ShiftPop:
+            if (!s.shifts.empty()) { s.ox -= s.shifts.back().first; s.oy -= s.shifts.back().second; s.shifts.pop_back(); }
+            break;
         case Item::Kind::ClipPop:
             if (s.rects.size() > 1) { s.rects.pop_back(); s.rounds.pop_back(); }
             break;

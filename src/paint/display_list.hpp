@@ -32,6 +32,7 @@ struct Item {
         Line,        // text decoration / list marker bar (solid rect, AA off)
         ClipPush, ClipPop,
         LayerPush, LayerPop,   // group opacity
+        ShiftPush, ShiftPop,   // translate everything in between by (x, y): transform: translate()
     } kind = Kind::Rect;
 
     float x = 0, y = 0, w = 0, h = 0;     // doc coords (already snapped for boxes)

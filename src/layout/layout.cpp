@@ -62,16 +62,17 @@ LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
     out.fixed = std::move(po.fixed);
     for (auto& h : po.hits) {
         HitBox hb{h.node, h.x, h.y, h.w, h.h, h.button, h.cursor, h.ctl, h.tx, h.ty, h.th, h.px, h.face, h.password,
-                  h.clip_x0, h.clip_y0, h.clip_x1, h.clip_y1, h.max_sx, h.max_sy, h.sb_x, h.sb_y, h.sb_w, h.sb_h};
+                  h.clip_x0, h.clip_y0, h.clip_x1, h.clip_y1, h.max_sx, h.max_sy, h.sb_x, h.sb_y, h.sb_w, h.sb_h, h.sticky, h.y};
         out.hits.push_back(hb);
     }
     for (auto& h : po.areas) {
         HitBox hb{h.node, h.x, h.y, h.w, h.h, false, h.cursor, -1, 0, 0, 0, 0, 0, false,
-                  h.clip_x0, h.clip_y0, h.clip_x1, h.clip_y1, h.max_sx, h.max_sy, h.sb_x, h.sb_y, h.sb_w, h.sb_h};
+                  h.clip_x0, h.clip_y0, h.clip_x1, h.clip_y1, h.max_sx, h.max_sy, h.sb_x, h.sb_y, h.sb_w, h.sb_h, h.sticky, h.y};
         out.areas.push_back(hb);
     }
     for (auto& b : po.boxes) out.boxes.push_back({b.name, b.x, b.y, b.w, b.h});
     out.media = std::move(po.media);
+    out.sticky = std::move(po.sticky);
     for (auto& w : po.words) out.words.push_back({w.text, w.x, w.y, w.w, w.h});
     return out;
 }

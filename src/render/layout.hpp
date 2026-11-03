@@ -33,6 +33,8 @@ struct HitBox {
     float clip_x0 = -1e9f, clip_y0 = -1e9f, clip_x1 = 1e9f, clip_y1 = 1e9f;
     // scroll containers: how far they scroll and where the vertical scrollbar track is
     float max_sx = 0, max_sy = 0, sb_x = 0, sb_y = 0, sb_w = 0, sb_h = 0;
+    int   sticky = -1;                  // index into LayoutResult::sticky when the box lives in a sticky group
+    float base_y = 0, base_clip_y0 = 0, base_clip_y1 = 0;   // y of the unshifted layout (the shell moves y with the group)
     bool  in_clip(float px, float py) const { return px >= clip_x0 && px < clip_x1 && py >= clip_y0 && py < clip_y1; }
 };
 
@@ -60,6 +62,16 @@ struct MediaBox {
     float radius = 0;
 };
 
+// A `position: sticky` box painted apart: the shell translates it each frame so that it sticks to the
+// viewport edge (top inset) while its containing block is still in view.
+struct StickyGroup {
+    paint::DisplayList list;
+    float top = 0, bottom = 0;           // inset from the viewport top/bottom edge
+    bool  has_top = false, has_bottom = false;
+    float orig_y = 0, h = 0;             // border box, document coords, unshifted
+    float cb_top = 0, cb_bottom = 0;     // containing block content box (the box never leaves it)
+};
+
 struct LayoutResult {
     float content_height = 0;
     uint32_t canvas_bg = 0xFFFFFFFF;   // viewport background (html, or body when html has none)
@@ -70,6 +82,7 @@ struct LayoutResult {
     std::vector<BoxRect> boxes;
     std::vector<TextWord> words;
     std::vector<MediaBox> media;
+    std::vector<StickyGroup> sticky;   // painted after `list`, before `fixed`, shifted by the shell
 };
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,

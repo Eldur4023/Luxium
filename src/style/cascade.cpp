@@ -359,6 +359,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
         default: break;
         }
     }
+    if (pseudo == Pseudo::None && post_hook) post_hook(el, s);
     return s;
 }
 

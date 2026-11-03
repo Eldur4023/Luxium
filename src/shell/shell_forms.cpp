@@ -514,3 +514,28 @@ void Shell::update_cursor_shape() {
 }
 
 } // namespace luxium::shell
+
+namespace luxium::shell {
+
+// `position: sticky` against the page scroll: each group slides down while its natural spot is above the
+// viewport edge, but never out of its containing block.  Hit boxes follow, so clicks land where it is drawn.
+void Shell::apply_sticky() {
+    const auto& groups = layout_.sticky;
+    sticky_dy_.assign(groups.size(), 0.f);
+    if (groups.empty()) return;
+    const float view_bottom = scroll_ + page_h();
+    for (size_t i = 0; i < groups.size(); ++i) {
+        const auto& g = groups[i];
+        float dy = 0;
+        if (g.has_top) dy = std::max(0.f, scroll_ + g.top - g.orig_y);
+        else if (g.has_bottom) dy = std::min(0.f, view_bottom - g.bottom - (g.orig_y + g.h));
+        dy = std::min(dy, std::max(0.f, g.cb_bottom - (g.orig_y + g.h)));
+        dy = std::max(dy, g.cb_top - g.orig_y);
+        sticky_dy_[i] = dy;
+    }
+    for (auto* list : {&layout_.hits, &layout_.areas})
+        for (auto& h : *list)
+            if (h.sticky >= 0) h.y = h.base_y + sticky_dy_[size_t(h.sticky)];
+}
+
+} // namespace luxium::shell

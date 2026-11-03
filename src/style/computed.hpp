@@ -114,6 +114,14 @@ struct GridLine {            // grid-column-start & co
     std::string name;
 };
 
+// One entry of `transition`: which property (bit set), how long, delay, easing.
+struct TransitionSpec {
+    enum Prop : unsigned { Opacity = 1, Transform = 2, Background = 4, Color = 8, Border = 16, All = 31 };
+    unsigned props = 0;
+    float duration = 0, delay = 0;    // ms
+    float bez[4] = {0.25f, 0.1f, 0.25f, 1.f};   // cubic-bezier control points (ease)
+};
+
 struct ComputedStyle {
     // ── display / positioning ───────────────────────────────────────────────
     Display  display = Display::Inline;
@@ -210,6 +218,10 @@ struct ComputedStyle {
     bool     appearance_none = false;   // appearance: none (controls keep only their CSS look)
     bool     scrollbar_thin = false, scrollbar_set = false;   // scrollbar-width: thin; scrollbar-color given
     uint32_t scrollbar_thumb = 0, scrollbar_track = 0;
+    // transform: only the translation part is honoured (scale/rotate parse but do nothing, `transform_other`)
+    Len      translate_x = Len::Px(0), translate_y = Len::Px(0);
+    bool     transform_other = false;
+    std::vector<TransitionSpec> transitions;
     float    aspect_ratio = 0;          // aspect-ratio (width/height); 0 = auto
     // outline: drawn outside the border edge, never affects layout.  `auto` = the focus ring.
     BorderStyle outline_style = BorderStyle::None;

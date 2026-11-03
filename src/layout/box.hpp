@@ -261,6 +261,7 @@ struct HitRect {
     float clip_x0 = -1e9f, clip_y0 = -1e9f, clip_x1 = 1e9f, clip_y1 = 1e9f;
     // scroll containers: reachable offsets and the vertical track (0 width = no scrollbar)
     float max_sx = 0, max_sy = 0, sb_x = 0, sb_y = 0, sb_w = 0, sb_h = 0;
+    int sticky = -1;
 };
 struct NamedRect { std::string name; float x = 0, y = 0, w = 0, h = 0; };
 struct WordRect { std::string text; float x = 0, y = 0, w = 0, h = 0; };
@@ -272,6 +273,7 @@ struct PaintOutput {
     std::vector<NamedRect> boxes;
     std::vector<WordRect> words;
     std::vector<MediaRect> media;
+    std::vector<render::StickyGroup> sticky;
     uint32_t canvas_bg = 0xFFFFFFFF;
 };
 void finalize_positions(Env& env, Tree& tree);

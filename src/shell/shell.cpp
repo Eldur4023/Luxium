@@ -1764,6 +1764,13 @@ void Shell::repaint() {
         render::media_patch(layout_);
         paint::rasterize(layout_.list, cv, *font_);
         paint::rasterize(render::media_overlay(layout_, false, *font_), cv, *font_);
+        apply_sticky();
+        for (size_t i = 0; i < layout_.sticky.size(); ++i) {
+            const float saved_oy = cv.oy;
+            cv.oy += sticky_dy_[i];
+            paint::rasterize(layout_.sticky[i].list, cv, *font_);
+            cv.oy = saved_oy;
+        }
         if (hover) {   // the hovered button lightens: an overlay over its box
             paint::DisplayList ov;
             paint::Item it; it.kind = paint::Item::Kind::Rect;

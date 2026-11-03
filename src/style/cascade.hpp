@@ -3,6 +3,7 @@
 // (origin and !important, then specificity, then source order), turned into
 // a ComputedStyle with inheritance, var() and em/rem resolution.
 
+#include <functional>
 #include <style/computed.hpp>
 #include <style/stylesheet.hpp>
 
@@ -24,6 +25,8 @@ public:
     void set_author_rules(const std::vector<Rule>* rules) { author_ = rules ? rules : &kNoRules; }
 
     void set_viewport(float w, float h) { vw_ = w; vh_ = h; }
+    // Called with every element's final style (Pseudo::None); the shell animates transitions through it.
+    std::function<void(const dom::Node&, ComputedStyle&)> post_hook;
     float viewport_w() const { return vw_; }
     float viewport_h() const { return vh_; }
 

@@ -128,6 +128,15 @@ struct Painter {
     paint::DisplayList* dl;
     float canvas_w, canvas_h;
     bool prop_html = false, prop_body = false;   // background propagated to the canvas
+    int  sticky_cur = -1;                        // index of the sticky group being painted
+    float tshift_x = 0, tshift_y = 0;            // accumulated translate() of the boxes being painted
+    std::unordered_map<const Box*, std::pair<float, float>> shift_of;
+    std::unordered_map<const Box*, int> sticky_roots;
+    // sticky works against the page scroll only: inside a scroll container it behaves as static
+    static bool sticky_ok(const Box& b) {
+        for (const Box* p = b.parent; p; p = p->parent) if (p->kind == Box::Kind::Block && p->node && p->st && (p->st->overflow_x == Overflow::Auto || p->st->overflow_x == Overflow::Scroll || p->st->overflow_y == Overflow::Auto || p->st->overflow_y == Overflow::Scroll || p->st->overflow_y == Overflow::Hidden)) return false;
+        return true;
+    }
 
     Painter(Env& e, Tree& t, PaintOutput& o, float cw, float ch)
         : env(e), tree(t), out(o), dl(&o.main), canvas_w(cw), canvas_h(ch) {}
@@ -146,6 +155,7 @@ struct Painter {
         if (s.position == Position::Fixed) return true;
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
+        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
     }
@@ -712,6 +722,7 @@ struct Painter {
                     if (ib.node && (ib.node->name == "a" || ib.node->name == "label" || ib.node->has_attr("id")) && r.w > 0) {
                         HitRect h{ib.node, r.x, r.y, r.w, r.h, false};
                         clip_of(blk, h);
+                        h.sticky = sticky_cur; h.x += tshift_x; h.y += tshift_y;
                         if (clips(blk) && blk.kind == Box::Kind::Block) {   // the block itself clips its lines too
                             h.clip_x0 = std::max(h.clip_x0, sn(blk.ax + blk.border.l)); h.clip_y0 = std::max(h.clip_y0, sn(blk.ay + blk.border.t));
                             h.clip_x1 = std::min(h.clip_x1, sn(blk.ax + blk.w - blk.border.r)); h.clip_y1 = std::min(h.clip_y1, sn(blk.ay + blk.h - blk.border.b));
@@ -833,11 +844,13 @@ struct Painter {
                 h.th = line_height_px(env, cs); h.px = cs.font_size; h.face = face_of(env, cs).id;
                 h.password = b.ctl->type == Control::Type::Password;
                 clip_of(b, h);
+                h.sticky = sticky_cur; h.x += tshift_x; h.y += tshift_y; h.tx += tshift_x; h.ty += tshift_y;
                 out.hits.push_back(h);
             } else if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media) {
                 HitRect h{b.node, sn(b.ax), sn(b.ay), b.w, b.h, tg == "button"};
                 h.cursor = b.st->cursor;
                 clip_of(b, h);
+                h.sticky = sticky_cur; h.x += tshift_x; h.y += tshift_y;
                 out.hits.push_back(h);
             }
         }
@@ -852,6 +865,43 @@ struct Painter {
             dl = saved;
             return;
         }
+        if (s.position == Position::Sticky && sticky_cur < 0 && dl != &out.fixed && sticky_ok(sc)) {
+            const auto& in = s.inset;
+            render::StickyGroup g;
+            g.has_top = !in[0].is_auto; g.has_bottom = !in[2].is_auto;
+            if (g.has_top || g.has_bottom) {
+                const Box* cbx = sc.lparent ? sc.lparent : sc.parent;
+                while (cbx && cbx->kind == Box::Kind::Inline) cbx = cbx->parent;
+                g.top = g.has_top ? in[0].resolve(cbx ? cbx->content_h() : 0) : 0;
+                g.bottom = g.has_bottom ? in[2].resolve(cbx ? cbx->content_h() : 0) : 0;
+                g.orig_y = sn(sc.ay); g.h = sc.h;
+                g.cb_top = cbx ? cbx->ay + cbx->border.t + cbx->padding.t : 0;
+                g.cb_bottom = cbx ? cbx->ay + cbx->h - cbx->border.b - cbx->padding.b : 1e9f;
+                const int idx = int(out.sticky.size());
+                out.sticky.push_back(std::move(g));
+                sticky_roots[&sc] = idx;
+                auto* saved = dl;
+                std::vector<paint::Item> tmp;
+                paint::DisplayList mine;
+                dl = &mine;
+                sticky_cur = idx;
+                paint_sc(sc, bg);
+                sticky_cur = -1;
+                dl = saved;
+                out.sticky[size_t(idx)].list = std::move(mine);
+                return;
+            }
+        }
+        // transform: translate(): the whole subtree is drawn shifted (and its hit boxes follow)
+        const float tdx = std::round(s.translate_x.resolve(sc.w)), tdy = std::round(s.translate_y.resolve(sc.h));
+        const bool shifted = tdx != 0 || tdy != 0;
+        if (shifted) {
+            Item it; it.kind = Item::Kind::ShiftPush; it.x = tdx; it.y = tdy;
+            dl->push_back(std::move(it));
+            tshift_x += tdx; tshift_y += tdy;
+            shift_of[&sc] = {tdx, tdy};
+        }
+        struct Unshift { Painter* p; bool on; float x, y; ~Unshift() { if (!on) return; Item it; it.kind = Item::Kind::ShiftPop; p->dl->push_back(std::move(it)); p->tshift_x -= x; p->tshift_y -= y; } } unshift{this, shifted, tdx, tdy};
         size_t layer = 0;
         const bool lay = s.opacity < 1.f;
         if (lay) layer = layer_push(s.opacity);
@@ -932,7 +982,9 @@ void paint_tree(Env& env, Tree& tree, float canvas_w, float canvas_h, PaintOutpu
             {
                 HitRect ar{k->node, k->ax, k->ay, k->w, k->h, false};
                 ar.cursor = k->st->cursor;
+                for (const Box* q = k; q; q = q->parent) { auto f = p.shift_of.find(q); if (f != p.shift_of.end()) { ar.x += f->second.first; ar.y += f->second.second; } }
                 p.clip_of(*k, ar);
+                for (const Box* q = k; q; q = q->parent) { auto f = p.sticky_roots.find(q); if (f != p.sticky_roots.end()) { ar.sticky = f->second; break; } }
                 if (scrolls(k)) {
                     ar.max_sx = k->max_sx; ar.max_sy = k->max_sy;
                     if (Painter::scrolls_y(*k)) Painter::sb_track(*k, ar.sb_x, ar.sb_y, ar.sb_w, ar.sb_h);
