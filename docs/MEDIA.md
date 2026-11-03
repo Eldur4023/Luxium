@@ -128,9 +128,9 @@ All calls are synchronous. `id` is an integer from `create()`.
 - One audio track is played; track switching is the page's business (homeflix
   reloads another HLS rendition).
 - `playbackRate` shifts pitch. No `captureStream`, no EME, no PiP, no WebRTC.
-- No `<video>` inside cross-origin iframes the shim cannot enter, no `srcObject`.
+- No `srcObject` on shim-owned elements.
 - Audio output goes to the SDL default device; there is no per-element routing
-  and no Web Audio tap (`createMediaElementSource` yields silence).
+  and no Web Audio tap (not tested with `createMediaElementSource`).
 - MSE for H.264/HEVC is refused on purpose; sites that cannot fall back to
   `video.src` will not play.
 - Seeking in HLS reopens the playlist: ~0.2 s on LAN.
