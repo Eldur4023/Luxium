@@ -33,11 +33,13 @@ int paeth(int a, int b, int c) {
 
 // decodifica el flujo ya inflado a scanlines RGB
 bool to_rgb(const uint8_t* raw, size_t rawlen, int w, int h, int channels,
-            const std::vector<uint8_t>& plte, std::vector<uint8_t>& rgb) {
+            const std::vector<uint8_t>& plte, std::vector<uint8_t>& rgb,
+            std::vector<uint8_t>* rgba = nullptr) {
     const size_t stride = size_t(w) * channels;
     if (rawlen < h * (stride + 1)) return false;
     std::vector<uint8_t> prev(stride, 0), cur(stride, 0);
     rgb.assign(size_t(w) * h * 3, 255);
+    if (rgba && (channels == 2 || channels == 4)) rgba->assign(size_t(w) * h * 4, 255);
     size_t off = 0;
     for (int y = 0; y < h; ++y) {
         const int filter = raw[off++];
@@ -59,15 +61,13 @@ bool to_rgb(const uint8_t* raw, size_t rawlen, int w, int h, int channels,
             const uint8_t* px = cur.data() + size_t(x) * channels;
             uint8_t r, g, b2;
             switch (channels) {
-            case 1: r = g = b2 = px[0]; break;                       // gray
-            case 2: r = g = b2 = px[0]; break;                       // gray+a
-            case 3: r = px[0]; g = px[1]; b2 = px[2]; break;         // rgb
-            case 4: r = g = b2 = px[0]; break;                       // gray+a
-            default: r = px[0]; g = px[1]; b2 = px[2]; break;        // rgba
+            case 1: case 2: r = g = b2 = px[0]; break;               // gray, gray+alpha
+            default: r = px[0]; g = px[1]; b2 = px[2]; break;        // rgb, rgba
             }
-            uint8_t alpha = channels == 2 || channels == 6 ? px[channels - 1] : 255;
-            if (channels == 3 || channels == 4) {
-                // (las paletas van por otro camino)
+            const uint8_t alpha = channels == 2 || channels == 4 ? px[channels - 1] : 255;
+            if (rgba && !rgba->empty()) {
+                uint8_t* q = rgba->data() + (size_t(y) * w + x) * 4;
+                q[0] = r; q[1] = g; q[2] = b2; q[3] = alpha;
             }
             size_t o = (size_t(y) * w + x) * 3;
             if (alpha == 255) {
@@ -84,7 +84,7 @@ bool to_rgb(const uint8_t* raw, size_t rawlen, int w, int h, int channels,
     return true;
 }
 
-const ImageBitmap* decode(const std::string& path) {
+const ImageBitmap* decode(const std::string& path, bool want_rgba = false) {
     auto bytes = bundle::read_file(path);
     if (!bytes) return nullptr;
     std::vector<uint8_t> data(bytes->begin(), bytes->end());
@@ -156,7 +156,7 @@ const ImageBitmap* decode(const std::string& path) {
         }
         return bm;
     }
-    if (!to_rgb(raw.data(), rawlen, int(w), int(h), channels, plte, bm->rgb)) {
+    if (!to_rgb(raw.data(), rawlen, int(w), int(h), channels, plte, bm->rgb, want_rgba ? &bm->rgba : nullptr)) {
         delete bm;
         return nullptr;
     }
@@ -167,6 +167,10 @@ std::mutex g_mutex;
 std::unordered_map<std::string, const ImageBitmap*> g_cache;
 
 } // namespace
+
+std::unique_ptr<ImageBitmap> load_image_rgba(const std::string& path) {
+    return std::unique_ptr<ImageBitmap>(const_cast<ImageBitmap*>(decode(path, true)));
+}
 
 const ImageBitmap* load_image(const std::string& path) {
     std::lock_guard<std::mutex> lk(g_mutex);

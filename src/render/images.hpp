@@ -3,6 +3,7 @@
 // Suficiente para assets propios y la mayoria de imagenes de paginas:
 // grayscale, RGB, palette, gray+alpha y RGBA; sobre blanco si trae alfa.
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,9 +12,13 @@ namespace luxium::render {
 struct ImageBitmap {
     int w = 0, h = 0;
     std::vector<uint8_t> rgb;   // 3 bytes por pixel (RGB), fila a fila
+    std::vector<uint8_t> rgba;  // 4 bytes por pixel, alfa recta: solo en load_image_rgba(), y solo si trae alfa
 };
 
 // Decodifica una vez y devuelve el bitmap cacheado; null si falla.
 const ImageBitmap* load_image(const std::string& path);
+
+// Igual, pero sin cache y con `rgba` relleno si el PNG trae alfa (iconos de ventana). Null si falla.
+std::unique_ptr<ImageBitmap> load_image_rgba(const std::string& path);
 
 } // namespace luxium::render
