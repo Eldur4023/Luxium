@@ -6,6 +6,10 @@
 #include <page/bundle.hpp>
 
 #include <zlib.h>
+#include <jpeglib.h>
+#include <webp/decode.h>
+
+#include <csetjmp>
 
 #include <algorithm>
 #include <cstdio>
@@ -84,10 +88,60 @@ bool to_rgb(const uint8_t* raw, size_t rawlen, int w, int h, int channels,
     return true;
 }
 
+struct JpegErr { jpeg_error_mgr pub; jmp_buf jb; };
+
+// JPEG through libjpeg(-turbo): always 8-bit RGB (CMYK/gray are converted by the library).
+ImageBitmap* decode_jpeg(const std::vector<uint8_t>& data) {
+    jpeg_decompress_struct cinfo;
+    JpegErr err;
+    cinfo.err = jpeg_std_error(&err.pub);
+    err.pub.error_exit = [](j_common_ptr c) { longjmp(reinterpret_cast<JpegErr*>(c->err)->jb, 1); };
+    auto* bm = new ImageBitmap();
+    if (setjmp(err.jb)) { jpeg_destroy_decompress(&cinfo); delete bm; return nullptr; }
+    jpeg_create_decompress(&cinfo);
+    jpeg_mem_src(&cinfo, data.data(), data.size());
+    jpeg_read_header(&cinfo, TRUE);
+    cinfo.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&cinfo);
+    bm->w = int(cinfo.output_width);
+    bm->h = int(cinfo.output_height);
+    bm->rgb.resize(size_t(bm->w) * bm->h * 3);
+    while (cinfo.output_scanline < cinfo.output_height) {
+        JSAMPROW row = bm->rgb.data() + size_t(cinfo.output_scanline) * bm->w * 3;
+        jpeg_read_scanlines(&cinfo, &row, 1);
+    }
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    return bm;
+}
+
+// WebP (lossy/lossless, still frame): composed over white like PNG alpha; `rgba` keeps straight alpha.
+ImageBitmap* decode_webp(const std::vector<uint8_t>& data, bool want_rgba) {
+    int w = 0, h = 0;
+    uint8_t* px = WebPDecodeRGBA(data.data(), data.size(), &w, &h);
+    if (!px) return nullptr;
+    auto* bm = new ImageBitmap();
+    bm->w = w; bm->h = h;
+    bm->rgb.resize(size_t(w) * h * 3);
+    bool alpha = false;
+    for (size_t i = 0; i < size_t(w) * h; ++i) {
+        const int a = px[i * 4 + 3];
+        alpha |= a != 255;
+        for (int c = 0; c < 3; ++c) bm->rgb[i * 3 + c] = uint8_t((px[i * 4 + c] * a + 255 * (255 - a)) / 255);
+    }
+    if (want_rgba && alpha) bm->rgba.assign(px, px + size_t(w) * h * 4);
+    WebPFree(px);
+    return bm;
+}
+
 const ImageBitmap* decode(const std::string& path, bool want_rgba = false) {
     auto bytes = bundle::read_file(path);
     if (!bytes) return nullptr;
     std::vector<uint8_t> data(bytes->begin(), bytes->end());
+
+    if (data.size() > 3 && data[0] == 0xFF && data[1] == 0xD8) return decode_jpeg(data);
+    if (data.size() > 12 && std::memcmp(data.data(), "RIFF", 4) == 0 && std::memcmp(data.data() + 8, "WEBP", 4) == 0)
+        return decode_webp(data, want_rgba);
 
     static const uint8_t kSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
     if (data.size() < 57 || std::memcmp(data.data(), kSig, 8) != 0) return nullptr;

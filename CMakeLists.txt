@@ -15,6 +15,8 @@ pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 pkg_check_modules(SDL2 REQUIRED sdl2)
 pkg_check_modules(CURL REQUIRED libcurl)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+pkg_check_modules(JPEG REQUIRED libjpeg)
+pkg_check_modules(WEBP REQUIRED libwebp)
 
 # ── CEF (doble motor): la web real via Chromium, si la distribucion esta ────
 # presente en third_party/cef.  Sin ella, http(s) usa el motor propio+curl.
@@ -138,7 +140,7 @@ target_include_directories(luxium PRIVATE src)
 target_compile_options(luxium PRIVATE -Wall -Wextra)
 target_compile_definitions(luxium PRIVATE LUXP_ZLIB=1)
 target_link_libraries(luxium PRIVATE lux_script luxium_media ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES}
-                                    ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES} ${FONTCONFIG_LIBRARIES} ZLIB::ZLIB)
+                                    ${HARFBUZZ_LIBRARIES} ${CURL_LIBRARIES} ${FONTCONFIG_LIBRARIES} ${JPEG_LIBRARIES} ${WEBP_LIBRARIES} ZLIB::ZLIB)
 target_include_directories(luxium PRIVATE ${SDL2_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS}
                                     ${HARFBUZZ_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
 

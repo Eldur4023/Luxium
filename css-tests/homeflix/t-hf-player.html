@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Homeflix player</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+
+  <header class="topbar" data-t="e0">
+    <a class="logo" href="/" data-link="" data-t="e1">
+      <img class="logo-img" src="logo.webp" alt="" data-t="e2">
+      HOMEFLIX
+    </a>
+    <div class="topbar-actions" data-t="e3">
+      <span id="topbar-user-actions">
+    
+    <a class="user-chip" href="/perfil" data-t="e4">
+      <img class="user-avatar" src="poster.png" alt="Avatar de Jesús" data-t="e5">
+      <span class="user-name" data-t="e6">Jesús</span>
+    </a>
+  </span>
+    </div>
+  </header>
+
+  <!-- Loading indicator (persistent) -->
+  
+
+  <main class="container" id="app" data-page="-serie-s0-ver-ep2" data-t="e7"><div id="player-shell" class="player-page" data-t="e8">
+    <a class="back-link" href="/serie/s0?temporada=1" data-t="e9">← Breaking Bad</a>
+    <h1 class="player-title" data-t="e10">T1 · E2 — El gato en la bolsa</h1>
+    <div id="watch-slot">
+      <form class="watch-start" id="watch-start-form" data-t="e11">
+        <button class="nav-button" type="submit" data-t="e12">👥 Ver juntos</button>
+      </form></div>
+
+    <div class="video-wrap" id="video-wrap" data-t="e13">
+      <video id="player" class="video" controls="" autoplay="" preload="metadata" tabindex="-1" data-t="e14">
+        Tu navegador no soporta la reproducción de vídeo HTML5.
+      </video><div data-luxium-controls="" style="left: 0px; top: 0px; width: 1132px; height: 150px;"></div>
+      <div class="subs-overlay" id="subs-overlay" aria-live="off" data-t="e15"></div>
+    </div>
+    <p class="track-hint" data-t="e16">Vídeo original, remuxeado al vuelo (sin recodificar).</p>
+    <p id="video-error" class="video-error" hidden="" data-t="e17">No se ha podido reproducir este vídeo.</p>
+
+    
+      <div class="track-controls" data-t="e18">
+        
+          <label class="track-field" data-t="e19">Audio
+            <select id="audio-select" data-t="e20">
+              <option value="">Original (pista 1)</option>
+              <option value="0">Español (ac3)</option><option value="1">eng (aac)</option>
+            </select>
+          </label>
+        
+          <label class="track-field" data-t="e21">Subtítulos
+            <select id="subs-select" data-t="e22">
+              <option value="">Desactivados</option>
+              <option value="0">Español</option><option value="1">eng</option>
+            </select>
+          </label>
+        <p class="track-hint" id="remux-hint" hidden="" data-t="e23">Preparando esa pista de audio la primera vez — puede tardar unos segundos.</p>
+      </div>
+
+    <nav class="player-nav" data-t="e24">
+      <a class="nav-button" id="prev-episode-link" data-episode-id="ep1" href="/serie/s0/ver/ep1" data-t="e25">← T1·E1 Piloto</a>
+      <a class="nav-button" id="next-episode-link" data-episode-id="ep3" href="/serie/s0/ver/ep3" data-t="e26">T1·E3 Y la bolsa en el río con un título larguísimo para forzar el recorte del texto en la fila →</a>
+    </nav>
+  </div></main>
+
+  <dialog class="confirm-modal" id="confirm-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="confirm-modal-message"></p>
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel">Cancelar</button>
+        <button type="submit" class="danger-button" id="confirm-modal-accept" value="ok">Borrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="confirm-modal prompt-modal" id="prompt-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="prompt-modal-message"></p>
+      <input class="prompt-modal-input" id="prompt-modal-input" type="text" autocomplete="off">
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel" formnovalidate="">Cancelar</button>
+        <button type="submit" class="primary-button" id="prompt-modal-accept" value="ok">Aceptar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="app-toasts" id="app-toasts" aria-live="polite"></div>
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+</body></html>

@@ -70,6 +70,9 @@ button { font-family: Arial; font-size: 13.333px; color: black; background-color
 input, textarea, select { font-family: Arial; font-size: 13.333px }
 img { overflow: clip }
 [hidden] { display: none }
+dialog:not([open]) { display: none }
+dialog { position: absolute; inset-inline: 0; width: fit-content; height: fit-content; margin: auto; border: solid; padding: 1em;
+         background: white; color: black }
 )css";
 
 } // namespace luxium::style

@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Homeflix series</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+
+  <header class="topbar" data-t="e0">
+    <a class="logo" href="/" data-link="" data-t="e1">
+      <img class="logo-img" src="logo.webp" alt="" data-t="e2">
+      HOMEFLIX
+    </a>
+    <div class="topbar-actions" data-t="e3">
+      <span id="topbar-user-actions">
+    
+    <a class="user-chip" href="/perfil" data-t="e4">
+      <img class="user-avatar" src="poster.png" alt="Avatar de Jesús" data-t="e5">
+      <span class="user-name" data-t="e6">Jesús</span>
+    </a>
+  </span>
+    </div>
+  </header>
+
+  <!-- Loading indicator (persistent) -->
+  
+
+  <main class="container" id="app" data-page="-serie-s0" data-t="e7">
+    <section class="banner" style="background-image: url('fondo.png')" data-t="e8">
+      <div class="banner-overlay" data-t="e9"><h1 class="banner-title" data-t="e10">Breaking Bad</h1></div>
+    </section>
+  
+<div class="series-content" data-t="e11">
+    <div class="serie-categories" id="categories-box" data-t="e12">
+    
+      <span class="chip chip-static" data-t="e13">
+        <a href="/?categoria=Drama">Drama</a>
+        <button type="button" class="chip-remove-btn" data-cat="Drama" data-tooltip="Quitar categoría" data-t="e14">×</button>
+      </span>
+    
+      <span class="chip chip-static" data-t="e15">
+        <a href="/?categoria=Crimen">Crimen</a>
+        <button type="button" class="chip-remove-btn" data-cat="Crimen" data-tooltip="Quitar categoría" data-t="e16">×</button>
+      </span>
+    
+    <form class="category-add" id="category-add-form" data-t="e17">
+      <input type="text" name="category" placeholder="+ categoría" maxlength="40" data-t="e18">
+    </form>
+  </div>
+<nav class="season-tabs" id="season-tabs" aria-label="Temporadas" data-t="e19">
+      <a draggable="false" class="season-tab active" data-season="1" href="/serie/s0?temporada=1" data-t="e20">Temporada 1</a><a draggable="false" class="season-tab " data-season="2" href="/serie/s0?temporada=2" data-t="e21">Temporada 2</a><a draggable="false" class="season-tab " data-season="3" href="/serie/s0?temporada=3" data-t="e22">Especiales</a>
+    </nav>
+<div class="select-bar" data-t="e23">
+      <button type="button" class="nav-button" id="select-toggle" data-t="e24">☑ Seleccionar episodios</button>
+      <div class="select-controls" id="select-controls" hidden="" data-t="e25">
+        <span class="form-hint" id="select-count" data-t="e26">0 seleccionados</span>
+        <button type="button" class="nav-button" id="select-all" data-t="e27">Marcar todos</button>
+        <button type="button" class="nav-button" id="select-none" data-t="e28">Ninguno</button>
+        <button type="button" class="primary-button" id="select-sanitize" data-t="e29">Sanear nombres</button>
+        <button type="button" class="danger-button" id="select-delete" data-t="e30">Borrar seleccionados</button>
+        <button type="button" class="nav-button" id="select-cancel" data-t="e31">Cancelar</button>
+      </div>
+    </div>
+<ol class="episode-list" id="episode-list" data-t="e32">
+      
+        <li class="episode-row" data-episode-id="ep1" data-t="e33">
+          <span class="drag-handle" data-tooltip="Arrastra para reordenar" data-t="e34">⠿</span>
+          <label class="episode-check" data-t="e35"><input type="checkbox" value="ep1" data-t="e36"></label>
+          <a class="episode" href="/serie/s0/ver/ep1" data-t="e37">
+            <span class="episode-number" data-t="e38">1</span>
+            <span class="episode-title" data-t="e39">Piloto</span>
+            <span class="episode-play" data-t="e40">✓</span>
+          </a>
+          <button type="button" class="episode-delete-btn" data-episode-id="ep1" data-title="Piloto" data-tooltip="Borrar episodio del disco" data-t="e41">🗑</button>
+        </li>
+      
+        <li class="episode-row" data-episode-id="ep2" data-t="e42">
+          <span class="drag-handle" data-tooltip="Arrastra para reordenar" data-t="e43">⠿</span>
+          <label class="episode-check" data-t="e44"><input type="checkbox" value="ep2" data-t="e45"></label>
+          <a class="episode" href="/serie/s0/ver/ep2" data-t="e46">
+            <span class="episode-number" data-t="e47">2</span>
+            <span class="episode-title" data-t="e48">El gato en la bolsa</span>
+            <span class="episode-play" data-t="e49">▶</span>
+          </a>
+          <button type="button" class="episode-delete-btn" data-episode-id="ep2" data-title="El gato en la bolsa" data-tooltip="Borrar episodio del disco" data-t="e50">🗑</button>
+        </li>
+      
+        <li class="episode-row" data-episode-id="ep3" data-t="e51">
+          <span class="drag-handle" data-tooltip="Arrastra para reordenar" data-t="e52">⠿</span>
+          <label class="episode-check" data-t="e53"><input type="checkbox" value="ep3" data-t="e54"></label>
+          <a class="episode" href="/serie/s0/ver/ep3" data-t="e55">
+            <span class="episode-number" data-t="e56">3</span>
+            <span class="episode-title" data-t="e57">Y la bolsa en el río con un título larguísimo para forzar el recorte del texto en la fila</span>
+            <span class="episode-play" data-t="e58">▶</span>
+          </a>
+          <button type="button" class="episode-delete-btn" data-episode-id="ep3" data-title="Y la bolsa en el río con un título larguísimo para forzar el recorte del texto en la fila" data-tooltip="Borrar episodio del disco" data-t="e59">🗑</button>
+        </li>
+      
+        <li class="episode-row" data-episode-id="ep4" data-t="e60">
+          <span class="drag-handle" data-tooltip="Arrastra para reordenar" data-t="e61">⠿</span>
+          <label class="episode-check" data-t="e62"><input type="checkbox" value="ep4" data-t="e63"></label>
+          <a class="episode" href="/serie/s0/ver/ep4" data-t="e64">
+            <span class="episode-number" data-t="e65">4</span>
+            <span class="episode-title" data-t="e66">Cáncer</span>
+            <span class="episode-play" data-t="e67">▶</span>
+          </a>
+          <button type="button" class="episode-delete-btn" data-episode-id="ep4" data-title="Cáncer" data-tooltip="Borrar episodio del disco" data-t="e68">🗑</button>
+        </li>
+      
+    </ol>
+
+    <details class="manage" data-t="e69">
+      <summary>Gestionar serie</summary>
+      <div class="manage-grid" data-t="e70">
+        <form class="manage-form" id="upload-form" novalidate="" data-t="e71">
+          <h3 data-t="e72">Subir episodios</h3>
+          <label class="field" data-t="e73">Temporada
+            <input type="number" name="temporada" min="0" step="1" value="1" data-t="e74">
+          </label>
+          <label class="field" data-t="e75">Vídeos (puedes elegir varios)
+            <span class="file-picker" data-t="e76">
+              <input class="file-picker-input" type="file" name="videos" accept=".mp4,.mkv,.webm,.avi,.mov,.m4v,.ts,.m2ts,.mts,.wmv,.flv,.mpg,.mpeg,.ogv,.ogm,.3gp,.asf,.divx,.vob,.mxf" multiple="" data-t="e77">
+              <span class="file-picker-button" data-t="e78">Elegir vídeos</span>
+              <span class="file-picker-name" data-role="file-name" data-empty="Ningún archivo elegido" data-t="e79">Ningún archivo elegido</span>
+            </span>
+          </label>
+          <button class="primary-button" id="upload-button" type="submit" data-t="e80">Subir</button>
+          <div class="upload-progress" id="upload-progress" hidden="" data-t="e81">
+            <div class="progress-track" data-t="e82"><div class="progress-fill" id="progress-fill" data-t="e83"></div></div>
+            <span class="progress-text" id="progress-text" data-t="e84"></span>
+          </div>
+        </form>
+
+        <form class="manage-form" id="poster-form" data-t="e85">
+          <h3 data-t="e86">Carátula</h3>
+          <img class="manage-preview poster-shape" src="poster.png" alt="Carátula actual" data-t="e87">
+          <label class="field" data-t="e88">Nueva imagen (2:3)
+            <span class="file-picker" data-t="e89">
+              <input class="file-picker-input" type="file" name="imagen" accept="image/png,image/jpeg,image/webp,image/avif" data-t="e90">
+              <span class="file-picker-button" data-t="e91">Elegir imagen</span>
+              <span class="file-picker-name" data-role="file-name" data-empty="Ninguna imagen elegida" data-t="e92">Ninguna imagen elegida</span>
+            </span>
+          </label>
+        </form>
+
+        <form class="manage-form" id="backdrop-form" data-t="e93">
+          <h3 data-t="e94">Fondo</h3>
+          <img class="manage-preview banner-shape" src="fondo.png" alt="Fondo actual" data-t="e95">
+          <label class="field" data-t="e96">Nueva imagen (panorámica)
+            <span class="file-picker" data-t="e97">
+              <input class="file-picker-input" type="file" name="imagen" accept="image/png,image/jpeg,image/webp,image/avif" data-t="e98">
+              <span class="file-picker-button" data-t="e99">Elegir imagen</span>
+              <span class="file-picker-name" data-role="file-name" data-empty="Ninguna imagen elegida" data-t="e100">Ninguna imagen elegida</span>
+            </span>
+          </label>
+        </form>
+
+        <form class="manage-form" id="rename-form" novalidate="" data-t="e101">
+          <h3 data-t="e102">Renombrar</h3>
+          <label class="field" data-t="e103">Nombre de la serie
+            <input type="text" name="title" value="Breaking Bad" maxlength="120" data-t="e104">
+          </label>
+          <p class="form-hint" data-t="e105">Renombra la carpeta en el disco. Categorías e historial se conservan.</p>
+          <button class="primary-button" type="submit" data-t="e106">Renombrar</button>
+        </form>
+
+        <form class="manage-form" id="season-name-form" novalidate="" data-t="e107">
+          <h3 data-t="e108">Nombre de la temporada</h3>
+          <label class="field" data-t="e109">Se muestra en la pestaña
+            <input type="text" name="name" value="Temporada 1" maxlength="80" placeholder="p. ej. Película, Especiales…" data-t="e110">
+          </label>
+          <p class="form-hint" data-t="e111">Solo cambia el nombre que se ve, no la carpeta. Vacío = nombre de la carpeta.</p>
+          <button class="primary-button" type="submit" data-t="e112">Guardar nombre</button>
+        </form>
+
+        <form class="manage-form danger-form" id="delete-serie-form" data-t="e113">
+          <h3 data-t="e114">Borrar serie</h3>
+          <p class="form-hint" data-t="e115">Borra del disco «Breaking Bad» entera. <strong>No se puede deshacer.</strong></p>
+          <button class="danger-button" type="submit" data-t="e116">Borrar del disco</button>
+        </form>
+      </div>
+    </details>
+  </div></main>
+
+  <dialog class="confirm-modal" id="confirm-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="confirm-modal-message"></p>
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel">Cancelar</button>
+        <button type="submit" class="danger-button" id="confirm-modal-accept" value="ok">Borrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="confirm-modal prompt-modal" id="prompt-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="prompt-modal-message"></p>
+      <input class="prompt-modal-input" id="prompt-modal-input" type="text" autocomplete="off">
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel" formnovalidate="">Cancelar</button>
+        <button type="submit" class="primary-button" id="prompt-modal-accept" value="ok">Aceptar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="app-toasts" id="app-toasts" aria-live="polite"></div>
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+</body></html>

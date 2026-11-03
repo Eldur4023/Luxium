@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Homeflix catalog-search</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+
+  <header class="topbar" data-t="e0">
+    <a class="logo" href="/" data-link="" data-t="e1">
+      <img class="logo-img" src="logo.webp" alt="" data-t="e2">
+      HOMEFLIX
+    </a>
+    <div class="topbar-actions" data-t="e3">
+      <span id="topbar-user-actions">
+    
+    <a class="user-chip" href="/perfil" data-t="e4">
+      <img class="user-avatar" src="poster.png" alt="Avatar de Jesús" data-t="e5">
+      <span class="user-name" data-t="e6">Jesús</span>
+    </a>
+  </span>
+    </div>
+  </header>
+
+  <!-- Loading indicator (persistent) -->
+  
+
+  <main class="container" id="app" data-page="-" data-t="e7">
+    <form class="search-bar" id="search-form" data-t="e8">
+      <input type="search" name="q" value="a" placeholder="Buscar series…" data-t="e9">
+      
+      <button class="primary-button" type="submit" data-t="e10">Buscar</button>
+      <a class="nav-button new-series-button" href="/series/nueva" data-t="e11">＋ Nueva serie</a>
+    </form>
+  
+<div class="serie-categories" data-t="e12">
+      <a class="chip chip-static" href="/" data-t="e13">Todas</a>
+      <a class="chip " href="/?categoria=Drama" data-t="e14">Drama (5)</a><a class="chip " href="/?categoria=Animaci%C3%B3n" data-t="e15">Animación (2)</a><a class="chip " href="/?categoria=Ciencia%20ficci%C3%B3n" data-t="e16">Ciencia ficción (2)</a>
+    </div>
+<h2 class="section-title" data-t="e17">Resultados</h2>
+    <div class="poster-grid" data-t="e18">
+      
+        <a href="/serie/s0">
+          <img src="poster.png" alt="">
+          <h3 data-t="e19">Breaking Bad</h3>
+        </a>
+      
+        <a href="/serie/s1">
+          <img src="poster.png" alt="">
+          <h3 data-t="e20">The Wire</h3>
+        </a>
+      
+        <a href="/serie/s2">
+          <img src="poster.png" alt="">
+          <h3 data-t="e21">Arcane</h3>
+        </a>
+      
+        <a href="/serie/s3">
+          <img src="poster.png" alt="">
+          <h3 data-t="e22">Dark</h3>
+        </a>
+      
+        <a href="/serie/s4">
+          <img src="poster.png" alt="">
+          <h3 data-t="e23">Chernobyl</h3>
+        </a>
+      
+        <a href="/serie/s5">
+          <img src="poster.png" alt="">
+          <h3 data-t="e24">Cowboy Bebop</h3>
+        </a>
+      
+        <a href="/serie/s6">
+          <img src="poster.png" alt="">
+          <h3 data-t="e25">Severance con un título muy largo que no cabe</h3>
+        </a>
+      
+        <a href="/serie/s7">
+          <img src="poster.png" alt="">
+          <h3 data-t="e26">Fargo</h3>
+        </a>
+      
+        <a href="/serie/s8">
+          <img src="poster.png" alt="">
+          <h3 data-t="e27">Mr. Robot</h3>
+        </a>
+      
+        <a href="/serie/s9">
+          <img src="poster.png" alt="">
+          <h3 data-t="e28">Sherlock</h3>
+        </a>
+      
+        <a href="/serie/s10">
+          <img src="poster.png" alt="">
+          <h3 data-t="e29">Tokyo Vice</h3>
+        </a>
+      
+    </div></main>
+
+  <dialog class="confirm-modal" id="confirm-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="confirm-modal-message"></p>
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel">Cancelar</button>
+        <button type="submit" class="danger-button" id="confirm-modal-accept" value="ok">Borrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="confirm-modal prompt-modal" id="prompt-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="prompt-modal-message"></p>
+      <input class="prompt-modal-input" id="prompt-modal-input" type="text" autocomplete="off">
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel" formnovalidate="">Cancelar</button>
+        <button type="submit" class="primary-button" id="prompt-modal-accept" value="ok">Aceptar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="app-toasts" id="app-toasts" aria-live="polite"></div>
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+</body></html>

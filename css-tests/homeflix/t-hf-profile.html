@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Homeflix profile</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+
+  <header class="topbar" data-t="e0">
+    <a class="logo" href="/" data-link="" data-t="e1">
+      <img class="logo-img" src="logo.webp" alt="" data-t="e2">
+      HOMEFLIX
+    </a>
+    <div class="topbar-actions" data-t="e3">
+      <span id="topbar-user-actions">
+    
+    <a class="user-chip" href="/perfil" data-t="e4">
+      <img class="user-avatar" src="poster.png" alt="Avatar de Jesús" data-t="e5">
+      <span class="user-name" data-t="e6">Jesús</span>
+    </a>
+  </span>
+    </div>
+  </header>
+
+  <!-- Loading indicator (persistent) -->
+  
+
+  <main class="container" id="app" data-page="-perfil" data-t="e7"><h1 class="page-title" data-t="e8">Jesús</h1>
+
+      <div class="serie-categories" data-t="e9">
+        <form class="manage-form" id="avatar-form" data-t="e10">
+          <label class="field" data-t="e11">Cambiar avatar
+            <span class="file-picker" data-t="e12">
+              <input class="file-picker-input" type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/avif" data-t="e13">
+              <span class="file-picker-button" data-t="e14">Elegir imagen</span>
+              <span class="file-picker-name" data-role="file-name" data-empty="Ninguna imagen elegida" data-t="e15">Ninguna imagen elegida</span>
+            </span>
+          </label>
+        </form>
+        <label class="track-field" data-t="e16">Códec de reproducción
+          <select id="codec-pref" data-t="e17">
+            <option value="h265">H.265 original (si el navegador lo admite)</option>
+            <option value="h264">H.264 (recodificado, máxima compatibilidad)</option>
+          </select>
+        </label>
+        <button class="nav-button" type="button" id="switch-user-btn" data-t="e18">Cambiar de usuario</button>
+      </div>
+    
+<h2 class="section-title" data-t="e19">Estadísticas</h2>
+    <div class="stats-grid" data-t="e20">
+      <div class="stat-tile" data-t="e21"><span class="stat-value" data-t="e22">42</span><span class="stat-label" data-t="e23">episodios vistos</span></div>
+      <div class="stat-tile" data-t="e24"><span class="stat-value" data-t="e25">6</span><span class="stat-label" data-t="e26">series (2 completadas)</span></div>
+      <div class="stat-tile" data-t="e27"><span class="stat-value" data-t="e28">27.5 h</span><span class="stat-label" data-t="e29">tiempo total</span></div>
+      <div class="stat-tile" data-t="e30"><span class="stat-value" data-t="e31">5.0 h</span><span class="stat-label" data-t="e32">este mes</span></div>
+      <div class="stat-tile" data-t="e33"><span class="stat-value" data-t="e34">5</span><span class="stat-label" data-t="e35">días seguidos</span></div>
+      <div class="stat-tile stat-tile-wide" data-t="e36"><span class="stat-value" data-t="e37">Breaking Bad</span><span class="stat-label" data-t="e38">la más vista</span></div>
+    </div>
+<div class="activity-chart" data-t="e39">
+        <div class="activity-col" data-tooltip="2026-10-01: 2.5h · 3 episodios" data-t="e40"><span class="activity-bar" style="height: 60.0%" data-t="e41"></span></div><div class="activity-col" data-tooltip="2026-10-02: 4.2h · 5 episodios" data-t="e42"><span class="activity-bar" style="height: 100.0%" data-t="e43"></span></div><div class="activity-col" data-tooltip="2026-10-03: 1.7h · 2 episodios" data-t="e44"><span class="activity-bar" style="height: 40.0%" data-t="e45"></span></div><div class="activity-col" data-tooltip="2026-10-04: 3.3h · 4 episodios" data-t="e46"><span class="activity-bar" style="height: 80.0%" data-t="e47"></span></div><div class="activity-col" data-tooltip="2026-10-05: 0.8h · 1 episodio" data-t="e48"><span class="activity-bar" style="height: 20.0%" data-t="e49"></span></div><div class="activity-col" data-tooltip="2026-10-06: 2.5h · 3 episodios" data-t="e50"><span class="activity-bar" style="height: 60.0%" data-t="e51"></span></div><div class="activity-col" data-tooltip="2026-10-07: 4.2h · 5 episodios" data-t="e52"><span class="activity-bar" style="height: 100.0%" data-t="e53"></span></div><div class="activity-col" data-tooltip="2026-10-08: 1.7h · 2 episodios" data-t="e54"><span class="activity-bar" style="height: 40.0%" data-t="e55"></span></div><div class="activity-col" data-tooltip="2026-10-09: 3.3h · 4 episodios" data-t="e56"><span class="activity-bar" style="height: 80.0%" data-t="e57"></span></div><div class="activity-col" data-tooltip="2026-10-10: 0.8h · 1 episodio" data-t="e58"><span class="activity-bar" style="height: 20.0%" data-t="e59"></span></div><div class="activity-col" data-tooltip="2026-10-11: 2.5h · 3 episodios" data-t="e60"><span class="activity-bar" style="height: 60.0%" data-t="e61"></span></div><div class="activity-col" data-tooltip="2026-10-12: 4.2h · 5 episodios" data-t="e62"><span class="activity-bar" style="height: 100.0%" data-t="e63"></span></div><div class="activity-col" data-tooltip="2026-10-13: 1.7h · 2 episodios" data-t="e64"><span class="activity-bar" style="height: 40.0%" data-t="e65"></span></div><div class="activity-col" data-tooltip="2026-10-14: 3.3h · 4 episodios" data-t="e66"><span class="activity-bar" style="height: 80.0%" data-t="e67"></span></div>
+      </div>
+<ul class="watch-time-list" data-t="e68">
+        <li><span>Breaking Bad</span><span>11.1 h</span></li><li><span>Dark</span><span>5.6 h</span></li>
+      </ul>
+<h2 class="section-title" data-t="e69">Viendo ahora</h2>
+    <div class="poster-grid" data-t="e70">
+      <a class="continue-card" href="/serie/s0/ver/ep2" data-t="e71"><img src="poster.png" alt=""><span>Breaking Bad — 1/5</span></a>
+    </div>
+<h2 class="section-title" data-t="e72">Vistas</h2>
+    <div class="poster-grid" data-t="e73">
+      <a href="/serie/s2"><img src="poster.png" alt=""><span>Arcane — 9/9</span></a>
+    </div>
+</main>
+
+  <dialog class="confirm-modal" id="confirm-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="confirm-modal-message"></p>
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel">Cancelar</button>
+        <button type="submit" class="danger-button" id="confirm-modal-accept" value="ok">Borrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="confirm-modal prompt-modal" id="prompt-modal" data-modal="">
+    <form method="dialog">
+      <p class="confirm-modal-message" id="prompt-modal-message"></p>
+      <input class="prompt-modal-input" id="prompt-modal-input" type="text" autocomplete="off">
+      <div class="confirm-modal-actions">
+        <button type="submit" class="nav-button" value="cancel" formnovalidate="">Cancelar</button>
+        <button type="submit" class="primary-button" id="prompt-modal-accept" value="ok">Aceptar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="app-toasts" id="app-toasts" aria-live="polite"></div>
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+</body></html>
