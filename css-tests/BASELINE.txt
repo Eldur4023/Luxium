@@ -21,10 +21,15 @@ flex/t-flex-grow-shrink
 flex/t-flex-justify
 flex/t-flex-nav-app
 flex/t-flex-wrap
+forms/t-forms-default
 grid/t-grid-auto-flow
 grid/t-grid-gap-align
 grid/t-grid-placement
 grid/t-grid-template
+homeflix/t-hf-catalog
+homeflix/t-hf-catalog-search
+homeflix/t-hf-new-series
+homeflix/t-hf-picker
 integration/t-int-blog
 integration/t-int-cards
 integration/t-int-dashboard

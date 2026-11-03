@@ -1,0 +1,17 @@
+100 click 50 79
+150 text hello
+200 key Left
+250 key Backspace
+300 text X
+350 key a ctrl
+400 text Z
+450 click 260 79
+500 text abc
+550 click 395 79
+600 click 480 79
+650 click 470 120
+700 click 560 60
+750 text multi
+800 key Return
+850 text line2
+900 key Tab

@@ -1,6 +1,6 @@
 # Renderizado de Luxium: motor propio, oráculo y tests
 
-Estado: el motor propio pasa **113/113** casos de `css-tests/` contra Chromium
+Estado: el motor propio pasa **118/118** casos de `css-tests/` contra Chromium
 (rects ±1px, estilos computados exactos, píxeles, color).  Este documento
 sustituye a `plan-css.md` / `plan-css-tests.md` (que quedan como histórico).
 
@@ -87,14 +87,50 @@ característica por página), `integration/` y `real/` (páginas tipo web real),
 
 ## 3. Lo que aún no hay
 
-Sin implementar (se ve como diferencia visual o se ignora): `transform`,
-`position: sticky`, `::first-line/::first-letter`, contadores CSS, `outline`,
-`text-shadow`, filtros y `mix-blend-mode`, `object-position`, multicolumna,
-`writing-mode`, `@font-face` remotas, SVG, imágenes que no sean PNG (y sin
-alfa), `<input>/<select>/<textarea>` (solo `<button>` básico), scroll interno
-de cajas `overflow:auto`, `min()/max()/clamp()` mezclando `%` con `px`,
-barra de scroll horizontal, `caption-side: bottom`.  Pendiente de método: importar un subconjunto de los reftests de web-platform-tests
-(mismo formato que `ref/`, miles ya escritos).
+Hecho en el frente "formularios y SPA" (workstream B, plan-luxscript-spa.md): controles `<input>` (text, password,
+search, number, range, checkbox, radio, file), `<textarea>`, `<select>` con popup, `<label>`; foco y orden de tabulación;
+caret/selección/portapapeles/IME; `:hover :focus :focus-visible :focus-within :checked :disabled :has() :placeholder-shown
+::placeholder`; `cursor`; `outline`; `accent-color`; `appearance`; `aspect-ratio`; `min()/max()/clamp()` mezclando `%` y px;
+`dvh/svh/lvh`; `overflow: auto/scroll` con rueda, barras y arrastre; `position: sticky` (contra el scroll de página);
+`transform: translate()`; `transition` de opacity/transform/colores; `<details>`; imágenes JPEG y WebP; esquema oscuro
+(`<meta name=color-scheme content=dark>`).
+
+Sin implementar (se ve como diferencia visual o se ignora): `transform` con scale/rotate/skew (se parsea y no hace nada),
+`@keyframes`/`animation` (el spinner de carga no gira), `mask-image`, `backdrop-filter`, `::first-line/::first-letter`,
+contadores CSS, `text-shadow`, filtros y `mix-blend-mode`, `object-position`, multicolumna, `writing-mode`, `@font-face`
+remotas, SVG (los chevrones de `<select appearance:none>` en `background-image` no salen), PNG entrelazado/16 bits, emoji a
+color (`Noto Color Emoji`: se mide con el avance de la fuente de reserva y no se pinta), `cqw` (se aproxima con el viewport),
+posición estática de hijos absolutos de un contenedor flex/grid (siempre 0,0), barra de scroll horizontal arrastrable,
+barras de cajas internas como *overlay* (no reservan hueco, a diferencia de Chromium), `caption-side: bottom`.
+Pendiente de método: importar un subconjunto de los reftests de web-platform-tests.
+
+## 3b. Formularios, foco y eventos (para el runtime de scripts)
+
+Un solo punto de salida: **`Page::dispatch(kind, node, EventData)`** (page.hpp).  Pasa por `Page::event_tap` (observador:
+`luxium --log-events` lo imprime) y luego por `Engine::dispatch` (LuxScript).  Devuelve `true` si un handler llamó
+`event.prevent()`.  Tipos que dispara el shell/formularios: `input` (EventData.key = texto insertado, .value = valor
+nuevo), `change`, `submit`, `focus`, `blur`, `keydown`/`keyup` (vía `Page::key_event`; una sola vez por tecla), `click`,
+`mouseenter`/`mouseleave`/`mousemove` (solo si alguien escucha: `Page::wants_event`), `wheel` (EventData.delta; prevent =
+el script se queda la rueda), `scroll` (EventData.x/.y = nuevo offset, en cajas con overflow), `visibilitychange`.
+
+Estado de los controles: vive en el DOM (atributos `value`/`checked`/`selected`, hijo de texto del `<textarea>`), así que
+`:checked`, `:placeholder-shown` y el layout ven lo mismo que los scripts.  API en `Page`: `form_value/set_form_value`,
+`form_checked/set_form_checked`, `select_index/select_option`, `form_files/set_form_files`, `focus/blur/focused/focus_next`,
+`edit_*` (inserción, borrado, caret, selección; cada una dispara `input`), `activate` (clic: etiqueta → control, toggles).
+
+`ShellHooks` (script/engine.hpp) rellenados por `Shell::wire_form_hooks()`: `rect`, `scroll_get/set/into_view`, `focus`,
+`focused`, `get_value/set_value` (valor vivo del modelo de formularios), `files` (rutas elegidas con zenity; `LUXIUM_ZENITY`
+cambia el binario en tests).  El texto se edita desde SDL_TEXTINPUT/SDL_TEXTEDITING (IME: preedit subrayado en el caret);
+`SDL_StartTextInput` solo se activa en la ventana con foco de teclado, también para las ventanas de apps del host.
+
+Pruebas sin pantalla: `tools/formtest.py` (scripts de entrada sintética `--script`, líneas `ms click|down|up|move|text|key|wheel|edit`)
+y la suite `css-tests/forms/` (tamaños de controles contra Chromium).  `tools/homeflixsnap.py` regenera `css-tests/homeflix/`
+(instantáneas del DOM real de cada vista de Homeflix servida con datos de prueba + goldens de Chromium).
+
+Rendimiento: `LUXIUM_TIMING=1` imprime build/layout/paint y repaint.  Catálogo de 500 tarjetas (`examples/perf/catalog-500.html`):
+relayout ≈ 9.5 ms (estilo 2.9 + layout 3.6 + paint 0.8, una pasada) y repaint ≈ 7 ms; la primera carga hace dos pasadas por la
+barra de scroll.  El layout sigue siendo completo por mutación (no incremental); lo compensan el índice de reglas y la caché de
+estilos por (reglas que casan, estilo del padre, etiqueta).
 
 ## 4. Hacia "compilar todo en un archivo"
 
