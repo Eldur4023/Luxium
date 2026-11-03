@@ -116,7 +116,7 @@ float layout_flex(Env& env, Box& b, const Constraint& c, float content_w, float 
             if (row) v = intrinsic_widths(env, k).max;
             else {
                 Constraint cc; cc.cb_w = content_w; cc.cb_h = -1; cc.bfc = nullptr;
-                const bool stretch = it.align == Align::Stretch && ks.width.is_auto;
+                const bool stretch = it.align == Align::Stretch && ks.width.is_auto && !(it.auto_cs || it.auto_ce);
                 if (stretch) cc.forced_w = std::max(0.f, content_w - it.mar_cs - it.mar_ce);
                 else { cc.shrink = true; cc.avail_w = content_w; }
                 layout_box(env, k, cc);
@@ -250,7 +250,7 @@ float layout_flex(Env& env, Box& b, const Constraint& c, float content_w, float 
                 it.cross = k.h;
             } else {
                 cc.forced_h = it.target + it.bp_m;
-                if (it.cross_auto && it.align == Align::Stretch) cc.forced_w = std::max(0.f, content_w - it.mar_cs - it.mar_ce);
+                if (it.cross_auto && it.align == Align::Stretch && !(it.auto_cs || it.auto_ce)) cc.forced_w = std::max(0.f, content_w - it.mar_cs - it.mar_ce);
                 else if (it.cross_auto) { cc.shrink = true; cc.avail_w = content_w; }
                 layout_box(env, k, cc);
                 it.cross = k.w;

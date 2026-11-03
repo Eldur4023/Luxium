@@ -17,7 +17,7 @@ from cdp import Page
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PUB = sys.argv[1] if len(sys.argv) > 1 else "/home/burnt/Documentos/Github/Homeflix-Local/app/public"
 OUT = os.path.join(ROOT, "css-tests", "homeflix")
-PORT, CDP = 18765, 9345
+PORT, CDP = 18799, 9345
 
 ep = lambda i, n, t: {"id": f"ep{i}", "number": n, "title": t}
 SERIES = [{"id": f"s{i}", "title": t, "categories": c} for i, (t, c) in enumerate([
@@ -100,7 +100,7 @@ def main():
             time.sleep(1.0)
             html = pg.eval(SERIALISE)
             page = ('<!doctype html>\n<html lang="es"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Homeflix %s</title>\n'
-                    '<link rel="stylesheet" href="style.css"></head>\n<body>\n%s\n</body></html>\n') % (name, html)
+                    '<link rel="stylesheet" href="style.css"><style>*,*::before,*::after{transition:none!important;animation:none!important}</style></head>\n<body>\n%s\n</body></html>\n') % (name, html)
             open(os.path.join(OUT, f"t-hf-{name}.html"), "w").write(page)
             print("snapshot", name, len(html))
     finally:

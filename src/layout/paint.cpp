@@ -349,7 +349,7 @@ struct Painter {
         }
         if (native) {
             Item it; it.kind = Item::Kind::Border; it.x = r.x; it.y = r.y; it.w = r.w; it.h = r.h; it.radii = rad;
-            const uint32_t col = s.border_color[0];
+            const uint32_t col = b.ctl ? s.border_color[0] : 0xFF767676;
             for (int i = 0; i < 4; ++i) { it.bw[i] = 1; it.bc[i] = col; it.bs[i] = style::BorderStyle::Solid; }
             dl->push_back(std::move(it));
         } else if (!b.border_collapsed) borders(b, r, rad);
@@ -362,8 +362,9 @@ struct Painter {
         if (!b.node || b.border.t != 2 || b.border.l != 2) return false;
         const bool field = b.ctl && (b.ctl->type == Control::Type::Text || b.ctl->type == Control::Type::Password) &&
                            s.border_style[0] == style::BorderStyle::Inset;
-        const bool button = (b.node->name == "button" || (b.node->name == "input" && !b.ctl)) && s.border_style[0] == style::BorderStyle::Outset;
-        return (field || button) && s.border_color[0] == 0xFF767676;
+        const bool button = (b.node->name == "button" || (b.node->name == "input" && !b.ctl)) && s.border_style[0] == style::BorderStyle::Outset &&
+                            s.bc_current[0];
+        return (field && s.border_color[0] == 0xFF767676) || button;
     }
 
     void table_edges(Box& t) {

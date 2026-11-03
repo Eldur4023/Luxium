@@ -101,6 +101,7 @@ struct Box {
     bool broken_img = false;
     bool media = false;                 // <video>/<audio>: img is the poster, the shell patches in the frames
     bool media_controls = false;
+    bool no_ratio = false;              // replaced without an intrinsic aspect ratio (unloaded <video>)
     std::shared_ptr<Control> ctl;       // form control (kind == Replaced)
     // list marker
     int marker_shape = 0;               // 0 text, 1 disc, 2 circle, 3 square

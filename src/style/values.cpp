@@ -74,6 +74,8 @@ struct CV {              // calc value: number, or length (px + pct)
     bool is_num = true;
     float num = 0;
     float px = 0, pct = 0;
+    unsigned char fn = 0;          // min/max/clamp that mixes % and px (see Len::fn)
+    float px2 = 0, pct2 = 0, px3 = 0, pct3 = 0;
 };
 
 struct CalcParser {
@@ -93,7 +95,7 @@ struct CalcParser {
             if (i >= s.size() || (s[i] != '+' && s[i] != '-')) break;
             const char op = s[i++];
             CV b = term();
-            if (a.is_num != b.is_num) { ok = false; return a; }
+            if (a.is_num != b.is_num || a.fn || b.fn) { ok = false; return a; }
             const float sg = op == '+' ? 1.f : -1.f;
             if (a.is_num) a.num += sg * b.num;
             else { a.px += sg * b.px; a.pct += sg * b.pct; }
@@ -108,6 +110,7 @@ struct CalcParser {
             if (i >= s.size() || (s[i] != '*' && s[i] != '/')) break;
             const char op = s[i++];
             CV b = factor();
+            if (a.fn || b.fn) { ok = false; return a; }
             if (op == '*') {
                 if (a.is_num && b.is_num) a.num *= b.num;
                 else if (a.is_num) { b.px *= a.num; b.pct *= a.num; a = b; }
@@ -152,8 +155,17 @@ struct CalcParser {
                 if (!ok) return r;
                 if (fn == "calc") return args.empty() ? r : args[0];
                 // min/max/clamp: representable only when everything is a pure px/number
-                for (const auto& a : args)
-                    if (a.pct != 0.f) { ok = false; return r; }
+                bool mixed = false;
+                for (const auto& a : args) mixed = mixed || a.pct != 0.f || a.fn;
+                if (mixed) {   // needs the containing block at layout time: keep the terms
+                    for (const auto& a : args) if (a.is_num || a.fn) { ok = false; return r; }
+                    if ((fn == "clamp" && args.size() != 3) || (fn != "clamp" && args.size() != 2)) { ok = false; return r; }
+                    r.is_num = false;
+                    r.fn = fn == "min" ? 1 : fn == "max" ? 2 : 3;
+                    r.px = args[0].px; r.pct = args[0].pct; r.px2 = args[1].px; r.pct2 = args[1].pct;
+                    if (args.size() == 3) { r.px3 = args[2].px; r.pct3 = args[2].pct; }
+                    return r;
+                }
                 auto val = [](const CV& a) { return a.is_num ? a.num : a.px; };
                 const bool num = std::all_of(args.begin(), args.end(), [](const CV& a) { return a.is_num; });
                 float v = val(args[0]);
@@ -186,8 +198,9 @@ struct CalcParser {
         else if (unit == "rem") r.px = n * env.root_em;
         else if (unit == "ex") r.px = n * env.em * 0.5f;
         else if (unit == "ch") r.px = n * env.em * 0.636f;   // DejaVu "0"
-        else if (unit == "vw") r.px = n * env.vw / 100.f;
-        else if (unit == "vh") r.px = n * env.vh / 100.f;
+        // shortcut: cq* units use the viewport, not the container, until container queries exist
+        else if (unit == "vw" || unit == "dvw" || unit == "svw" || unit == "lvw" || unit == "cqw" || unit == "cqi") r.px = n * env.vw / 100.f;
+        else if (unit == "vh" || unit == "dvh" || unit == "svh" || unit == "lvh" || unit == "cqh" || unit == "cqb") r.px = n * env.vh / 100.f;
         else if (unit == "vmin") r.px = n * std::min(env.vw, env.vh) / 100.f;
         else if (unit == "vmax") r.px = n * std::max(env.vw, env.vh) / 100.f;
         else if (unit == "pt") r.px = n * 96.f / 72.f;
@@ -218,6 +231,7 @@ bool parse_length(const std::string& raw, const Env& env, Len& out, bool allow_a
     }
     out = Len::Px(v.px);
     out.pct = v.pct;
+    out.fn = v.fn; out.px2 = v.px2; out.pct2 = v.pct2; out.px3 = v.px3; out.pct3 = v.pct3;
     out.pct_unit = tok.find('%') != std::string::npos;
     return true;
 }

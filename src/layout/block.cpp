@@ -39,7 +39,7 @@ void Bfc::avail(float y, float h, float x0, float x1, float& l, float& r) const 
 
 float resolve_len(const Len& l, float base) {
     if (l.is_auto) return 0;
-    return l.px + l.pct * base / 100.f;
+    return l.resolve(base);
 }
 
 static float snap_border(float w) { return w > 0 ? std::max(1.f, std::floor(w)) : 0.f; }
@@ -197,7 +197,7 @@ static void layout_replaced(Env& env, Box& b, const Constraint& c) {
     resolve_edges(b, c.cb_w);
     const float bp_h = b.border.h() + b.padding.h(), bp_v = b.border.v() + b.padding.v();
     auto adj = [&](float v, float bp) { return s.box_sizing == style::BoxSizing::Border ? std::max(0.f, v - bp) : v; };
-    const float ratio = (b.nat_w > 0 && b.nat_h > 0 && !b.ctl) ? b.nat_w / b.nat_h : 0;
+    const float ratio = (b.nat_w > 0 && b.nat_h > 0 && !b.ctl && !b.no_ratio) ? b.nat_w / b.nat_h : 0;
     const bool wa = s.width.is_auto || (s.width.has_pct() && c.cb_w < 0);
     const bool ha = s.height.is_auto || (s.height.has_pct() && c.cb_h < 0);
     float w = 0, h = 0;

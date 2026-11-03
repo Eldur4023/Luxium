@@ -81,7 +81,13 @@ struct Builder {
 
     // ── text and elements ──────────────────────────────────────────────────
     void build_children(const dom::Node& el, const ComputedStyle& st, Box& into, int* list_counter, int list_step) {
+        const bool closed_details = el.name == "details" && !el.has_attr("open");
+        bool summary_done = false;
         for (const auto& ch : el.children) {
+            if (closed_details) {   // only the first <summary> of a closed <details> renders
+                if (!ch->is_element() || ch->name != "summary" || summary_done) continue;
+                summary_done = true;
+            }
             if (ch->type == dom::NodeType::Text) {
                 if (ch->text.empty()) continue;
                 auto t = make(Box::Kind::Text, ch.get(), &st);
@@ -152,7 +158,7 @@ struct Builder {
         if (audio) { b.nat_w = 300; b.nat_h = 54; }
         else if (in.w > 0 && in.h > 0) { b.nat_w = in.w; b.nat_h = in.h; }
         else if (b.img) { b.nat_w = float(b.img->w); b.nat_h = float(b.img->h); }
-        else { b.nat_w = 300; b.nat_h = 150; }
+        else { b.nat_w = 300; b.nat_h = 150; b.no_ratio = true; }   // nothing loaded: no intrinsic ratio either
     }
 
     static std::string lower_attr(const dom::Node& el, const char* k) {

@@ -5,6 +5,7 @@
 // future "compile the page to one file" format can serialise: no strings
 // survive past computation except url()s and content.
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -19,12 +20,20 @@ struct Len {
     float px = 0, pct = 0;
     bool  is_auto = false;
     bool  pct_unit = false;     // written with %, even if 0% (flex-basis: 0% != 0px)
+    // min()/max()/clamp() mixing % and px: fn 1 = min(t1,t2), 2 = max(t1,t2), 3 = clamp(t1,t2,t3), t1 = (px,pct)
+    unsigned char fn = 0;
+    float px2 = 0, pct2 = 0, px3 = 0, pct3 = 0;
     static Len Auto() { Len l; l.is_auto = true; return l; }
     static Len Px(float v) { Len l; l.px = v; return l; }
     static Len Pct(float v) { Len l; l.pct = v; l.pct_unit = true; return l; }
-    bool has_pct() const { return pct != 0.f || pct_unit; }
-    float resolve(float base) const { return px + pct * base / 100.f; }
-    bool operator==(const Len& o) const { return px == o.px && pct == o.pct && is_auto == o.is_auto; }
+    bool has_pct() const { return pct != 0.f || pct_unit || (fn && (pct2 != 0.f || pct3 != 0.f)); }
+    float resolve(float base) const {
+        const float a = px + pct * base / 100.f;
+        if (!fn) return a;
+        const float b = px2 + pct2 * base / 100.f, c = px3 + pct3 * base / 100.f;
+        return fn == 1 ? std::min(a, b) : fn == 2 ? std::max(a, b) : std::max(a, std::min(b, c));
+    }
+    bool operator==(const Len& o) const { return px == o.px && pct == o.pct && is_auto == o.is_auto && fn == o.fn && px2 == o.px2 && pct2 == o.pct2 && px3 == o.px3 && pct3 == o.pct3; }
 };
 
 constexpr uint32_t kTransparent = 0x00000000;
