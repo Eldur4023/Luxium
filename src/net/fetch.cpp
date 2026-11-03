@@ -78,12 +78,16 @@ std::unique_ptr<Fetch> Fetch::start(const std::string& url, bool luxp_only) {
         curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
         curl_easy_getinfo(c, CURLINFO_CONTENT_TYPE, &ct);
         const std::string content_type = ct ? ct : "";
+        char* eff = nullptr;
+        curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &eff);
+        const std::string final_url = eff ? eff : url;
         curl_easy_cleanup(c);
         curl_slist_free_all(headers);
 
         std::lock_guard<std::mutex> lk(st->m);
         st->body = std::move(sink.body);
         st->content_type = content_type;
+        st->final_url = final_url;
         if (sink.not_luxp) {
             st->not_luxp = true;
         } else if (rc != CURLE_OK) {
@@ -110,5 +114,9 @@ bool Fetch::is_luxp() const {
 const std::string& Fetch::body() const { std::lock_guard<std::mutex> lk(st_->m); return st_->body; }
 const std::string& Fetch::error() const { std::lock_guard<std::mutex> lk(st_->m); return st_->error; }
 const std::string& Fetch::url() const { return url_; }
+std::string Fetch::final_url() const {
+    std::lock_guard<std::mutex> lk(st_->m);
+    return st_->final_url.empty() ? url_ : st_->final_url;
+}
 
 } // namespace luxium::net

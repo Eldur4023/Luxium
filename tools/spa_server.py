@@ -41,6 +41,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if u.path == "/api/port":
+            return self.send(200, {"port": self.server.server_address[1]})
+        if u.path == "/redir":   # 302 to another origin (a Lux Desktop app in remote-server mode does this)
+            self.send_response(302)
+            self.send_header("Location", q.get("to", "/"))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if u.path == "/api/hello":
             return self.send(200, {"hello": "world", "n": [1, 2, 3], "q": q})
         if u.path == "/api/count":

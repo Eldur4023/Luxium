@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>redirect base</title></head>
+<body>
+<script>
+# relative URLs resolve against the page's FINAL origin (after a 302), not the one that was asked for
+Response r = await http.get("/api/port")
+log.info("redir port=" + str(r.json()["port"]))
+</script>
+</body></html>

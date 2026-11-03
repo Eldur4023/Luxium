@@ -181,6 +181,21 @@ try:
     else:
         print("  skip  needs ../Lux/build/lux and build/luxium")
 
+    print("== relative URLs after a 302 to another origin resolve against the final origin")
+    if os.path.exists(win) and os.path.exists("/tmp/.X11-unix/X99"):
+        s2 = subprocess.Popen([sys.executable, os.path.join(HERE, "spa_server.py"), str(PORT + 1)], start_new_session=True)
+        try:
+            time.sleep(1)
+            url = f"http://127.0.0.1:{PORT + 1}/redir?to=http://127.0.0.1:{PORT}/redirect-base.html"
+            p = subprocess.run([win, url, "--wait", "3000", "--shot", os.path.join(PROFILE, "d.ppm")],
+                               cwd=ROOT, capture_output=True, text=True, env=e, timeout=60, start_new_session=True)
+            check("http.get('/api/port') after the 302 reaches the redirect target", p.stdout + p.stderr, f"redir port={PORT}")
+        finally:
+            os.killpg(s2.pid, signal.SIGTERM)
+            s2.wait()
+    else:
+        print("  skip  needs build/luxium and Xvfb :99")
+
     print("== compat: M4 demo pages")
     o = run("examples/counter.html", ["mas", "mas"])
     check("counter.html still works (click(fn) + page.clicked)", o, "contador: 2")

@@ -357,7 +357,9 @@ void Shell::poll_fetch() {
     const bool not_luxp = fetch_->not_luxp();
     const std::string body = fetch_->body();
     const std::string err  = fetch_->error();
-    const std::string url  = fetch_->url();
+    // Relative URLs (http.get("/api/.."), <img>, <video>) resolve against where the page really came from:
+    // a 302 to another origin (Lux Desktop apps do this in remote-server mode) moves the base with it.
+    const std::string url  = fetch_->final_url();
     fetch_.reset();
     if (not_luxp) {   // the web's HTML/JS: Chromium's job
         open_in_cef(url);
