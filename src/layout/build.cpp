@@ -3,9 +3,11 @@
 // (inline runs inside blocks, flex/grid items, table structure).
 
 #include <layout/box.hpp>
+#include <render/svg.hpp>
 #include <media/own_media.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 
 namespace luxium::layout {
@@ -116,7 +118,7 @@ struct Builder {
 
     void load_replaced(Box& b, const dom::Node& el) {
         const std::string src = el.attr_or("src");
-        if (src.empty() || src.starts_with("data:")) {
+        if (src.empty()) {
             b.broken_img = true;
             return;
         }
@@ -267,6 +269,20 @@ struct Builder {
         if (tag == "img") {
             b = make(Box::Kind::Replaced, &el, st);
             load_replaced(*b, el);
+            adopt(into, std::move(b));
+            return;
+        }
+        if (tag == "svg") {   // inline SVG: a replaced box drawn by the vector rasteriser
+            b = make(Box::Kind::Replaced, &el, st);
+            if (auto doc = render::svg::from_dom(el, st->color)) {
+                float w, h;
+                render::svg::intrinsic_size(*doc, w, h);
+                auto bm = std::make_shared<render::ImageBitmap>();
+                bm->w = std::max(1, int(std::lround(w))); bm->h = std::max(1, int(std::lround(h)));
+                bm->svg = doc;   // no pixels of its own: the painter rasterises at the placed size
+                b->img = bm;
+                b->nat_w = w; b->nat_h = h;
+            } else b->broken_img = true;
             adopt(into, std::move(b));
             return;
         }

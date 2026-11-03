@@ -282,15 +282,17 @@ void draw_image(State& s, const Item& it) {
         const float fx = std::clamp(it.sx + u * it.sw - 0.5f, 0.f, float(bm->w) - 1.f);
         c.ix = int(fx); c.ix1 = std::min(c.ix + 1, bm->w - 1); c.tx = int((fx - float(c.ix)) * 256.f);
     }
-    const uint8_t* src = bm->rgb.data();
+    const bool alpha = !bm->rgba.empty();   // vector images carry straight alpha
+    const uint8_t* src = alpha ? bm->rgba.data() : bm->rgb.data();
+    const int bpp = alpha ? 4 : 3;
     for (int y = b.y0; y < b.y1; ++y) {
         const float py = y + 0.5f - s.oy;
         const float v = (py - it.y) / it.h;
         if (v < 0 || v >= 1) continue;
         const float fy = std::clamp(it.sy + v * it.sh - 0.5f, 0.f, float(bm->h) - 1.f);
         const int iy = int(fy), iy1 = std::min(iy + 1, bm->h - 1), ty = int((fy - float(iy)) * 256.f);
-        const uint8_t* r0 = src + size_t(iy) * bm->w * 3;
-        const uint8_t* r1 = src + size_t(iy1) * bm->w * 3;
+        const uint8_t* r0 = src + size_t(iy) * bm->w * bpp;
+        const uint8_t* r1 = src + size_t(iy1) * bm->w * bpp;
         uint32_t* dst = t.px + static_cast<size_t>(y) * t.w;
         for (int x = b.x0; x < b.x1; ++x) {
             const Col& c = cols[size_t(x - b.x0)];
@@ -299,13 +301,28 @@ void draw_image(State& s, const Item& it) {
             if (rounded) cov = cov_from_sdf(sdf_rrect(x + 0.5f - s.ox, py, it.x, it.y, it.w, it.h, it.radii));
             if (rcl) cov *= clip_cov(s, x + 0.5f, y + 0.5f);
             if (cov <= 0) continue;
-            uint32_t rgb = 0;
-            for (int chn = 0; chn < 3; ++chn) {
-                const int p00 = r0[c.ix * 3 + chn], p10 = r0[c.ix1 * 3 + chn], p01 = r1[c.ix * 3 + chn], p11 = r1[c.ix1 * 3 + chn];
+            auto samp = [&](int chn) {
+                const int p00 = r0[c.ix * bpp + chn], p10 = r0[c.ix1 * bpp + chn], p01 = r1[c.ix * bpp + chn], p11 = r1[c.ix1 * bpp + chn];
                 const int top = p00 * 256 + (p10 - p00) * c.tx, bot = p01 * 256 + (p11 - p01) * c.tx;
-                const int v8 = (top * 256 + (bot - top) * ty + (1 << 15)) >> 16;
-                rgb |= uint32_t(v8) << (16 - chn * 8);
+                return (top * 256 + (bot - top) * ty + (1 << 15)) >> 16;
+            };
+            uint32_t rgb = 0;
+            if (alpha) {
+                // interpolate premultiplied so transparent texels do not bleed their colour
+                float a = 0, r = 0, g = 0, bl = 0;
+                const int ww[4] = {(256 - c.tx) * (256 - ty), c.tx * (256 - ty), (256 - c.tx) * ty, c.tx * ty};
+                const uint8_t* q[4] = {r0 + c.ix * 4, r0 + c.ix1 * 4, r1 + c.ix * 4, r1 + c.ix1 * 4};
+                for (int k = 0; k < 4; ++k) {
+                    const float al = float(q[k][3]) * float(ww[k]) / 65536.f;
+                    a += al; r += float(q[k][0]) * al / 255.f; g += float(q[k][1]) * al / 255.f; bl += float(q[k][2]) * al / 255.f;
+                }
+                if (a < 0.5f) continue;
+                const uint32_t a8 = uint32_t(std::clamp(a + 0.5f, 0.f, 255.f));
+                auto un = [&](float v) { return uint32_t(std::clamp(v / (a / 255.f) + 0.5f, 0.f, 255.f)); };
+                blend(dst[x], (a8 << 24) | (un(r * 255.f / 255.f) << 16) | (un(g) << 8) | un(bl), cov);
+                continue;
             }
+            for (int chn = 0; chn < 3; ++chn) rgb |= uint32_t(samp(chn)) << (16 - chn * 8);
             if (cov >= 1.f) dst[x] = 0xFF000000u | rgb;
             else blend(dst[x], 0xFF000000u | rgb, cov);
         }

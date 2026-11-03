@@ -92,6 +92,7 @@ html[data-luxium-scheme=dark] select, html[data-luxium-scheme=dark] button, html
 :focus-visible { outline: auto 1px -webkit-focus-ring-color }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offset: 0 }
 img, video, canvas { overflow: clip }
+svg:not(:root) { overflow: hidden }
 [hidden] { display: none }
 dialog:not([open]) { display: none }
 dialog { position: absolute; inset-inline: 0; width: fit-content; height: fit-content; margin: auto; border: solid; padding: 1em;

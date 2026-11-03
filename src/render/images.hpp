@@ -9,11 +9,18 @@
 
 namespace luxium::render {
 
+namespace svg { struct Doc; }
+
 struct ImageBitmap {
     int w = 0, h = 0;
     std::vector<uint8_t> rgb;   // 3 bytes por pixel (RGB), fila a fila
     std::vector<uint8_t> rgba;  // 4 bytes por pixel, alfa recta: solo en load_image_rgba(), y solo si trae alfa
+    // SVG: the bitmap is the rasterisation at the intrinsic size (rgba always set); `svg` re-rasterises at any size
+    std::shared_ptr<const svg::Doc> svg;
 };
+
+// A vector image drawn at w x h pixels (cached), or null when `bm` is not an SVG.
+std::shared_ptr<const ImageBitmap> image_at(const ImageBitmap& bm, int w, int h);
 
 // A page's image reference -> what load_image() takes: an absolute file path, or an http(s) URL when the
 // page itself came over http ("/api/x" resolves against its origin, "x" against its directory).

@@ -2,6 +2,7 @@
 // real no necesita mas: PNG8/24/32 sin entrelazar cubre el corpus y la web
 // cotidiana; lo exotico (16 bits, entrelazado) falla con elegancia.
 #include "render/images.hpp"
+#include "render/svg.hpp"
 
 #include <page/bundle.hpp>
 
@@ -13,6 +14,7 @@
 #include <csetjmp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -210,6 +212,58 @@ int net_bytes(const std::string& url, std::string& out) {
 
 bool is_http(const std::string& s) { return s.starts_with("http://") || s.starts_with("https://"); }
 
+// data:[<mime>][;base64],<payload> -> bytes
+std::optional<std::string> data_url_bytes(const std::string& url) {
+    const size_t comma = url.find(',');
+    if (!url.starts_with("data:") || comma == std::string::npos) return std::nullopt;
+    const std::string head = url.substr(5, comma - 5), body = url.substr(comma + 1);
+    std::string out;
+    if (head.size() >= 7 && head.compare(head.size() - 7, 7, ";base64") == 0) {
+        auto val = [](unsigned char c) -> int {
+            if (c >= 'A' && c <= 'Z') return c - 'A'; if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+            if (c >= '0' && c <= '9') return c - '0' + 52; if (c == '+' || c == '-') return 62; if (c == '/' || c == '_') return 63;
+            return -1;
+        };
+        int acc = 0, bits = 0;
+        for (unsigned char c : body) {
+            if (c == '%') continue;   // stray percent-escapes of the padding
+            const int v = val(c);
+            if (v < 0) continue;
+            acc = (acc << 6) | v; bits += 6;
+            if (bits >= 8) { bits -= 8; out += char((acc >> bits) & 255); }
+        }
+    } else {
+        for (size_t i = 0; i < body.size(); ++i) {
+            if (body[i] == '%' && i + 2 < body.size() + 0 && std::isxdigit(static_cast<unsigned char>(body[i + 1])) && std::isxdigit(static_cast<unsigned char>(body[i + 2]))) {
+                out += char(std::stoi(body.substr(i + 1, 2), nullptr, 16));
+                i += 2;
+            } else out += body[i];
+        }
+    }
+    return out;
+}
+
+// SVG text? (first non-blank byte is '<' and an <svg tag follows)
+bool looks_like_svg(const std::vector<uint8_t>& d) {
+    size_t i = 0;
+    while (i < d.size() && (d[i] <= ' ' || d[i] >= 0x80)) ++i;
+    if (i >= d.size() || d[i] != '<') return false;
+    const std::string head(reinterpret_cast<const char*>(d.data()) + i, std::min<size_t>(d.size() - i, 2048));
+    return head.find("<svg") != std::string::npos;
+}
+
+ImageBitmap* decode_svg(const std::vector<uint8_t>& data) {
+    auto doc = svg::parse(std::string(data.begin(), data.end()));
+    if (!doc) return nullptr;
+    float w, h;
+    svg::intrinsic_size(*doc, w, h);
+    auto r = svg::raster(doc, std::max(1, int(std::lround(w))), std::max(1, int(std::lround(h))));
+    if (!r) return nullptr;
+    auto* bm = new ImageBitmap(*r);
+    bm->svg = doc;
+    return bm;
+}
+
 // -1 = failed, 0 = pending
 const ImageBitmap* decode(const std::string& path, bool want_rgba = false, bool* pending = nullptr) {
     std::optional<std::string> bytes;
@@ -219,11 +273,14 @@ const ImageBitmap* decode(const std::string& path, bool want_rgba = false, bool*
         if (st == 0) { if (pending) *pending = true; return nullptr; }
         if (st < 0) return nullptr;
         bytes = std::move(got);
+    } else if (path.starts_with("data:")) {
+        bytes = data_url_bytes(path);
     } else {
         bytes = bundle::read_file(path);
     }
     if (!bytes) return nullptr;
     std::vector<uint8_t> data(bytes->begin(), bytes->end());
+    if (looks_like_svg(data)) return decode_svg(data);
 
     if (data.size() > 3 && data[0] == 0xFF && data[1] == 0xD8) return decode_jpeg(data);
     if (data.size() > 12 && std::memcmp(data.data(), "RIFF", 4) == 0 && std::memcmp(data.data() + 8, "WEBP", 4) == 0)
@@ -324,8 +381,12 @@ const ImageBitmap* load_image(const std::string& path) {
 
 uint64_t image_generation() { return g_generation.load(); }
 
+std::shared_ptr<const ImageBitmap> image_at(const ImageBitmap& bm, int w, int h) {
+    return bm.svg ? svg::raster(bm.svg, w, h) : nullptr;
+}
+
 std::string resolve_image(const std::string& base_dir, const std::string& src) {
-    if (is_http(src)) return src;
+    if (is_http(src) || src.starts_with("data:")) return src;
     if (is_http(base_dir)) {
         if (src.starts_with("//")) return base_dir.substr(0, base_dir.find(':') + 1) + src;
         if (src.starts_with('/')) {

@@ -114,6 +114,7 @@ add_executable(luxium
     src/script/page_compile.cpp
     src/render/text.cpp
     src/render/images.cpp
+    src/render/svg.cpp
     src/layout/build.cpp
     src/layout/block.cpp
     src/layout/inline.cpp

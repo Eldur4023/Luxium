@@ -345,6 +345,11 @@ struct Painter {
                 else if (ha) th = img ? tw * nh / nw : area.h;
             } else { tw = img ? nw : area.w; th = img ? nh : area.h; }
             if (tw <= 0.5f || th <= 0.5f) continue;
+            if (img && img->svg) {   // vector image: draw it at the tile's size
+                auto r = render::image_at(*img, std::max(1, int(std::lround(tw))), std::max(1, int(std::lround(th))));
+                if (!r) continue;
+                img = r; nw = float(img->w); nh = float(img->h);
+            }
             using RP = style::BgRepeat;
             // round: rescale to fit a whole number of tiles
             if (L.repeat_x == RP::Round) tw = area.w / std::max(1.f, std::round(area.w / tw));
@@ -510,10 +515,17 @@ struct Painter {
         // intersect the placed image with the content box
         const float ix0 = std::max(px, cx), iy0 = std::max(py, cy), ix1 = std::min(px + dw, cx + cw), iy1 = std::min(py + dh, cy + ch);
         if (ix1 <= ix0 || iy1 <= iy0) return;
-        Item it; it.kind = Item::Kind::Image; it.img = b.img;
+        std::shared_ptr<const render::ImageBitmap> pic = b.img;
+        float nat_w = b.nat_w, nat_h = b.nat_h;
+        if (pic && pic->svg) {   // vector image: draw it at the size it is placed
+            auto r = render::image_at(*pic, std::max(1, int(std::lround(dw))), std::max(1, int(std::lround(dh))));
+            if (!r) return;
+            pic = r; nat_w = float(r->w); nat_h = float(r->h);
+        }
+        Item it; it.kind = Item::Kind::Image; it.img = pic;
         it.x = sn(ix0); it.y = sn(iy0); it.w = sn(ix1) - sn(ix0); it.h = sn(iy1) - sn(iy0);
-        it.sx = (ix0 - px) / dw * b.nat_w; it.sy = (iy0 - py) / dh * b.nat_h;
-        it.sw = (ix1 - ix0) / dw * b.nat_w; it.sh = (iy1 - iy0) / dh * b.nat_h;
+        it.sx = (ix0 - px) / dw * nat_w; it.sy = (iy0 - py) / dh * nat_h;
+        it.sw = (ix1 - ix0) / dw * nat_w; it.sh = (iy1 - iy0) / dh * nat_h;
         it.radii = radii_of(s, b.w, b.h);
         if (b.media) {
             // Poster or frame: the source rect is a fraction of the picture, whatever its size.
