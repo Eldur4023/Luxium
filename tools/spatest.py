@@ -130,6 +130,7 @@ try:
     o = run(f"{BASE}/upload.html", ["wait:500"])
     check("File from input, Form + multipart", o, "files: 1 name=sample.bin size=25",
           "manual: 2 parts; title=Manual; image file=sample.bin size=25")
+    check("Form.progress after an upload", o, "progress total>0: true sent==total: true")
     check("form_data(form) collects controls and files", o, "from form: 2 parts; From form; avatar/sample.bin")
 
     print("== media (examples/spa/media.html, scripted player)")

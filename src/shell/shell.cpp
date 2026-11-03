@@ -54,6 +54,9 @@ void Shell::wire_page_hooks() {
         if (t) SDL_free(t);
         return s;
     };
+    h.node_at = [this](float x, float y) {
+        return const_cast<dom::Node*>(render::hit_test(layout_, x, y));
+    };
     h.page_scroll_y  = [this] { return scroll_; };
     h.page_scroll_to = [this](float y) { scroll_ = std::max(0.f, std::min(y, std::max(0.f, content_h_ - page_h()))); };
     h.fullscreen = [this](dom::Node* n) { fullscreen_el_ = n; set_fullscreen(n != nullptr); page_.dispatch_window("fullscreenchange"); };
@@ -275,6 +278,7 @@ static std::string error_page(const std::string& target, const std::string& why)
 
 void Shell::navigate_to(const std::string& href, bool push_history) {
     Resolved r = resolve(href);
+    if (r.kind != Target::Anchor) page_.dispatch_window("pagehide");   // last chance to report progress
 
     if (r.kind == Target::Anchor) {
         // scroll to the element with that id
@@ -911,6 +915,7 @@ bool Shell::handle_event(const SDL_Event& e) {
     need_paint_ = true;
             switch (e.type) {
             case SDL_QUIT:
+                page_.dispatch_window("pagehide");
                 quit = true;
                 break;
             case SDL_WINDOWEVENT:

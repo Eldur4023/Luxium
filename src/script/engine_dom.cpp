@@ -396,6 +396,11 @@ void Engine::register_dom() {
         auto& h = page_.hooks();
         return element_value(h.focused ? h.focused() : nullptr);
     });
+    reg("document_element_from_point", [this](Args& a, std::string& e) {
+        if (!a[0].is_num() || !a[1].is_num()) { e = "document.element_from_point(x, y) expects numbers"; return Value::null(); }
+        auto& h = page_.hooks();
+        return element_value(h.node_at ? h.node_at(float(a[0].as_float()), float(a[1].as_float())) : nullptr);
+    });
     reg("document_hidden", [this](Args&, std::string&) {
         auto& h = page_.hooks();
         return Value::boolean(h.page_visible ? !h.page_visible() : false);

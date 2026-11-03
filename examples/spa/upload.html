@@ -16,6 +16,8 @@ log.info("manual: " + str(len(d["parts"])) + " parts; " + d["parts"][0]["name"] 
 Form g = form_data(document.get("uf"))
 Response r2 = await http.post("/api/upload", g)
 Json d2 = r2.json()
+Json pr = g.progress()
+log.info("progress total>0: " + str(pr["total"] > 0) + " sent==total: " + str(pr["sent"] == pr["total"]))
 log.info("from form: " + str(len(d2["parts"])) + " parts; " + d2["parts"][0]["head"] + "; " + d2["parts"][1]["name"] + "/" + d2["parts"][1]["filename"])
 </script>
 </body></html>

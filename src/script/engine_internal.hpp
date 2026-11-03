@@ -106,6 +106,9 @@ struct SockShared {
     std::atomic<int> stop_code{1000};
 };
 struct FormData {
+    // bytes of the upload in flight; shared with the curl worker (Form.progress())
+    std::shared_ptr<std::atomic<long long>> sent = std::make_shared<std::atomic<long long>>(0);
+    std::shared_ptr<std::atomic<long long>> total = std::make_shared<std::atomic<long long>>(0);
     std::vector<std::pair<std::string, std::string>> fields;
     struct FileRef { std::string name, path, filename; };
     std::vector<FileRef> files;

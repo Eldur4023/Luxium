@@ -78,6 +78,8 @@ struct ShellHooks {
     std::function<void()> reload;
     std::function<void()> history_back_outside;
     std::function<bool()> page_visible;
+    // The element under a page-coordinate point (document.element_from_point).
+    std::function<dom::Node*(float x, float y)> node_at;
 };
 
 // ── <video>/<audio> ─────────────────────────────────────────────────────────

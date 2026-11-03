@@ -128,8 +128,9 @@ sandbox: not a policy, a smaller API surface.
 | `log` / console | `log.info/warn/error` → devtools console | M2 |
 | `document` (read) | `document.title`, node counts, `document.get(id)`, tag queries → read-only handles | M2 |
 | `document` (write) | `element.set_text`, create/remove nodes, attribute edits | M4 |
-| `events` | `element.on("click", fn)` handlers, `page.after(ms, fn)` timers | M4 |
-| `net` (fetch) | http GET → string, **capability-gated per origin** | M5+ |
+| `events` | `element.listen(kind, fn)` / `document.listen`, capture+bubble, `event.*`, `page.after/every` timers | done |
+| `net` | `http.*` (curl workers, same-origin), `ws.connect`, resumed as VM coroutines on the main loop | done |
+| `storage`, `history`, `clipboard`, `template`, media element API | per-origin JSON file, no-reload navigation, SDL clipboard, Lux's template engine, `media::own` | done (docs/LUXSCRIPT.md §3.1) |
 | fs, process, db | ❌ never exposed | — |
 
 Object handles (elements) are opaque native classes: the script holds a

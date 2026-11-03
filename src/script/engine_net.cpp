@@ -60,6 +60,13 @@ void curl_once() {
     (void)init;
 }
 
+int xfer_cb(void* ud, curl_off_t, curl_off_t, curl_off_t ultotal, curl_off_t ulnow) {
+    auto* f = static_cast<FormData*>(ud);
+    f->total->store(ultotal);
+    f->sent->store(ulnow);
+    return 0;
+}
+
 void http_worker(HttpReq req, std::shared_ptr<Mailbox> mail) {
     HttpDone done;
     done.gen = req.gen;
@@ -89,6 +96,9 @@ void http_worker(HttpReq req, std::shared_ptr<Mailbox> mail) {
                 curl_mime_filename(part, f.filename.c_str());
             }
             curl_easy_setopt(c, CURLOPT_MIMEPOST, mime);
+            curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xfer_cb);
+            curl_easy_setopt(c, CURLOPT_XFERINFODATA, &req.form);
+            curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
         } else if (req.method != "GET" && req.method != "DELETE") {
             curl_easy_setopt(c, CURLOPT_POSTFIELDS, req.body.data());
             curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(req.body.size()));
@@ -449,6 +459,8 @@ bool Engine::net_begin(Coro& c, const std::string& name, Args& a, Value& out, st
         else if (lux_script::host_object_of(b, type, h) && type == "Form" && net_->forms.count(h)) {
             req.has_form = true;
             req.form = net_->forms[h];
+            req.form.sent->store(0);
+            req.form.total->store(0);
         } else if (b.is_list() || b.is_dict()) {
             req.body = b.to_json_text();
             req.headers.push_back("Content-Type: application/json");

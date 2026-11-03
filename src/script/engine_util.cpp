@@ -211,6 +211,14 @@ void Engine::register_util() {
         it->second.files.push_back({a[0].to_string(), fi.path, fi.name});
         return Value::null();
     });
+    reg_method("Form", "progress", [this](long long h, Args&, std::string& e) -> Value {
+        auto it = net_->forms.find(h);
+        if (it == net_->forms.end()) { e = "this Form no longer exists"; return Value::null(); }
+        Value::Dict d;
+        d.append("sent", Value::integer(it->second.sent->load()));
+        d.append("total", Value::integer(it->second.total->load()));
+        return Value::dict(std::move(d));
+    });
     auto file = [this](long long h, std::string& e) -> FileInfo* {
         auto it = net_->files.find(h);
         if (it == net_->files.end()) { e = "this File no longer exists"; return nullptr; }
