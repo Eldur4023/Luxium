@@ -141,6 +141,17 @@ try:
     check("volume / muted", o, "vol 0.5 muted=true")
     check("timeupdate fires", o, "timeupdates>0: true")
 
+    print("== media, real file (examples/spa/media-real.html, window binary on Xvfb :99, dummy audio)")
+    win = os.path.join(ROOT, "build", "luxium")
+    if os.path.exists(win) and os.path.exists("/tmp/.X11-unix/X99"):
+        e = dict(os.environ, DISPLAY=":99", SDL_AUDIODRIVER="dummy", LUXIUM_PROFILE_DIR=PROFILE)
+        p = subprocess.run([win, "examples/spa/media-real.html", "--wait", "8000", "--shot", os.path.join(PROFILE, "m.ppm")],
+                           cwd=ROOT, capture_output=True, text=True, env=e, timeout=60, start_new_session=True)
+        check("video.duration/play/pause/seek/current_time/paused on h264_aac.mp4", p.stdout + p.stderr,
+              "real dur>0: true", "real paused0=true", "real paused1=false t>0.3: true", "real paused2=true", "real seek ok: true")
+    else:
+        print("  skip  needs build/luxium and Xvfb :99")
+
     print("== compat: M4 demo pages")
     o = run("examples/counter.html", ["mas", "mas"])
     check("counter.html still works (click(fn) + page.clicked)", o, "contador: 2")

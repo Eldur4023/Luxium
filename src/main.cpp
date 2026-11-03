@@ -204,6 +204,10 @@ int main(int argc, char** argv) {
     if (boxes) shell.set_boxes_out(boxes);
     if (cefprobe) shell.set_probe_out(cefprobe);
     if (cefshot) return shell.cef_shot(path, cefshot);
-    if (shot) return shell.screenshot(shot);   // SDL dummy driver, one frame
+    if (shot) {   // SDL dummy driver, one frame; then the page's console, so tests can read log.info output
+        int rc = shell.screenshot(shot);
+        for (const auto& l : page.console_lines()) std::printf("[console] %s\n", l.text.c_str());
+        return rc;
+    }
     return shell.run();
 }
