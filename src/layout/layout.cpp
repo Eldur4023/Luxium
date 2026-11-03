@@ -63,6 +63,7 @@ LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
     for (auto& h : po.hits) out.hits.push_back({h.node, h.x, h.y, h.w, h.h, h.button});
     for (auto& h : po.areas) out.areas.push_back({h.node, h.x, h.y, h.w, h.h, false});
     for (auto& b : po.boxes) out.boxes.push_back({b.name, b.x, b.y, b.w, b.h});
+    out.media = std::move(po.media);
     for (auto& w : po.words) out.words.push_back({w.text, w.x, w.y, w.w, w.h});
     return out;
 }

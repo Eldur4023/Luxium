@@ -64,6 +64,9 @@ public:
     // Rects (data-t) del layout propio / de la sonda de Chromium, a JSON.
     void set_boxes_out(const std::string& path) { boxes_path_ = path; }
     void set_probe_out(const std::string& path) { probe_path_ = path; }
+    // --shot only: window-coordinate clicks (control bars) and a wait while media plays.
+    void add_shot_click(int x, int y, unsigned at_ms) { shot_clicks_.push_back({x, y, at_ms}); }
+    void set_shot_wait(unsigned ms) { shot_wait_ms_ = ms; }
     // El oraculo: Chromium (CEF off-screen) pinta la pagina en nuestro
     // framebuffer; para generar los goldens de css-tests.
     int cef_shot(const std::string& target, const std::string& ppm_path);
@@ -80,6 +83,7 @@ public:
 private:
     void poll_fetch();                  // worker thread -> page, once per frame
     void after_load();
+    void tick_media();                  // pump the own engine's <video>/<audio> players
     void toggle_view_source();
     bool view_source_on() const { return viewing_source_; }
 
@@ -165,6 +169,9 @@ private:
     std::string viewing_source_origin_;
     bool    engine_cef_ = false;   // la pagina actual la renderiza Chromium
     std::string boxes_path_, probe_path_;
+    struct ShotClick { int x, y; unsigned at_ms; };
+    std::vector<ShotClick> shot_clicks_;
+    unsigned shot_wait_ms_ = 0;
     unsigned long cef_display_ = 0, cef_parent_ = 0;
     void    maybe_cef_handoff();
     bool    cef_available() const;
