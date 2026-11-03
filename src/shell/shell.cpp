@@ -45,6 +45,7 @@ Shell::~Shell() {
     if (cursor_hand_) SDL_FreeCursor(cursor_hand_);
     if (texture_)  SDL_DestroyTexture(texture_);
     if (renderer_) SDL_DestroyRenderer(renderer_);
+    if (window_ && !owns_window_ && !renderer_) SDL_DestroyWindowSurface(window_);   // the host may give the window to a renderer next
     if (window_ && owns_window_) SDL_DestroyWindow(window_);
     if (owns_window_) SDL_Quit();
 }
@@ -65,8 +66,9 @@ void Shell::ensure_surface() {
     need_paint_ = true;
     fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFAFAF7u);
     if (texture_) SDL_DestroyTexture(texture_);
-    texture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
-                                 SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_);
+    texture_ = renderer_ ? SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
+                                             SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_)
+                         : nullptr;
     relayout();
 }
 
@@ -83,8 +85,9 @@ int Shell::url_h() const { return fullscreen_ ? 0 : app_ ? top_inset_ : kUrlH; }
 void Shell::attach(SDL_Window* window) {
     window_ = window;
     owns_window_ = false;
-    renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);   // a GL context per app window costs tens of MB
-    if (!renderer_) renderer_ = SDL_CreateRenderer(window_, -1, 0);
+    // No SDL_Renderer: it drags in libGL + Mesa (~40 MB of private pages per process) even in software mode.
+    // frame() copies the framebuffer into the window surface instead (X11 shared memory).
+    SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
     cursor_hand_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
     font_ = render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu");
     ensure_surface();
@@ -1163,11 +1166,23 @@ void Shell::frame() {
         repaint();
         if (overlay_ && !fb_.empty()) overlay_(fb_.data(), win_w_, win_h_);
 
-        if (texture_ && !fb_.empty()) {
-            SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
-            SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+        if (!renderer_) {   // app window: blit into the window surface
+            SDL_Surface* sf = fb_.empty() ? nullptr : SDL_GetWindowSurface(window_);
+            if (sf && sf->w == win_w_ && sf->h == win_h_ && sf->format->BytesPerPixel == 4) {
+                SDL_LockSurface(sf);
+                for (int y = 0; y < win_h_; ++y)
+                    std::memcpy(static_cast<uint8_t*>(sf->pixels) + static_cast<size_t>(y) * sf->pitch,
+                                fb_.data() + static_cast<size_t>(y) * win_w_, static_cast<size_t>(win_w_) * 4);
+                SDL_UnlockSurface(sf);
+                SDL_UpdateWindowSurface(window_);
+            }
+        } else {
+            if (texture_ && !fb_.empty()) {
+                SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
+                SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
+            }
+            SDL_RenderPresent(renderer_);
         }
-        SDL_RenderPresent(renderer_);
 
         // Debug hook: dump the real windowed loop's framebuffer (what the
         // user's screen gets) -- LUXIUM_DUMP_FRAME=/path/out.ppm.  Dumps

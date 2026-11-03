@@ -59,8 +59,14 @@ int early(int argc, char** argv) {
 void flush_all() { if (g_api) g_api->flush_all(); }
 void shutdown() { if (g_api) g_api->shutdown(); }
 
+// Only these start Chromium; every other call (focus changes, getters, close...) is a no-op while it is not loaded.
+static bool starts_chromium(const char* n) {
+    return !std::strcmp(n, "init") || !std::strcmp(n, "attach") || !std::strcmp(n, "open_window") ||
+           !std::strcmp(n, "set_profile_root");
+}
+
 #define X(id, ret, name, params, args, dflt) \
-    ret name params { const Api* api_ = api(); return api_ ? api_->id args : dflt; }
+    ret name params { const Api* api_ = starts_chromium(#name) ? api() : g_api; return api_ ? api_->id args : dflt; }
 LUXIUM_CEF_API(X)
 #undef X
 
