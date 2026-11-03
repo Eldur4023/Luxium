@@ -70,6 +70,7 @@ Opciones por test, en un comentario de la página:
 - `click=`: ids que se pulsan (LuxScript) antes del shot; el golden sale de
   `name.expected.html`, la página estática equivalente al estado final.
 - `threshold=`: % de píxeles permitido; úsalo solo con motivo escrito.
+- `skipstyle=`: propiedades que no se comparan como estilo computado (las que anima `@keyframes`: `--styles` no tiene reloj de animación; se comprueban por píxeles y rects).
 
 **Reftests** (`css-tests/ref/`, `tools/cssref.py`): `X.html` y `X-ref.html` dicen lo
 mismo de dos maneras (margin:auto vs margen explícito, grid vs flex, `calc()` vs literal,

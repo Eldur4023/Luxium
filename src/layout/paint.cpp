@@ -129,8 +129,37 @@ struct Painter {
     float canvas_w, canvas_h;
     bool prop_html = false, prop_body = false;   // background propagated to the canvas
     int  sticky_cur = -1;                        // index of the sticky group being painted
-    float tshift_x = 0, tshift_y = 0;            // accumulated translate() of the boxes being painted
-    std::unordered_map<const Box*, std::pair<float, float>> shift_of;
+    struct Affine { float m[6] = {1, 0, 0, 1, 0, 0}; };   // x' = m0 x + m2 y + m4, y' = m1 x + m3 y + m5
+    static Affine then(const Affine& first, const Affine& second) {   // apply `first`, then `second`
+        const float* a = first.m; const float* b = second.m;
+        Affine r;
+        r.m[0] = b[0] * a[0] + b[2] * a[1]; r.m[1] = b[1] * a[0] + b[3] * a[1];
+        r.m[2] = b[0] * a[2] + b[2] * a[3]; r.m[3] = b[1] * a[2] + b[3] * a[3];
+        r.m[4] = b[0] * a[4] + b[2] * a[5] + b[4]; r.m[5] = b[1] * a[4] + b[3] * a[5] + b[5];
+        return r;
+    }
+    Affine tcur;                                 // accumulated transform of the boxes being painted
+    std::unordered_map<const Box*, Affine> tf_of;   // own transform of every transformed box
+    // Maps a hit rectangle through `a` (axis-aligned bounding box of the image when it rotates or skews).
+    static void map_hit(HitRect& h, const Affine& a) {
+        const float* m = a.m;
+        if (m[0] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 1) { h.x += m[4]; h.y += m[5]; h.tx += m[4]; h.ty += m[5]; return; }
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        for (int i = 0; i < 4; ++i) {
+            const float px = h.x + ((i & 1) ? h.w : 0), py = h.y + ((i & 2) ? h.h : 0);
+            const float qx = m[0] * px + m[2] * py + m[4], qy = m[1] * px + m[3] * py + m[5];
+            x0 = std::min(x0, qx); x1 = std::max(x1, qx); y0 = std::min(y0, qy); y1 = std::max(y1, qy);
+        }
+        h.tx += (x0 - h.x); h.ty += (y0 - h.y);
+        h.x = x0; h.y = y0; h.w = x1 - x0; h.h = y1 - y0;
+    }
+    void xform_hit(HitRect& h) const { map_hit(h, tcur); }
+    // The full transform of a box: its own, then each ancestor's.
+    Affine chain_of(const Box* b) const {
+        Affine a;
+        for (const Box* q = b; q; q = q->parent) { auto f = tf_of.find(q); if (f != tf_of.end()) a = then(a, f->second); }
+        return a;
+    }
     std::unordered_map<const Box*, int> sticky_roots;
     // sticky works against the page scroll only: inside a scroll container it behaves as static
     static bool sticky_ok(const Box& b) {
@@ -155,7 +184,7 @@ struct Painter {
         if (s.position == Position::Fixed) return true;
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
-        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0) return true;
+        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear()) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
     }
@@ -178,20 +207,41 @@ struct Painter {
         dl->push_back(std::move(it));
         return dl->size() - 1;
     }
-    void layer_pop(size_t at) {
-        // bounds of everything emitted since the push
-        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    // Bounds (document coords) of the items emitted since `at`; nested transforms count by their transformed bounds.
+    bool bounds_since(size_t at, float& x0, float& y0, float& x1, float& y1) const {
+        x0 = y0 = 1e9f; x1 = y1 = -1e9f;
+        auto add = [&](float ix, float iy, float iw, float ih) { x0 = std::min(x0, ix); y0 = std::min(y0, iy); x1 = std::max(x1, ix + iw); y1 = std::max(y1, iy + ih); };
         for (size_t i = at + 1; i < dl->size(); ++i) {
             const Item& it = (*dl)[i];
             float ix = it.x, iy = it.y, iw = it.w, ih = it.h;
-            if (it.kind == Item::Kind::ClipPush || it.kind == Item::Kind::ClipPop ||
-                it.kind == Item::Kind::LayerPush || it.kind == Item::Kind::LayerPop) continue;
-            if (it.kind == Item::Kind::Text) { iw = it.run ? it.run->width : 0; iy = it.baseline - it.px; ih = it.px * 1.4f; }
-            if (it.kind == Item::Kind::Shadow) { const float p = it.blur * 1.5f + 2.f; ix -= p; iy -= p; iw += 2 * p; ih += 2 * p; }
-            x0 = std::min(x0, ix); y0 = std::min(y0, iy); x1 = std::max(x1, ix + iw); y1 = std::max(y1, iy + ih);
+            switch (it.kind) {
+            case Item::Kind::ClipPush: case Item::Kind::ClipPop: case Item::Kind::LayerPush: case Item::Kind::LayerPop:
+            case Item::Kind::ShiftPush: case Item::Kind::ShiftPop: case Item::Kind::TransformPop: continue;
+            case Item::Kind::TransformPush: {
+                for (int c = 0; c < 4; ++c) {
+                    const float px = ix + ((c & 1) ? iw : 0), py = iy + ((c & 2) ? ih : 0);
+                    add(it.m[0] * px + it.m[2] * py + it.m[4], it.m[1] * px + it.m[3] * py + it.m[5], 0, 0);
+                }
+                int depth = 1;   // skip the nested content: its bounds are the push's
+                while (++i < dl->size() && depth) {
+                    if ((*dl)[i].kind == Item::Kind::TransformPush) ++depth;
+                    else if ((*dl)[i].kind == Item::Kind::TransformPop) --depth;
+                }
+                --i;
+                continue;
+            }
+            case Item::Kind::Text: iw = it.run ? it.run->width : 0; iy = it.baseline - it.px; ih = it.px * 1.4f; break;
+            case Item::Kind::Shadow: { const float p = it.blur * 1.5f + 2.f; ix -= p; iy -= p; iw += 2 * p; ih += 2 * p; break; }
+            default: break;
+            }
+            add(ix, iy, iw, ih);
         }
+        return x1 >= x0;
+    }
+    void layer_pop(size_t at) {
+        float x0, y0, x1, y1;
         Item& push = (*dl)[at];
-        if (x1 < x0) { push.x = push.y = push.w = push.h = 0; }
+        if (!bounds_since(at, x0, y0, x1, y1)) { push.x = push.y = push.w = push.h = 0; }
         else { push.x = x0 - 1; push.y = y0 - 1; push.w = x1 - x0 + 2; push.h = y1 - y0 + 2; }
         Item pop; pop.kind = Item::Kind::LayerPop;
         dl->push_back(std::move(pop));
@@ -720,7 +770,7 @@ struct Painter {
                     if (ib.node && (ib.node->name == "a" || ib.node->name == "label" || ib.node->has_attr("id")) && r.w > 0) {
                         HitRect h{ib.node, r.x, r.y, r.w, r.h, false};
                         clip_of(blk, h);
-                        h.sticky = sticky_cur; h.x += tshift_x; h.y += tshift_y;
+                        h.sticky = sticky_cur; xform_hit(h);
                         if (clips(blk) && blk.kind == Box::Kind::Block) {   // the block itself clips its lines too
                             h.clip_x0 = std::max(h.clip_x0, sn(blk.ax + blk.border.l)); h.clip_y0 = std::max(h.clip_y0, sn(blk.ay + blk.border.t));
                             h.clip_x1 = std::min(h.clip_x1, sn(blk.ax + blk.w - blk.border.r)); h.clip_y1 = std::min(h.clip_y1, sn(blk.ay + blk.h - blk.border.b));
@@ -842,13 +892,13 @@ struct Painter {
                 h.th = line_height_px(env, cs); h.px = cs.font_size; h.face = face_of(env, cs).id;
                 h.password = b.ctl->type == Control::Type::Password;
                 clip_of(b, h);
-                h.sticky = sticky_cur; h.x += tshift_x; h.y += tshift_y; h.tx += tshift_x; h.ty += tshift_y;
+                h.sticky = sticky_cur; xform_hit(h);
                 out.hits.push_back(h);
             } else if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media) {
                 HitRect h{b.node, sn(b.ax), sn(b.ay), b.w, b.h, tg == "button"};
                 h.cursor = b.st->cursor;
                 clip_of(b, h);
-                h.sticky = sticky_cur; h.x += tshift_x; h.y += tshift_y;
+                h.sticky = sticky_cur; xform_hit(h);
                 out.hits.push_back(h);
             }
         }
@@ -890,16 +940,46 @@ struct Painter {
                 return;
             }
         }
-        // transform: translate(): the whole subtree is drawn shifted (and its hit boxes follow)
-        const float tdx = std::round(s.translate_x.resolve(sc.w)), tdy = std::round(s.translate_y.resolve(sc.h));
-        const bool shifted = tdx != 0 || tdy != 0;
-        if (shifted) {
-            Item it; it.kind = Item::Kind::ShiftPush; it.x = tdx; it.y = tdy;
-            dl->push_back(std::move(it));
-            tshift_x += tdx; tshift_y += tdy;
-            shift_of[&sc] = {tdx, tdy};
+        // transform: a pure translation shifts the subtree (and its hit boxes) by whole pixels; anything else
+        // draws it into a layer that the rasterizer resamples through the matrix
+        Affine own;
+        bool moved = false, general = false;
+        if (s.tf_linear()) {
+            const float ox = sc.ax + s.origin_x.resolve(sc.w), oy = sc.ay + s.origin_y.resolve(sc.h);
+            const float tx = s.translate_x.resolve(sc.w), ty = s.translate_y.resolve(sc.h);
+            own.m[0] = s.tf[0]; own.m[1] = s.tf[1]; own.m[2] = s.tf[2]; own.m[3] = s.tf[3];
+            own.m[4] = ox + tx - own.m[0] * ox - own.m[2] * oy; own.m[5] = oy + ty - own.m[1] * ox - own.m[3] * oy;
+            moved = general = true;
+        } else {
+            own.m[4] = std::round(s.translate_x.resolve(sc.w)); own.m[5] = std::round(s.translate_y.resolve(sc.h));
+            moved = own.m[4] != 0 || own.m[5] != 0;
         }
-        struct Unshift { Painter* p; bool on; float x, y; ~Unshift() { if (!on) return; Item it; it.kind = Item::Kind::ShiftPop; p->dl->push_back(std::move(it)); p->tshift_x -= x; p->tshift_y -= y; } } unshift{this, shifted, tdx, tdy};
+        size_t tf_at = 0;
+        const Affine saved_cur = tcur;
+        if (moved) {
+            Item it;
+            if (general) { it.kind = Item::Kind::TransformPush; std::copy(own.m, own.m + 6, it.m); }
+            else { it.kind = Item::Kind::ShiftPush; it.x = own.m[4]; it.y = own.m[5]; }
+            dl->push_back(std::move(it));
+            tf_at = dl->size() - 1;
+            tcur = then(own, tcur);
+            tf_of[&sc] = own;
+        }
+        struct Unshift {
+            Painter* p; bool on, general; size_t at; Affine saved;
+            ~Unshift() {
+                if (!on) return;
+                if (general) {   // source bounds of the layer = everything drawn inside
+                    float x0, y0, x1, y1;
+                    Item& push = (*p->dl)[at];
+                    if (!p->bounds_since(at, x0, y0, x1, y1)) { push.x = push.y = push.w = push.h = 0; }
+                    else { push.x = x0 - 1; push.y = y0 - 1; push.w = x1 - x0 + 2; push.h = y1 - y0 + 2; }
+                }
+                Item it; it.kind = general ? Item::Kind::TransformPop : Item::Kind::ShiftPop;
+                p->dl->push_back(std::move(it));
+                p->tcur = saved;
+            }
+        } unshift{this, moved, general, tf_at, saved_cur};
         size_t layer = 0;
         const bool lay = s.opacity < 1.f;
         if (lay) layer = layer_push(s.opacity);
@@ -980,7 +1060,7 @@ void paint_tree(Env& env, Tree& tree, float canvas_w, float canvas_h, PaintOutpu
             {
                 HitRect ar{k->node, k->ax, k->ay, k->w, k->h, false};
                 ar.cursor = k->st->cursor;
-                for (const Box* q = k; q; q = q->parent) { auto f = p.shift_of.find(q); if (f != p.shift_of.end()) { ar.x += f->second.first; ar.y += f->second.second; } }
+                Painter::map_hit(ar, p.chain_of(k));
                 p.clip_of(*k, ar);
                 for (const Box* q = k; q; q = q->parent) { auto f = p.sticky_roots.find(q); if (f != p.sticky_roots.end()) { ar.sticky = f->second; break; } }
                 if (scrolls(k)) {
@@ -993,7 +1073,11 @@ void paint_tree(Env& env, Tree& tree, float canvas_w, float canvas_h, PaintOutpu
     // data-t boxes for the css-tests probe
     for (Box* k : tree.order)
         if (k->node && !k->anonymous && k->node->has_attr("data-t") && (k->kind == Box::Kind::Block || k->kind == Box::Kind::Replaced))
-            out.boxes.push_back({k->node->attr_or("data-t"), k->ax, k->ay, k->w, k->h});
+            {   // getBoundingClientRect: the bounding box after the element's and its ancestors' transforms
+                HitRect r{k->node, k->ax, k->ay, k->w, k->h, false};
+                Painter::map_hit(r, p.chain_of(k));
+                out.boxes.push_back({k->node->attr_or("data-t"), r.x, r.y, r.w, r.h});
+            }
 }
 
 } // namespace luxium::layout

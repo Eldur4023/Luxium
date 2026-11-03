@@ -1115,63 +1115,216 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         return true;
     }
     if (name == "transform") {
-        s.translate_x = Len::Px(0); s.translate_y = Len::Px(0); s.transform_other = false;
-        if (v == "none") return true;
-        size_t i = 0;
-        while (i < v.size()) {
-            while (i < v.size() && v[i] == ' ') ++i;
-            if (i >= v.size()) break;
-            const size_t open = v.find('(', i), close = v.find(')', open);
-            if (open == std::string::npos || close == std::string::npos) return false;
-            const std::string fn = v.substr(i, open - i), arg = v.substr(open + 1, close - open - 1);
-            std::vector<std::string> a;
-            { size_t st = 0; for (;;) { size_t c = arg.find(',', st); a.push_back(trim_ws(arg.substr(st, c == std::string::npos ? c : c - st))); if (c == std::string::npos) break; st = c + 1; } }
-            Len x = Len::Px(0), y = Len::Px(0);
-            if (fn == "translate" || fn == "translate3d") {
-                if (!parse_length(a[0], env, x, false)) return false;
-                if (a.size() > 1 && !parse_length(a[1], env, y, false)) return false;
-            } else if (fn == "translatex") { if (!parse_length(a[0], env, x, false)) return false; }
-            else if (fn == "translatey") { if (!parse_length(a[0], env, y, false)) return false; }
-            else if (fn == "scale" || fn == "scalex" || fn == "scaley" || fn == "rotate" || fn == "skew" || fn == "skewx" || fn == "skewy" ||
-                     fn == "matrix" || fn == "scale3d" || fn == "rotatez" || fn == "translatez" || fn == "perspective") s.transform_other = true;
-            else return false;
-            s.translate_x.px += x.px; s.translate_x.pct += x.pct; s.translate_y.px += y.px; s.translate_y.pct += y.pct;
-            if (x.pct != 0) s.translate_x.pct_unit = true;
-            if (y.pct != 0) s.translate_y.pct_unit = true;
-            i = close + 1;
+        std::vector<TfFn> fns;
+        if (v != "none") {
+            size_t i = 0;
+            while (i < v.size()) {
+                while (i < v.size() && v[i] == ' ') ++i;
+                if (i >= v.size()) break;
+                const size_t open = v.find('(', i), close = v.find(')', open);
+                if (open == std::string::npos || close == std::string::npos) return false;
+                const std::string fn = lower_ascii(trim_ws(v.substr(i, open - i)));
+                const std::vector<std::string> a = split_commas(v.substr(open + 1, close - open - 1));
+                auto num = [&](size_t k, float& out) { return k < a.size() && parse_number(trim_ws(a[k]), out); };
+                auto ang = [&](size_t k, float& out) { return k < a.size() && parse_angle(trim_ws(a[k]), out); };
+                TfFn f;
+                if (a.empty()) return false;
+                if (fn == "translate" || fn == "translate3d") {
+                    if (!parse_length(trim_ws(a[0]), env, f.x, false)) return false;
+                    if (a.size() > 1 && !parse_length(trim_ws(a[1]), env, f.y, false)) return false;
+                } else if (fn == "translatex") { if (!parse_length(trim_ws(a[0]), env, f.x, false)) return false; }
+                else if (fn == "translatey") { if (!parse_length(trim_ws(a[0]), env, f.y, false)) return false; }
+                else if (fn == "scale" || fn == "scale3d") {
+                    f.kind = 'S';
+                    if (!num(0, f.a)) return false;
+                    f.b = f.a;
+                    if (a.size() > 1 && !num(1, f.b)) return false;
+                } else if (fn == "scalex") { f.kind = 'S'; f.b = 1; if (!num(0, f.a)) return false; }
+                else if (fn == "scaley") { f.kind = 'S'; f.a = 1; if (!num(0, f.b)) return false; }
+                else if (fn == "rotate" || fn == "rotatez") { f.kind = 'R'; if (!ang(0, f.a)) return false; }
+                else if (fn == "skew") { f.kind = 'K'; if (!ang(0, f.a)) return false; if (a.size() > 1 && !ang(1, f.b)) return false; }
+                else if (fn == "skewx") { f.kind = 'K'; if (!ang(0, f.a)) return false; }
+                else if (fn == "skewy") { f.kind = 'K'; if (!ang(0, f.b)) return false; }
+                else if (fn == "matrix") {
+                    if (a.size() != 6) return false;
+                    float m[6];
+                    for (int k = 0; k < 6; ++k) if (!num(size_t(k), m[k])) return false;
+                    f.kind = 'M'; f.a = m[0]; f.b = m[1]; f.c = m[2]; f.d = m[3]; f.e = m[4]; f.f = m[5];
+                } else if (fn == "translatez" || fn == "scalez" || fn == "perspective" || fn == "rotatex" || fn == "rotatey" || fn == "rotate3d") {
+                    i = close + 1; continue;   // 3D: ignored
+                } else return false;
+                fns.push_back(f);
+                i = close + 1;
+            }
         }
+        s.tfn = std::move(fns);
+        s.rebuild_transform();
         return true;
     }
-    if (name == "transition" || name == "transition-property" || name == "transition-duration" || name == "transition-delay" ||
-        name == "transition-timing-function") {
-        if (name != "transition") return true;   // longhands: only the shorthand is modelled
-        s.transitions.clear();
-        if (v == "none") return true;
-        // split on top-level commas
-        std::vector<std::string> items; { int d = 0; std::string cur; for (char c : v) { if (c == '(') ++d; if (c == ')') --d; if (c == ',' && d == 0) { items.push_back(cur); cur.clear(); } else cur += c; } items.push_back(cur); }
-        for (const auto& it : items) {
-            TransitionSpec sp;
-            int times = 0;
-            for (const auto& tk : tokens(trim_ws(it))) {
-                float ms = 0;
-                if (tk.size() > 1 && tk.back() == 's' && (std::isdigit(static_cast<unsigned char>(tk[0])) || tk[0] == '.' || tk[0] == '-')) {
-                    try { ms = tk.ends_with("ms") ? std::stof(tk) : std::stof(tk) * 1000.f; } catch (...) { return false; }
-                    (times++ == 0 ? sp.duration : sp.delay) = ms;
-                } else if (tk == "all") sp.props |= TransitionSpec::All;
-                else if (tk == "opacity") sp.props |= TransitionSpec::Opacity;
-                else if (tk == "transform") sp.props |= TransitionSpec::Transform;
-                else if (tk == "background" || tk == "background-color") sp.props |= TransitionSpec::Background;
-                else if (tk == "color") sp.props |= TransitionSpec::Color;
-                else if (tk == "border-color" || tk == "border") sp.props |= TransitionSpec::Border;
-                else if (tk == "linear") { sp.bez[0] = 0; sp.bez[1] = 0; sp.bez[2] = 1; sp.bez[3] = 1; }
-                else if (tk == "ease-in") { sp.bez[0] = .42f; sp.bez[1] = 0; sp.bez[2] = 1; sp.bez[3] = 1; }
-                else if (tk == "ease-out") { sp.bez[0] = 0; sp.bez[1] = 0; sp.bez[2] = .58f; sp.bez[3] = 1; }
-                else if (tk == "ease-in-out") { sp.bez[0] = .42f; sp.bez[1] = 0; sp.bez[2] = .58f; sp.bez[3] = 1; }
-                else if (tk == "ease") {}
-                else if (tk.starts_with("cubic-bezier(")) std::sscanf(tk.c_str(), "cubic-bezier(%f,%f,%f,%f)", &sp.bez[0], &sp.bez[1], &sp.bez[2], &sp.bez[3]);
-                // other properties (width, box-shadow...) are accepted and simply not animated
+    if (name == "transform-origin") {
+        Len x, y;
+        Tokens tk = t;
+        if (tk.size() == 3) tk.pop_back();   // z offset
+        if (!parse_position_pair(tk, env, x, y)) return false;
+        s.origin_x = x; s.origin_y = y;
+        return true;
+    }
+    if (name.starts_with("transition")) {
+        auto time_ms = [](const std::string& tk, float& ms) {
+            if (tk.size() < 2 || !(std::isdigit(static_cast<unsigned char>(tk[0])) || tk[0] == '.' || tk[0] == '-' || tk[0] == '+')) return false;
+            const bool is_ms = tk.ends_with("ms");
+            if (!is_ms && !tk.ends_with("s")) return false;
+            try { ms = std::stof(tk) * (is_ms ? 1.f : 1000.f); } catch (...) { return false; }
+            return true;
+        };
+        auto prop_bits = [](const std::string& tk) -> unsigned {
+            if (tk == "all") return TransitionSpec::All;
+            if (tk == "opacity") return TransitionSpec::Opacity;
+            if (tk == "transform") return TransitionSpec::Transform;
+            if (tk == "background" || tk == "background-color") return TransitionSpec::Background;
+            if (tk == "color") return TransitionSpec::Color;
+            if (tk == "border-color" || tk == "border") return TransitionSpec::Border;
+            if (tk == "width" || tk == "height" || tk == "left" || tk == "right" || tk == "top" || tk == "bottom" || tk == "inset" ||
+                tk.starts_with("margin") || tk.starts_with("padding") || tk == "min-width" || tk == "max-width" || tk == "min-height" || tk == "max-height")
+                return TransitionSpec::Length;
+            return 0;   // other properties (box-shadow...) are accepted and simply not animated
+        };
+        auto timing = [](const std::string& tk, float* bez) {
+            if (tk == "linear") { bez[0] = 0; bez[1] = 0; bez[2] = 1; bez[3] = 1; }
+            else if (tk == "ease-in") { bez[0] = .42f; bez[1] = 0; bez[2] = 1; bez[3] = 1; }
+            else if (tk == "ease-out") { bez[0] = 0; bez[1] = 0; bez[2] = .58f; bez[3] = 1; }
+            else if (tk == "ease-in-out") { bez[0] = .42f; bez[1] = 0; bez[2] = .58f; bez[3] = 1; }
+            else if (tk == "ease") { bez[0] = .25f; bez[1] = .1f; bez[2] = .25f; bez[3] = 1; }
+            else if (tk.starts_with("cubic-bezier(")) { if (std::sscanf(tk.c_str(), "cubic-bezier(%f,%f,%f,%f)", &bez[0], &bez[1], &bez[2], &bez[3]) != 4) return false; }
+            else return false;
+            return true;
+        };
+        const auto items = split_commas(v);
+        auto at = [&](std::vector<TransitionSpec>& vec, size_t i) -> TransitionSpec& { if (vec.size() <= i) vec.resize(i + 1); return vec[i]; };
+        if (name == "transition") {
+            s.transitions.clear();
+            if (v == "none") return true;
+            for (const auto& it : items) {
+                TransitionSpec sp;
+                int times = 0;
+                for (const auto& tk : tokens(trim_ws(it))) {
+                    float ms = 0;
+                    if (time_ms(tk, ms)) (times++ == 0 ? sp.duration : sp.delay) = ms;
+                    else if (timing(tk, sp.bez)) {}
+                    else sp.props |= prop_bits(tk);
+                }
+                s.transitions.push_back(sp);
             }
-            s.transitions.push_back(sp);
+            return true;
+        }
+        // longhands: list i of each longhand feeds entry i, repeating when a list is shorter than the property list
+        if (name == "transition-property") {
+            s.transitions.resize(items.size());
+            for (size_t i = 0; i < items.size(); ++i) { s.transitions[i].props = v == "none" ? 0 : prop_bits(trim_ws(items[i])); }
+            return true;
+        }
+        if (name == "transition-duration" || name == "transition-delay" || name == "transition-timing-function") {
+            if (s.transitions.empty()) s.transitions.resize(1);
+            const size_t n = std::max(items.size(), s.transitions.size());
+            if (s.transitions.size() < n) { const size_t m = s.transitions.size(); for (size_t i = m; i < n; ++i) s.transitions.push_back(s.transitions[i % m]); }
+            for (size_t i = 0; i < n; ++i) {
+                TransitionSpec& sp = at(s.transitions, i);
+                const std::string tk = trim_ws(items[i % items.size()]);
+                float ms = 0;
+                if (name == "transition-timing-function") { if (!timing(tk, sp.bez)) return false; }
+                else { if (!time_ms(tk, ms)) return false; (name == "transition-duration" ? sp.duration : sp.delay) = ms; }
+            }
+            return true;
+        }
+        return false;
+    }
+    if (name.starts_with("animation")) {
+        auto time_ms = [](const std::string& tk, float& ms) {
+            if (tk.size() < 2 || !(std::isdigit(static_cast<unsigned char>(tk[0])) || tk[0] == '.' || tk[0] == '-' || tk[0] == '+')) return false;
+            const bool is_ms = tk.ends_with("ms");
+            if (!is_ms && !tk.ends_with("s")) return false;
+            try { ms = std::stof(tk) * (is_ms ? 1.f : 1000.f); } catch (...) { return false; }
+            return true;
+        };
+        auto timing = [](const std::string& tk, AnimationSpec& sp) {
+            if (!(tk == "linear" || tk.starts_with("ease") || tk.starts_with("cubic-bezier(") || tk.starts_with("step"))) return false;
+            sp.steps = 0;
+            auto set = [&](float a, float b, float c, float d) { sp.bez[0] = a; sp.bez[1] = b; sp.bez[2] = c; sp.bez[3] = d; };
+            if (tk == "linear") set(0, 0, 1, 1);
+            else if (tk == "ease-in") set(.42f, 0, 1, 1);
+            else if (tk == "ease-out") set(0, 0, .58f, 1);
+            else if (tk == "ease-in-out") set(.42f, 0, .58f, 1);
+            else if (tk == "ease") set(.25f, .1f, .25f, 1);
+            else if (tk == "step-start") { sp.steps = 1; sp.steps_start = true; }
+            else if (tk == "step-end") { sp.steps = 1; sp.steps_start = false; }
+            else if (tk.starts_with("cubic-bezier(")) { if (std::sscanf(tk.c_str(), "cubic-bezier(%f,%f,%f,%f)", &sp.bez[0], &sp.bez[1], &sp.bez[2], &sp.bez[3]) != 4) return false; }
+            else if (tk.starts_with("steps(")) {
+                int n = 0;
+                if (std::sscanf(tk.c_str(), "steps(%d", &n) != 1 || n < 1) return false;
+                sp.steps = n; sp.steps_start = tk.find("start") != std::string::npos || tk.find("jump-start") != std::string::npos;
+            } else return false;
+            return true;
+        };
+        auto direction = [](const std::string& tk, int& d) {
+            if (tk == "normal") d = 0; else if (tk == "reverse") d = 1; else if (tk == "alternate") d = 2; else if (tk == "alternate-reverse") d = 3; else return false;
+            return true;
+        };
+        auto fill = [](const std::string& tk, int& f) {
+            if (tk == "none") f = 0; else if (tk == "forwards") f = 1; else if (tk == "backwards") f = 2; else if (tk == "both") f = 3; else return false;
+            return true;
+        };
+        auto iters = [](const std::string& tk, float& n) {
+            if (tk == "infinite") { n = INFINITY; return true; }
+            return parse_number(tk, n) && n >= 0;
+        };
+        auto state = [](const std::string& tk, bool& paused) {
+            if (tk == "paused") paused = true; else if (tk == "running") paused = false; else return false;
+            return true;
+        };
+        const auto items = split_commas(v);
+        if (name == "animation") {
+            s.animations.clear();
+            if (v == "none") return true;
+            for (const auto& it : items) {
+                AnimationSpec sp;
+                int times = 0;
+                bool named = false;
+                for (const auto& tk : tokens(trim_ws(it))) {
+                    float x = 0;
+                    if (time_ms(tk, x)) (times++ == 0 ? sp.duration : sp.delay) = x;
+                    else if (timing(tk, sp)) {}
+                    else if (direction(tk, sp.direction) || fill(tk, sp.fill) || state(tk, sp.paused)) {}
+                    else if (iters(tk, sp.iterations)) {}
+                    else if (!named && tk != "none") { sp.name = tk; named = true; }
+                }
+                if (named) s.animations.push_back(sp);
+            }
+            return true;
+        }
+        if (name == "animation-name") {
+            std::vector<AnimationSpec> old = std::move(s.animations);
+            s.animations.clear();
+            for (size_t i = 0; i < items.size(); ++i) {
+                AnimationSpec sp = old.empty() ? AnimationSpec{} : old[i % old.size()];
+                sp.name = trim_ws(items[i]);
+                if (sp.name != "none") s.animations.push_back(sp);
+            }
+            return true;
+        }
+        if (s.animations.empty()) s.animations.resize(items.size());   // longhand before animation-name: nameless slots, named later
+        for (size_t i = 0; i < s.animations.size(); ++i) {
+            AnimationSpec& sp = s.animations[i];
+            const std::string tk = trim_ws(items[i % items.size()]);
+            float x = 0;
+            if (name == "animation-duration") { if (!time_ms(tk, sp.duration)) return false; }
+            else if (name == "animation-delay") { if (!time_ms(tk, sp.delay)) return false; }
+            else if (name == "animation-timing-function") { if (!timing(tk, sp)) return false; }
+            else if (name == "animation-iteration-count") { if (!iters(tk, sp.iterations)) return false; }
+            else if (name == "animation-direction") { if (!direction(tk, sp.direction)) return false; }
+            else if (name == "animation-fill-mode") { if (!fill(tk, sp.fill)) return false; }
+            else if (name == "animation-play-state") { if (!state(tk, sp.paused)) return false; }
+            else return false;
+            (void)x;
         }
         return true;
     }
@@ -1304,10 +1457,37 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     if (n == "border-spacing") { d.border_spacing_h = src.border_spacing_h; d.border_spacing_v = src.border_spacing_v; return true; }
     CP("cursor", cursor) CP("pointer-events", pointer_events)
     CP("transition", transitions) CP("accent-color", accent) CP("aspect-ratio", aspect_ratio) CP("outline-offset", outline_offset)
-    if (n == "transform") { d.translate_x = src.translate_x; d.translate_y = src.translate_y; d.transform_other = src.transform_other; return true; }
+    if (n == "transform") { d.translate_x = src.translate_x; d.translate_y = src.translate_y; std::copy(src.tf, src.tf + 4, d.tf); d.tfn = src.tfn; return true; }
+    if (n == "transform-origin") { d.origin_x = src.origin_x; d.origin_y = src.origin_y; return true; }
+    CP("animation", animations)
     if (n == "outline") { d.outline_style = src.outline_style; d.outline_auto = src.outline_auto; d.outline_w = src.outline_w; d.outline_color = src.outline_color; d.outline_current = src.outline_current; return true; }
 #undef CP
     return false;
+}
+
+void ComputedStyle::rebuild_transform() {
+    const float rad = 3.14159265358979f / 180.f;
+    float L[4] = {1, 0, 0, 1};
+    Len tx = Len::Px(0), ty = Len::Px(0);
+    for (const TfFn& f : tfn) {
+        float N[4] = {1, 0, 0, 1};
+        Len x = Len::Px(0), y = Len::Px(0);
+        switch (f.kind) {
+        case 'T': x = f.x; y = f.y; break;
+        case 'S': N[0] = f.a; N[3] = f.b; break;
+        case 'R': N[0] = N[3] = std::cos(f.a * rad); N[1] = std::sin(f.a * rad); N[2] = -N[1]; break;
+        case 'K': N[2] = std::tan(f.a * rad); N[1] = std::tan(f.b * rad); break;
+        case 'M': N[0] = f.a; N[1] = f.b; N[2] = f.c; N[3] = f.d; x = Len::Px(f.e); y = Len::Px(f.f); break;
+        }
+        // total = total * this: the new translation goes through the linear part so far
+        tx.px += L[0] * x.px + L[2] * y.px; tx.pct += L[0] * x.pct + L[2] * y.pct;
+        ty.px += L[1] * x.px + L[3] * y.px; ty.pct += L[1] * x.pct + L[3] * y.pct;
+        const float R[4] = {L[0] * N[0] + L[2] * N[1], L[1] * N[0] + L[3] * N[1], L[0] * N[2] + L[2] * N[3], L[1] * N[2] + L[3] * N[3]};
+        std::copy(R, R + 4, L);
+    }
+    tx.pct_unit = tx.pct != 0; ty.pct_unit = ty.pct != 0;
+    translate_x = tx; translate_y = ty;
+    std::copy(L, L + 4, tf);
 }
 
 } // namespace luxium::style

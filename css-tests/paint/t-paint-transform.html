@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: threshold=3 -->
+<style>
+body { font-family: 'DejaVu Sans'; margin: 0; background: #ffffff; color: #ffffff; font-size: 14px; }
+.b { position: absolute; width: 80px; height: 50px; background: #2f6fed; }
+.t { position: absolute; width: 30px; height: 30px; background: #d42020; }
+</style>
+<div class="b" data-t="rot"     style="left: 30px;  top: 30px;  transform: rotate(20deg)">rotate</div>
+<div class="b" data-t="scale"   style="left: 190px; top: 30px;  transform: scale(1.5, 0.8); background: #1f9d55">scale</div>
+<div class="b" data-t="skew"    style="left: 350px; top: 30px;  transform: skew(20deg, 10deg); background: #8b3fd9">skew</div>
+<div class="b" data-t="matrix"  style="left: 510px; top: 30px;  transform: matrix(1, 0.3, -0.3, 1, 10, 5); background: #d98a00">matrix</div>
+<div class="b" data-t="origin"  style="left: 30px;  top: 150px; transform-origin: 0 0; transform: rotate(30deg); background: #1f9d55">origin</div>
+<div class="b" data-t="origin2" style="left: 190px; top: 150px; transform-origin: 100% 100%; transform: rotate(-30deg) scale(0.8); background: #8b3fd9">origin2</div>
+<div class="b" data-t="trot"    style="left: 350px; top: 150px; transform: translate(40px, 10px) rotate(45deg); background: #d98a00">trot</div>
+<div class="b" data-t="pct"     style="left: 510px; top: 150px; transform: translate(50%, 20%) scale(0.5);">pct</div>
+<div class="b" data-t="outer" style="left: 30px; top: 280px; width: 160px; height: 90px; transform: rotate(10deg); background: #555555">
+  <div class="t" data-t="inner" style="left: 20px; top: 20px; transform: rotate(35deg) scale(1.3)"></div>
+</div>
+<div class="b" data-t="shift" style="left: 260px; top: 300px; transform: translate(30px, -10px); background: #1f9d55">shift</div>
+<div class="b" data-t="flip" style="left: 400px; top: 300px; transform: scaleX(-1); background: #2f6fed"><span style="margin-left: 10px">flip</span></div>

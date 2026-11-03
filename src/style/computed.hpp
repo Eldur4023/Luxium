@@ -116,10 +116,30 @@ struct GridLine {            // grid-column-start & co
 
 // One entry of `transition`: which property (bit set), how long, delay, easing.
 struct TransitionSpec {
-    enum Prop : unsigned { Opacity = 1, Transform = 2, Background = 4, Color = 8, Border = 16, All = 31 };
+    enum Prop : unsigned { Opacity = 1, Transform = 2, Background = 4, Color = 8, Border = 16, Length = 32, All = 63 };
     unsigned props = 0;
     float duration = 0, delay = 0;    // ms
     float bez[4] = {0.25f, 0.1f, 0.25f, 1.f};   // cubic-bezier control points (ease)
+};
+
+// One transform function: T translate(x, y), S scale(a, b), R rotate(a deg), K skew(a, b deg), M matrix(a..f).
+struct TfFn {
+    char kind = 'T';
+    Len  x = Len::Px(0), y = Len::Px(0);
+    float a = 0, b = 0, c = 0, d = 0, e = 0, f = 0;
+};
+
+// One entry of `animation`: which @keyframes, timing and playback.
+struct AnimationSpec {
+    std::string name;
+    float duration = 0, delay = 0;                // ms
+    float bez[4] = {0.25f, 0.1f, 0.25f, 1.f};     // timing function (ease), or...
+    int   steps = 0;                              // ...steps(n) when > 0
+    bool  steps_start = false;                    // jump-start (steps(n, start))
+    float iterations = 1;                         // infinity for `infinite`
+    int   direction = 0;                          // 0 normal, 1 reverse, 2 alternate, 3 alternate-reverse
+    int   fill = 0;                               // bit 1 forwards, bit 2 backwards
+    bool  paused = false;
 };
 
 struct ComputedStyle {
@@ -219,10 +239,16 @@ struct ComputedStyle {
     bool     appearance_none = false;   // appearance: none (controls keep only their CSS look)
     bool     scrollbar_thin = false, scrollbar_set = false;   // scrollbar-width: thin; scrollbar-color given
     uint32_t scrollbar_thumb = 0, scrollbar_track = 0;
-    // transform: only the translation part is honoured (scale/rotate parse but do nothing, `transform_other`)
+    // transform: a 2D affine map p' = O + L (p - O) + t with L = [tf0 tf2; tf1 tf3] (x' = a x + c y, y' = b x + d y),
+    // t = (translate_x, translate_y) (% of the border box) and O = transform-origin.
     Len      translate_x = Len::Px(0), translate_y = Len::Px(0);
-    bool     transform_other = false;
+    float    tf[4] = {1, 0, 0, 1};
+    std::vector<TfFn> tfn;              // the function list tf/translate_* were built from (animations interpolate it)
+    void     rebuild_transform();       // tfn -> tf + translate_x/y
+    Len      origin_x = Len::Pct(50), origin_y = Len::Pct(50);
+    bool     tf_linear() const { return tf[0] != 1 || tf[1] != 0 || tf[2] != 0 || tf[3] != 1; }
     std::vector<TransitionSpec> transitions;
+    std::vector<AnimationSpec> animations;
     float    aspect_ratio = 0;          // aspect-ratio (width/height); 0 = auto
     // outline: drawn outside the border edge, never affects layout.  `auto` = the focus ring.
     BorderStyle outline_style = BorderStyle::None;

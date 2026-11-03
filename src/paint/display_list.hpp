@@ -33,6 +33,7 @@ struct Item {
         ClipPush, ClipPop,
         LayerPush, LayerPop,   // group opacity
         ShiftPush, ShiftPop,   // translate everything in between by (x, y): transform: translate()
+        TransformPush, TransformPop,   // general 2D affine `m` (doc -> doc) over everything in between; x,y,w,h = its source bounds
     } kind = Kind::Rect;
 
     float x = 0, y = 0, w = 0, h = 0;     // doc coords (already snapped for boxes)
@@ -68,6 +69,9 @@ struct Item {
 
     // Layer
     float alpha = 1.f;
+
+    // TransformPush: x' = m0 x + m2 y + m4, y' = m1 x + m3 y + m5
+    float m[6] = {1, 0, 0, 1, 0, 0};
 };
 
 using DisplayList = std::vector<Item>;

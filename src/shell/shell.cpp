@@ -1601,7 +1601,7 @@ void Shell::relayout() {
     anim_active_ = false;
     for (auto it = anims_.begin(); it != anims_.end();) {
         if (it->second.seen + 1 < anim_frame_) it = anims_.erase(it);
-        else { anim_active_ = anim_active_ || it->second.active; ++it; }
+        else { anim_active_ = anim_active_ || it->second.active || it->second.kf_active; ++it; }
     }
     if (std::getenv("LUXIUM_TIMING"))
         std::fprintf(stderr, "relayout %.2f ms (%zu boxes hit, %zu items)\n",

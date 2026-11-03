@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- cssrun: threshold=3 skipstyle=margin-left,opacity,width,height,background-color -->
+<style>
+body { font-family: 'DejaVu Sans'; margin: 0; background: #ffffff; color: #222222; font-size: 14px; }
+.a { position: absolute; width: 60px; height: 40px; background: #2f6fed; animation-play-state: paused; animation-iteration-count: infinite; }
+.spin { left: 20px; top: 20px; animation-name: spin; animation-duration: 1s; animation-timing-function: linear; animation-delay: -250ms; }
+.spin2 { left: 120px; top: 20px; border-radius: 50%; border: 6px solid #cccccc; border-top-color: #d42020; box-sizing: border-box; background: transparent; width: 48px; height: 48px;
+         animation: spin 0.7s linear -0.2s infinite paused; }
+.fade { left: 220px; top: 20px; animation: fade 2s linear -500ms infinite paused; }
+.grow { left: 320px; top: 20px; background: #1f9d55; animation: grow 1s ease-in-out -400ms infinite paused; }
+.col { left: 20px; top: 120px; animation: col 1s linear -300ms infinite paused; }
+.alt { left: 120px; top: 120px; animation: slide 1s linear -1300ms infinite alternate paused; background: #8b3fd9; }
+.steps { left: 20px; top: 200px; animation: slide 1s steps(4, end) -550ms infinite paused; background: #d98a00; }
+.fill { left: 20px; top: 280px; animation: slide 1s linear 5s 1 both paused; background: #555555; }
+.back { left: 20px; top: 340px; animation: slide 1s linear 5s 1 backwards paused; background: #555555; }
+.fwd { left: 20px; top: 400px; animation: slide 1s linear -2s 1 forwards paused; background: #555555; }
+.cb { left: 20px; top: 460px; animation: slide 1s cubic-bezier(0.1, 0.9, 0.2, 1) -300ms infinite paused; background: #1f9d55; }
+.multi { left: 200px; top: 200px; animation: fade 2s linear -1s infinite paused, spin 1s linear -125ms infinite paused; background: #d42020; }
+.toast { left: 200px; top: 300px; animation: toast 0.5s ease-out -100ms 1 both paused; background: #2f6fed; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fade { 0% { opacity: 0.1; } 50% { opacity: 1; } 100% { opacity: 0.1; } }
+@keyframes grow { from { width: 30px; height: 20px; } to { width: 110px; height: 60px; } }
+@keyframes col { from { background-color: #ff0000; } 50% { background-color: #00ff00; } to { background-color: #0000ff; } }
+@keyframes slide { from { margin-left: 0; } to { margin-left: 140px; } }
+@keyframes toast { from { opacity: 0; transform: translateY(8px); } }
+</style>
+<div class="a spin" data-t="spin"></div>
+<div class="a spin2" data-t="spin2"></div>
+<div class="a fade"></div>
+<div class="a grow" data-t="grow"></div>
+<div class="a col"></div>
+<div class="a alt" data-t="alt"></div>
+<div class="a steps" data-t="steps"></div>
+<div class="a fill" data-t="fill"></div>
+<div class="a back" data-t="back"></div>
+<div class="a fwd" data-t="fwd"></div>
+<div class="a cb" data-t="cb"></div>
+<div class="a multi" data-t="multi"></div>
+<div class="a toast" data-t="toast"></div>

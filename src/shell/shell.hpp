@@ -63,8 +63,9 @@ class OwnMediaApi;
 // The style values a transition can animate.
 struct AnimVals {
     float opacity = 1;
-    style::Len tx, ty;
+    std::vector<style::TfFn> tfn;     // transform function list
     uint32_t bg = 0, color = 0, border[4] = {0, 0, 0, 0};
+    style::Len width, height, inset[4], margin[4], padding[4];
 };
 
 class Shell {
@@ -276,7 +277,16 @@ private:
         float t0 = 0, dur = 0, delay = 0, bez[4] = {0.25f, 0.1f, 0.25f, 1.f};
         unsigned groups = 0;
         uint64_t seen = 0;
+        // @keyframes animations of this element: one clock per `animation` entry
+        struct Kf { std::string name; float t0 = 0, paused_at = -1; };
+        std::vector<Kf> kf;
+        bool kf_active = false;
     };
+    struct Keyframe { float offset; std::vector<style::Decl> decls; };
+    std::unordered_map<std::string, std::vector<Keyframe>> keyframes_;   // by @keyframes name, sorted by offset
+    const void* kf_src_ = nullptr; size_t kf_n_ = 0;
+    const std::vector<Keyframe>* find_keyframes(const std::string& name);
+    bool    animate_keyframes(NodeAnim& a, style::ComputedStyle& s);
     std::unordered_map<const dom::Node*, NodeAnim> anims_;
     uint64_t anim_frame_ = 0;
     bool    anim_active_ = false;

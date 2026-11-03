@@ -189,11 +189,15 @@ def style_diff(html: Path, golden_json: Path, size: str = DEFAULT_SIZE):
     got = {e["t"]: e["cs"] for e in json.loads(STYLES_JSON.read_text())}
     bad = 0
     detail = []
+    # skipstyle=a,b: properties @keyframes animate; --styles has no animation clock, so they are checked by pixels/rects only
+    skip = set(options(html).get("skipstyle", "").split(","))
     for t, cs in want.items():
         mine = got.get(t)
         if mine is None:
             continue
         for prop, expected in cs.items():
+            if prop in skip:
+                continue
             have = mine.get(prop)
             if have is None:
                 continue          # propiedad que no volcamos para este elemento

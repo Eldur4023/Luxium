@@ -29,6 +29,9 @@ struct State {
     std::vector<std::vector<uint32_t>> layer_bufs;
     struct LayerInfo { IRect bounds; float alpha; };
     std::vector<LayerInfo> layers;
+    // transform layers: content is drawn untransformed into a buffer, then resampled through `m` on pop
+    struct TfLayer { IRect src; float m[6]; float ox, oy; };
+    std::vector<TfLayer> tf_layers;
 
     explicit State(const render::Font& f, float x, float y) : font(f), ox(x), oy(y) {}
     Target& tgt() { return targets.back(); }
@@ -436,6 +439,72 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
         case Item::Kind::ClipPop:
             if (s.rects.size() > 1) { s.rects.pop_back(); s.rounds.pop_back(); }
             break;
+        case Item::Kind::TransformPush: {
+            Target& cur = s.tgt();
+            s.layer_bufs.emplace_back(static_cast<size_t>(cur.w) * cur.h, 0u);
+            s.targets.push_back({s.layer_bufs.back().data(), cur.w, cur.h});
+            IRect b;   // source bounds in buffer space (the ancestors' clip applies to the result, not to the source)
+            b.x0 = std::max(s.rects.front().x0, int(std::floor(it.x + s.ox)) - 1); b.y0 = std::max(s.rects.front().y0, int(std::floor(it.y + s.oy)) - 1);
+            b.x1 = std::min(s.rects.front().x1, int(std::ceil(it.x + it.w + s.ox)) + 1); b.y1 = std::min(s.rects.front().y1, int(std::ceil(it.y + it.h + s.oy)) + 1);
+            State::TfLayer tl{b, {}, s.ox, s.oy};
+            std::copy(it.m, it.m + 6, tl.m);
+            s.tf_layers.push_back(tl);
+            s.rects.push_back(s.rects.front());
+            s.rounds.emplace_back();
+            break;
+        }
+        case Item::Kind::TransformPop: {
+            if (s.tf_layers.empty()) break;
+            const State::TfLayer tl = s.tf_layers.back();
+            s.tf_layers.pop_back();
+            s.rects.pop_back(); s.rounds.pop_back();
+            Target layer = s.targets.back();
+            s.targets.pop_back();
+            Target& dst = s.tgt();
+            const float* m = tl.m;
+            const float det = m[0] * m[3] - m[1] * m[2];
+            if (std::fabs(det) > 1e-9f && tl.src.x1 > tl.src.x0 && tl.src.y1 > tl.src.y0) {
+                const float i0 = m[3] / det, i1 = -m[1] / det, i2 = -m[2] / det, i3 = m[0] / det;
+                // dest bbox: the source corners through the matrix (doc space = buffer space minus the origin)
+                float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+                for (int c = 0; c < 4; ++c) {
+                    const float px = float((c & 1) ? tl.src.x1 : tl.src.x0) - tl.ox, py = float((c & 2) ? tl.src.y1 : tl.src.y0) - tl.oy;
+                    const float qx = m[0] * px + m[2] * py + m[4] + tl.ox, qy = m[1] * px + m[3] * py + m[5] + tl.oy;
+                    bx0 = std::min(bx0, qx); bx1 = std::max(bx1, qx); by0 = std::min(by0, qy); by1 = std::max(by1, qy);
+                }
+                const IRect clip = s.clip();
+                const int X0 = std::max(clip.x0, int(std::floor(bx0)) - 1), X1 = std::min(clip.x1, int(std::ceil(bx1)) + 1);
+                const int Y0 = std::max(clip.y0, int(std::floor(by0)) - 1), Y1 = std::min(clip.y1, int(std::ceil(by1)) + 1);
+                auto texel = [&](int x, int y, float& a, float& r, float& g, float& b) {   // premultiplied
+                    a = r = g = b = 0;
+                    if (x < tl.src.x0 || x >= tl.src.x1 || y < tl.src.y0 || y >= tl.src.y1) return;
+                    const uint32_t p = layer.px[static_cast<size_t>(y) * layer.w + x];
+                    a = float(p >> 24) / 255.f;
+                    r = float((p >> 16) & 255) * a; g = float((p >> 8) & 255) * a; b = float(p & 255) * a;
+                };
+                for (int y = Y0; y < Y1; ++y)
+                    for (int x = X0; x < X1; ++x) {
+                        const float qx = float(x) + 0.5f - tl.ox - m[4], qy = float(y) + 0.5f - tl.oy - m[5];
+                        const float sx = i0 * qx + i2 * qy + tl.ox - 0.5f, sy = i1 * qx + i3 * qy + tl.oy - 0.5f;
+                        const int ix = int(std::floor(sx)), iy = int(std::floor(sy));
+                        const float fx = sx - float(ix), fy = sy - float(iy);
+                        float A = 0, R = 0, G = 0, B = 0;
+                        const float wgt[4] = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
+                        for (int k = 0; k < 4; ++k) {
+                            float a, r, g, b;
+                            texel(ix + (k & 1), iy + (k >> 1), a, r, g, b);
+                            A += wgt[k] * a; R += wgt[k] * r; G += wgt[k] * g; B += wgt[k] * b;
+                        }
+                        if (A <= 0.002f) continue;
+                        const uint32_t out = (uint32_t(std::clamp(A * 255.f + 0.5f, 0.f, 255.f)) << 24) |
+                                             (uint32_t(std::clamp(R / A + 0.5f, 0.f, 255.f)) << 16) |
+                                             (uint32_t(std::clamp(G / A + 0.5f, 0.f, 255.f)) << 8) | uint32_t(std::clamp(B / A + 0.5f, 0.f, 255.f));
+                        blend(dst.px[static_cast<size_t>(y) * dst.w + x], out, 1.f);
+                    }
+            }
+            s.layer_bufs.pop_back();
+            break;
+        }
         case Item::Kind::LayerPush: {
             const IRect b = bounds_of(s, it.x, it.y, it.w, it.h, 0);
             Target& cur = s.tgt();
