@@ -128,6 +128,8 @@ void Page::console(int level, const std::string& msg) {
 
 void Page::click(const dom::Node* node) {
     if (!node) return;
+    if (on_media_click && node->is_element() && (node->name == "video" || node->name == "audio"))
+        on_media_click(node);
 
     // The nearest ancestor with href owns the click: navigation first (the
     // engine still runs its handlers, but the page is about to change).

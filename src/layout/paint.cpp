@@ -363,7 +363,7 @@ struct Painter {
 
     void replaced(Box& b) {
         const ComputedStyle& s = *b.st;
-        if (s.visibility != Visibility::Visible || !b.img) return;
+        if (s.visibility != Visibility::Visible || (!b.img && !b.media)) return;
         const float cx = sn(b.ax + b.border.l + b.padding.l), cy = sn(b.ay + b.border.t + b.padding.t);
         const float cw = sn(b.ax + b.w - b.border.r - b.padding.r) - cx, ch = sn(b.ay + b.h - b.border.b - b.padding.b) - cy;
         if (cw <= 0 || ch <= 0 || b.nat_w <= 0 || b.nat_h <= 0) return;
@@ -385,6 +385,20 @@ struct Painter {
         it.sx = (ix0 - px) / dw * b.nat_w; it.sy = (iy0 - py) / dh * b.nat_h;
         it.sw = (ix1 - ix0) / dw * b.nat_w; it.sh = (iy1 - iy0) / dh * b.nat_h;
         it.radii = radii_of(s, b.w, b.h);
+        if (b.media) {
+            // Poster or frame: the source rect is a fraction of the picture, whatever its size.
+            MediaRect m;
+            m.node = b.node; m.x = cx; m.y = cy; m.w = cw; m.h = ch;
+            m.fx0 = (ix0 - px) / dw; m.fy0 = (iy0 - py) / dh;
+            m.fx1 = (ix1 - px) / dw; m.fy1 = (iy1 - py) / dh;
+            m.item = dl->size(); m.fixed = dl == &out.fixed;
+            m.controls = b.media_controls; m.audio = b.node->name == "audio";
+            out.media.push_back(m);
+            if (b.img) {
+                it.sx = m.fx0 * b.img->w; it.sy = m.fy0 * b.img->h;
+                it.sw = (m.fx1 - m.fx0) * b.img->w; it.sh = (m.fy1 - m.fy0) * b.img->h;
+            } else { it.kind = Item::Kind::Rect; it.color = 0xFF000000; }
+        }
         dl->push_back(std::move(it));
     }
 
@@ -530,7 +544,7 @@ struct Painter {
         if (b.kind == Box::Kind::Replaced) replaced(b);
         if (b.node && b.kind != Box::Kind::Inline && !b.anonymous) {
             const std::string& tg = b.node->name;
-            if (b.node->has_attr("id") || tg == "a" || tg == "button")
+            if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media)
                 out.hits.push_back({b.node, sn(b.ax), sn(b.ay), b.w, b.h, tg == "button"});
         }
     }

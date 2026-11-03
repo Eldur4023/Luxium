@@ -112,12 +112,20 @@ int main(int argc, char** argv) {
     int win_w = 1180, win_h = 820;
     const char* cefprobe = nullptr;
     std::vector<std::string> clicks;
+    struct At { int x, y; unsigned ms; };
+    std::vector<At> click_at;
+    unsigned wait_ms = 0;
     bool check = false, headless = false;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (std::strcmp(a, "--headless") == 0) headless = true;
         else if (std::strcmp(a, "--check") == 0) check = true;
         else if (std::strcmp(a, "--click") == 0 && i + 1 < argc) clicks.push_back(argv[++i]);
+        else if (std::strcmp(a, "--click-at") == 0 && i + 1 < argc) {
+            int x = 0, y = 0, at = 0;
+            if (std::sscanf(argv[++i], "%d,%d@%d", &x, &y, &at) >= 2) click_at.push_back({x, y, static_cast<unsigned>(at)});
+        }
+        else if (std::strcmp(a, "--wait") == 0 && i + 1 < argc) wait_ms = static_cast<unsigned>(std::atoi(argv[++i]));
         else if (std::strcmp(a, "--shot") == 0 && i + 1 < argc) shot = argv[++i];
         else if (std::strcmp(a, "--cefshot") == 0 && i + 1 < argc) cefshot = argv[++i];
         else if (std::strcmp(a, "--boxes") == 0 && i + 1 < argc) boxes = argv[++i];
@@ -129,7 +137,7 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
             std::fprintf(stderr,
                 "uso: luxium <page.html|dir> [--check] [--headless] "
-                "[--click id] [--size WxH] [--shot out.ppm [--boxes out.json]] [--cefshot out.ppm [--cefprobe out.json]]\n");
+                "[--click id] [--click-at x,y[@ms]] [--wait ms] [--size WxH] [--shot out.ppm [--boxes out.json]] [--cefshot out.ppm [--cefprobe out.json]]\n");
             return 0;
         } else paths.push_back(a);
     }
@@ -175,6 +183,8 @@ int main(int argc, char** argv) {
     if (is_url) shell.navigate_to(path, true);
     else if (path == "luxium:inicio") shell.navigate_address(path, true);
     for (const auto& id : clicks) page.click_by_id(id);
+    for (const auto& c : click_at) shell.add_shot_click(c.x, c.y, c.ms);
+    shell.set_shot_wait(wait_ms);
     if (boxes) shell.set_boxes_out(boxes);
     if (cefprobe) shell.set_probe_out(cefprobe);
     if (cefshot) return shell.cef_shot(path, cefshot);
