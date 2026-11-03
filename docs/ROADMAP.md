@@ -199,10 +199,49 @@ Acceptance (verified visually through framebuffer dumps + xdotool input):
 - [x] `--check examples/` still 0 errors; the `--shot` path is untouched
       (the dummy driver never hands off).
 
-Still open (M7 candidates): cursor-shape mapping (`cef::cursor` → SDL),
+Still open (M8 candidates): cursor-shape mapping (`cef::cursor` → SDL),
 wheel sign on long pages, text selection + copy/paste in the own engine.
 
-## M7 — Candidates (unordered, pick when M6 lands)
+## M7 — Native media engine + modern web + SPA runtime (mostly done)
+
+What exists today (details: `docs/MEDIA.md`, `docs/HOST.md`, `docs/LUXSCRIPT.md` §3.1,
+`docs/RENDERING.md`).
+
+Done:
+- [x] **FFmpeg media engine** (`src/media/player.cpp`): every container/codec played
+      directly (no browser codec whitelist), VA-API hardware decode with software
+      fallback, A/V sync on the audio clock, HLS (TS and fMP4), seeking, in-file audio
+      track switching and embedded text subtitles, deinterlace. Without FFmpeg headers a
+      stub keeps the build working.
+- [x] **CEF bridge, lazy plugin** (`src/cef/`): Chromium lives in `libluxium_cef.so`,
+      loaded on the first JavaScript page; a JS shim replaces `HTMLMediaElement` so
+      Chromium pages play through the native engine. CEF parity sweep
+      (`tools/paritytest.py`) green.
+- [x] **Own-engine `<video>`/`<audio>`** (`src/media/own_media.*`, controls, track
+      buttons, cue rendering), usable from LuxScript (`play pause seek current_time
+      duration paused ...`, tested on a real file in `tools/spatest.py`).
+- [x] **App host** (`luxium --host`, `src/host/`): one chrome-less SDL window per client
+      app over a unix socket; own-engine windows by default, Chromium only for
+      JavaScript pages and loaded lazily; menu bar with accelerators, tray, dark title
+      bar, window icon. Measured idle private PSS: 30 / 42 / 66 MB for 1 / 2 / 4 apps.
+- [x] **SPA runtime**: coroutine handlers/timers (`await`), `http` (curl workers),
+      WebSocket client, storage, history/navigation, capture/bubble events, forms and
+      multipart upload, templates, element API. `tools/spatest.py`: 45 checks.
+- [x] **Engine forms + CSS**: form controls drawn by the engine, caret/selection/IME,
+      scroll containers, `:has`/`:focus-within`, `min/max/clamp`, sticky, transitions;
+      `css-tests/` 118 cases against Chromium.
+- [x] **Homeflix-Local ported to LuxScript** and running on the own engine
+      (`tools/homeflixsnap.py` goldens).
+
+In progress (another agent, not landed): CSS animations (`@keyframes`), SVG, colour emoji.
+
+Open:
+- [ ] Windows build/host (the CEF side has a Win path; the own engine/host is Linux/X11 only).
+- [ ] Native Wayland (runs through XWayland).
+- [ ] HiDPI for the own engine (scale > 1); today only CEF pages get page zoom.
+- [ ] IME preedit and real-HiDPI sharpness are not testable headless.
+
+## M8 — Candidates (unordered)
 
 Forms (input/text/checkbox, LuxScript-validated submission to Lux servers —
 the round trip with `../Lux` as the origin server is the showcase), flexbox,

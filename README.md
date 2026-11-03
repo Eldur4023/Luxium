@@ -1,6 +1,8 @@
 # Luxium
 
-A web browser for HTML + CSS + **LuxScript** — no JavaScript.
+A web browser for HTML + CSS + **LuxScript**. The own engine runs no JavaScript;
+pages that need it are handed to Chromium (CEF), which is loaded lazily as a
+plugin, and its video goes through Luxium's native FFmpeg media engine.
 
 Luxium is the client-side sibling of [Lux](../Lux): where Lux serves pages
 whose logic is written in Lux Script, Luxium renders pages whose logic is also
@@ -8,7 +10,7 @@ written in Lux Script. Same language, same grammar, same bytecode VM — the
 reserved objects change (`request`, `app`, `routes` → `document`, `page`),
 because the context is a browser, not a server.
 
-## Status: M0–M5 — usable demo
+## Status: M0–M7 — usable browser, app host and SPA runtime
 
 The browser opens a window, renders a page, and **runs its LuxScript**:
 
@@ -36,6 +38,13 @@ The browser opens a window, renders a page, and **runs its LuxScript**:
   (libcurl on a worker thread, error pages on failure), history
   (Alt+Left/Right, mouse buttons), reload (Ctrl+R), `#anchors`,
   view-source (Ctrl+U), status bar with the hovered link.
+
+Since M6/M7 (see [docs/ROADMAP.md](docs/ROADMAP.md)): a native FFmpeg media engine
+(any container/codec, VA-API, HLS, audio/subtitle tracks, `<video>`/`<audio>` in the own
+engine), the app host (`luxium --host`: one chrome-less window per client app, own-engine
+windows, lazy Chromium, 30/42/66 MB idle for 1/2/4 apps), a LuxScript SPA runtime (async
+handlers, http/ws/storage/history/events/forms) and engine-drawn forms. CSS animations,
+SVG and emoji are in progress; Windows and native Wayland are open.
 
 The showcase is `examples/counter.html`: two buttons wired in Lux Script,
 state in the page store, the counter updates on screen.
@@ -71,8 +80,12 @@ src/lux_script/     Lux's engine, vendored (lexer/parser/IR/emitter/bytecode/VM)
                     with browser natives — see docs/ARCHITECTURE.md §4
 src/script/         compile driver + per-page Engine (the Host the VM talks to)
 src/page/           the page model: DOM + scripts + console
-src/render/         text (FreeType+HarfBuzz, glyph cache) and layout (boxes)
+src/render/         text (FreeType+HarfBuzz, glyph cache)
+src/layout/ src/paint/ src/style/   layout, painting and the CSS cascade
 src/shell/          SDL2 shell: framebuffer, event loop, console pane
+src/media/          FFmpeg media engine, own-engine <video>/<audio>, CEF shim.js
+src/host/           app host (luxium --host): windows, menus, tray
+src/cef/            Chromium (CEF) backend, lazy plugin libluxium_cef.so, media bridge
 src/tools/          headless harness
 examples/           demo pages
 ```
@@ -82,13 +95,13 @@ examples/           demo pages
 | Document | What it covers |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, components, engine strategy, sandbox model |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M6 with scope and acceptance criteria |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M7 with scope and acceptance criteria |
 | [docs/RENDERING.md](docs/RENDERING.md) | The rendering engine, the Chromium oracle and the test harness |
 | [docs/LUXSCRIPT.md](docs/LUXSCRIPT.md) | How Lux Script embeds in a page and what changes vs. the server |
 
 ## Tests against Chromium
 
-`css-tests/` holds 113 cases (one CSS feature per page, plus responsive,
+`css-tests/` holds 118 cases (one CSS feature per page, plus responsive,
 real-page and LuxScript-mutation cases).  Each is rendered by Luxium's own
 engine and by Chromium (CEF) and compared on box rects (±1px), computed styles,
 pixels and colour:
