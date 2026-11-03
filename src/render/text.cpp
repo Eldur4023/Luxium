@@ -27,8 +27,24 @@ struct Font::Face {
     int          req_weight = 400;
     bool         req_italic = false;
     FT_Face      ft = nullptr;
+    bool         color = false;     // bitmap-strike colour font (CBDT/sbix: Noto Color Emoji): drawn by scaling the strike
+    float        strike_ppem = 0;   // the strike's em in pixels, and the scale that makes its rounded advances exact
+    float        adv_fix = 1;
     hb_font_t*   hb = nullptr;
     hb_buffer_t* buf = nullptr;   // reused per shape call (single-threaded UI)
+    // Opens a colour bitmap font on its first strike; the HarfBuzz font then takes advances from the font's own
+    // metrics (OpenType funcs), scaled like Blink does: the strike's integer advance over its ppem.
+    void init_color() {
+        color = FT_HAS_COLOR(ft) && FT_HAS_FIXED_SIZES(ft) && !FT_IS_SCALABLE(ft) && ft->num_fixed_sizes > 0;
+        if (!color) return;
+        FT_Select_Size(ft, 0);
+        strike_ppem = float(ft->available_sizes[0].y_ppem) / 64.f;
+        if (strike_ppem <= 0) strike_ppem = float(ft->available_sizes[0].height);
+        if (hb) hb_font_destroy(hb);
+        hb = hb_font_create(hb_ft_face_create_referenced(ft));
+        const float adv = float(ft->max_advance_width) * strike_ppem / float(ft->units_per_EM);   // all emoji share one advance
+        if (adv > 0) adv_fix = std::round(adv) / adv;
+    }
     ~Face() {
         if (hb) hb_font_destroy(hb);
         if (buf) hb_buffer_destroy(buf);
@@ -87,6 +103,11 @@ Font::Face* Font::face(FaceKey k) const {
 }
 
 void Font::use_size(Face* f, float px) const {
+    if (f->color) {   // fixed strike: only the HarfBuzz scale follows the size
+        const int q = static_cast<int>(std::lround(px * 64 * f->adv_fix));
+        hb_font_set_scale(f->hb, q, q);
+        return;
+    }
     // cached per face: FT_Set_Char_Size + hb_ft_font_changed only on change
     static thread_local std::unordered_map<Face*, int> cur;
     const int q = static_cast<int>(std::lround(px * 64));
@@ -102,9 +123,15 @@ FaceMetrics Font::metrics(FaceKey key, float px) const {
     FaceMetrics m;
     if (!f) return m;
     const float upem = static_cast<float>(f->ft->units_per_EM);
-    m.ascent  = std::round(static_cast<float>(f->ft->ascender) * px / upem);
-    m.descent = std::round(static_cast<float>(-f->ft->descender) * px / upem);
-    const float gap = static_cast<float>(f->ft->height - (f->ft->ascender - f->ft->descender));
+    float asc_u = static_cast<float>(f->ft->ascender), desc_u = static_cast<float>(-f->ft->descender);
+    float height_u = static_cast<float>(f->ft->height);
+    if (f->color)   // bitmap-strike fonts: the face fields may be in strike pixels; the hhea table is in font units
+        if (auto* hh = static_cast<TT_HoriHeader*>(FT_Get_Sfnt_Table(f->ft, ft_sfnt_hhea))) {
+            asc_u = float(hh->Ascender); desc_u = float(-hh->Descender); height_u = asc_u + desc_u + float(hh->Line_Gap);
+        }
+    m.ascent  = std::round(asc_u * px / upem);
+    m.descent = std::round(desc_u * px / upem);
+    const float gap = height_u - (asc_u + desc_u);
     m.line_gap = std::round(std::max(0.f, gap) * px / upem);
     float xh = 0.5f;
     if (auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(f->ft, ft_sfnt_os2)))
@@ -138,15 +165,17 @@ ShapedRun Font::shape_face(Face* f, std::string_view utf8, float px) const {
     return run;
 }
 
+int Font::emoji_face() const {
+    if (emoji_face_ != -2) return emoji_face_;
+    emoji_face_ = -1;
+    const int id = match_family("Noto Color Emoji", true, 400, false);
+    if (id >= 0 && face(FaceKey{id})->color) emoji_face_ = id;
+    return emoji_face_;
+}
+
 ShapedRun Font::shape_at(std::string_view utf8, FaceKey key, float px) const {
     Face* f = face(key);
     ShapedRun run = shape_face(f, utf8, px);
-    bool missing = false;
-    for (const auto& p : run.positions) if (p.glyph_index == 0) { missing = true; break; }
-    if (!missing) return run;
-
-    // some code points are not in the face: cut the text into pieces by the face that
-    // can draw them and shape each piece with its own face
     auto decode = [&](size_t& i) {
         const unsigned char c = static_cast<unsigned char>(utf8[i]);
         if (c < 0x80) { ++i; return uint32_t(c); }
@@ -156,14 +185,51 @@ ShapedRun Font::shape_at(std::string_view utf8, FaceKey key, float px) const {
         while (n-- > 0 && i < utf8.size() && (static_cast<unsigned char>(utf8[i]) & 0xC0) == 0x80) cp = (cp << 6) | (utf8[i++] & 0x3F);
         return cp;
     };
+    auto is_ri = [](uint32_t cp) { return cp >= 0x1F1E6 && cp <= 0x1F1FF; };
+    auto is_modifier = [](uint32_t cp) { return cp >= 0x1F3FB && cp <= 0x1F3FF; };
+    auto is_extend = [&](uint32_t cp) {
+        return cp == 0xFE0E || cp == 0xFE0F || cp == 0x200D || cp == 0x20E3 || is_modifier(cp) || (cp >= 0xE0020 && cp <= 0xE007F) ||
+               (cp >= 0x300 && cp <= 0x36F) || (cp >= 0x20D0 && cp <= 0x20FF) || (cp >= 0xFE20 && cp <= 0xFE2F);
+    };
+    bool missing = false;
+    for (const auto& p : run.positions) if (p.glyph_index == 0) { missing = true; break; }
+    bool sequence = false;   // emoji sequences need their own face even when the primary has every code point
+    for (size_t i = 0; i < utf8.size() && !missing && !sequence;) {
+        const uint32_t cp = decode(i);
+        sequence = cp == 0xFE0F || cp == 0x20E3 || cp == 0x200D || is_ri(cp) || is_modifier(cp);
+    }
+    if (!missing && !sequence) return run;
+
+    // Cut the text into clusters (a base plus what extends it: variation selectors, ZWJ chains, skin tones, keycaps,
+    // tags, flags), pick the face per cluster (colour emoji for emoji sequences, else the first face with the base
+    // code point) and shape each maximal piece with its own face so ligatures and ZWJ sequences form.
     struct Seg { size_t b0, b1; int face; };   // face -1: primary
     std::vector<Seg> segs;
     for (size_t i = 0; i < utf8.size();) {
         const size_t at = i;
-        const uint32_t cp = decode(i);
+        const uint32_t base = decode(i);
+        bool emoji_seq = false, text_pres = false;
+        size_t nri = is_ri(base) ? 1 : 0;
+        for (;;) {
+            if (i >= utf8.size()) break;
+            size_t j = i;
+            const uint32_t cp = decode(j);
+            if (cp == 0x200D) {   // ZWJ joins the next code point (and whatever extends it) to this cluster
+                emoji_seq = true;
+                i = j;
+                if (i < utf8.size()) decode(i);
+                continue;
+            }
+            if (is_ri(cp) && nri == 1) { ++nri; emoji_seq = true; i = j; continue; }
+            if (!is_extend(cp)) break;
+            if (cp == 0xFE0F || cp == 0x20E3 || is_modifier(cp)) emoji_seq = true;
+            if (cp == 0xFE0E) text_pres = true;
+            i = j;
+        }
         int fid = -1;
-        const bool control = cp < 0x20 || cp == 0x200B || cp == 0x200C || cp == 0x200D || cp == 0xFEFF || cp == 0xAD;
-        if (!control && FT_Get_Char_Index(f->ft, cp) == 0) fid = fallback_for(cp, key);
+        const bool control = base < 0x20 || base == 0x200B || base == 0x200C || base == 0x200D || base == 0xFEFF || base == 0xAD;
+        if (emoji_seq && !text_pres && emoji_face() >= 0) fid = emoji_face();
+        else if (!control && FT_Get_Char_Index(f->ft, base) == 0) fid = fallback_for(base, key);
         if (fid == key.id) fid = -1;
         if (!segs.empty() && segs.back().face == fid) segs.back().b1 = i; else segs.push_back({at, i, fid});
     }
@@ -184,6 +250,59 @@ ShapedRun Font::shape_at(std::string_view utf8, FaceKey key, float px) const {
     return out;
 }
 
+// A colour bitmap glyph at `px`: the strike scaled down with a box filter (premultiplied).
+const Glyph& Font::color_glyph(Face* f, uint32_t gi, float px, uint64_t key) const {
+    Glyph g;
+    if (!FT_Load_Glyph(f->ft, gi, FT_LOAD_COLOR | FT_LOAD_NO_HINTING) && f->ft->glyph->format == FT_GLYPH_FORMAT_BITMAP &&
+        f->ft->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
+        const FT_Bitmap& bm = f->ft->glyph->bitmap;
+        const int bw = int(bm.width), bh = int(bm.rows), left = f->ft->glyph->bitmap_left, top = f->ft->glyph->bitmap_top;
+        const float sc = px / f->strike_ppem;
+        const int dx0 = int(std::floor(float(left) * sc)), dx1 = int(std::ceil(float(left + bw) * sc));
+        const int dy_top = int(std::ceil(float(top) * sc)), dy_bot = int(std::floor(float(top - bh) * sc));
+        const int dw = dx1 - dx0, dh = dy_top - dy_bot;
+        if (dw > 0 && dh > 0 && dw < 4096 && dh < 4096) {
+            g.width = dw; g.height = dh; g.bearing_x = dx0; g.bearing_y = dy_top;
+            g.color.assign(size_t(dw) * dh * 4, 0);
+            g.alpha.assign(size_t(dw) * dh, 0);
+            // per-axis box weights: dest pixel i covers source [lo, hi) in bitmap pixels
+            auto weights = [&](int n, int origin, bool flip, int src_n) {
+                struct W { int s0; std::vector<float> w; };
+                std::vector<W> out; out.resize(size_t(n));
+                for (int i = 0; i < n; ++i) {
+                    float lo, hi;   // in scaled space [a, a+1) -> source space
+                    if (!flip) { lo = float(origin + i) / sc - float(left); hi = float(origin + i + 1) / sc - float(left); }
+                    else { hi = float(top) - float(origin - i - 1) / sc; lo = float(top) - float(origin - i) / sc; }
+                    const int s0 = std::max(0, int(std::floor(lo))), s1 = std::min(src_n, int(std::ceil(hi)));
+                    W w; w.s0 = s0;
+                    const float area = hi - lo;
+                    for (int s = s0; s < s1; ++s) w.w.push_back((std::min(hi, float(s + 1)) - std::max(lo, float(s))) / area);
+                    out[size_t(i)] = std::move(w);
+                }
+                return out;
+            };
+            const auto wx = weights(dw, dx0, false, bw), wy = weights(dh, dy_top, true, bh);
+            for (int j = 0; j < dh; ++j) {
+                for (int i = 0; i < dw; ++i) {
+                    float acc[4] = {0, 0, 0, 0};
+                    for (size_t yy = 0; yy < wy[size_t(j)].w.size(); ++yy) {
+                        const uint8_t* row = bm.buffer + size_t(wy[size_t(j)].s0 + int(yy)) * size_t(bm.pitch);
+                        for (size_t xx = 0; xx < wx[size_t(i)].w.size(); ++xx) {
+                            const uint8_t* px4 = row + size_t(wx[size_t(i)].s0 + int(xx)) * 4;
+                            const float k = wy[size_t(j)].w[yy] * wx[size_t(i)].w[xx];
+                            acc[0] += k * px4[2]; acc[1] += k * px4[1]; acc[2] += k * px4[0]; acc[3] += k * px4[3];   // BGRA -> RGBA
+                        }
+                    }
+                    uint8_t* q = &g.color[(size_t(j) * dw + i) * 4];
+                    for (int c = 0; c < 4; ++c) q[c] = uint8_t(std::clamp(acc[c] + 0.5f, 0.f, 255.f));
+                    g.alpha[size_t(j) * dw + i] = q[3];
+                }
+            }
+        }
+    }
+    return cache_.emplace(key, std::move(g)).first->second;
+}
+
 const Glyph& Font::glyph_at(uint32_t glyph_index, FaceKey key, float px, int subx) const {
     Face* f = face(key);
     const uint64_t k = (static_cast<uint64_t>(glyph_index) << 40) |
@@ -192,6 +311,7 @@ const Glyph& Font::glyph_at(uint32_t glyph_index, FaceKey key, float px, int sub
     auto it = cache_.find(k);
     if (it != cache_.end()) return it->second;
     use_size(f, px);
+    if (f->color) return color_glyph(f, glyph_index, px, k);
     Glyph g;
     // Chromium on Linux: light (vertical-only) hinting, LCD sub-pixel AA.  The
     // glyph is rendered 3x wider, then filtered with FreeType's default 5-tap FIR
@@ -283,6 +403,7 @@ int Font::face_from_match(void* fc_pattern, int weight, bool italic) const {
     if (FT_New_Face(ft_lib, reinterpret_cast<const char*>(file), idx, &face->ft)) return -1;
     face->hb = hb_ft_font_create(face->ft, nullptr);
     face->buf = hb_buffer_create();
+    face->init_color();
     face->fake_bold = fake_b; face->fake_italic = fake_i;
     face->req_weight = weight; face->req_italic = italic;
     dyn_.push_back(std::move(face));

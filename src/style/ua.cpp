@@ -66,7 +66,7 @@ th { font-weight: bold; text-align: center }
 caption { text-align: center }
 
 button { font-family: Arial; font-size: 13.333px; color: black; background-color: #efefef; padding: 1px 6px;
-         border: 2px outset currentcolor; text-align: center }
+         border: 2px outset currentcolor; text-align: center; box-sizing: border-box }
 button, input, textarea, select { line-height: normal }
 input, textarea, select { font-family: Arial; font-size: 13.333px; color: black; margin: 0; text-align: start }
 input { padding: 1px 2px; border: 2px inset #767676; background-color: white; overflow: clip }

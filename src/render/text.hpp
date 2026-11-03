@@ -21,6 +21,7 @@ struct Glyph {
     int width = 0, height = 0;
     std::vector<uint8_t> alpha;   // width*height, 8-bit coverage
     std::vector<uint8_t> lcd;     // height * width*3: per-subpixel (R,G,B) coverage, empty if none
+    std::vector<uint8_t> color;   // colour glyphs (emoji bitmaps): premultiplied RGBA, width*height*4; `alpha` mirrors its alpha
 };
 
 struct ShapedRun {
@@ -67,6 +68,8 @@ public:
     FaceMetrics metrics(FaceKey key, float px) const;
     // A face able to draw code point `cp`, styled like `base` (fontconfig); -1 if none.
     int fallback_for(uint32_t cp, FaceKey base) const;
+    // The colour emoji face (Noto Color Emoji and the like); -1 if none is installed.
+    int emoji_face() const;
     // `subx` (0..3): the glyph is drawn shifted right by subx/4 pixel (sub-pixel positioning)
     const Glyph& glyph_at(uint32_t glyph_index, FaceKey key, float px, int subx = 0) const;
 
@@ -95,6 +98,8 @@ private:
     mutable std::unordered_map<std::string, int> file_ids_;          // "path#index#flags" -> id
     mutable std::unordered_map<uint64_t, int> fallback_cache_;       // (cp, base face) -> id
     int face_from_match(void* fc_pattern, int weight, bool italic) const;
+    const Glyph& color_glyph(Face* f, uint32_t glyph_index, float px, uint64_t key) const;
+    mutable int emoji_face_ = -2;                                    // -2: not looked up yet
     ShapedRun shape_face(Face* f, std::string_view utf8, float px) const;
     int match_family(const std::string& name, bool accept_any, int weight, bool italic) const;
     float size_ = 16;

@@ -386,6 +386,16 @@ void draw_text(State& s, const Item& it) {
                 const int fx = gx + cc;
                 if (fx < c.x0 || fx >= c.x1) continue;
                 const size_t gi = static_cast<size_t>(r) * g.width + cc;
+                if (!g.color.empty()) {   // colour glyph: its own pixels, only the text alpha applies
+                    const uint8_t* q = &g.color[gi * 4];
+                    if (!q[3]) continue;
+                    float k = float(alpha) / 255.f;
+                    if (rcl) k *= clip_cov(s, fx + 0.5f, fy + 0.5f);
+                    const float a = float(q[3]);
+                    auto un = [&](uint8_t v) { return uint32_t(std::clamp(float(v) * 255.f / a + 0.5f, 0.f, 255.f)); };
+                    blend(t.px[static_cast<size_t>(fy) * t.w + fx], (uint32_t(q[3]) << 24) | (un(q[0]) << 16) | (un(q[1]) << 8) | un(q[2]), k);
+                    continue;
+                }
                 float cr, cg, cb;
                 if (!g.lcd.empty() && !layer) {
                     cr = g.lcd[gi * 3] / 255.f; cg = g.lcd[gi * 3 + 1] / 255.f; cb = g.lcd[gi * 3 + 2] / 255.f;

@@ -695,8 +695,28 @@ struct LineBuilder {
                 atoms.push_back({a, psh + up, bo});
             }
         }
+        // line-height: normal also covers the fonts the glyphs actually came from (fallback faces: emoji, symbols):
+        // each contributes its own ascent/descent (+ half its leading), like Blink's used-fonts accounting
+        float fb_asc = 0, fb_desc = 0;
+        for (size_t i = 0; i < line.size(); ++i) {
+            const Tok& t = ifc.toks[line[i]];
+            if (t.k != K::Word || !t.run || !t.st || t.st->lh_mode != 0) continue;
+            int seen[4] = {-1, -1, -1, -1}, nseen = 0;
+            for (const auto& p : t.run->positions) {
+                if (p.face < 0) continue;
+                bool dup = false;
+                for (int k = 0; k < nseen; ++k) dup = dup || seen[k] == p.face;
+                if (dup || nseen == 4) continue;
+                seen[nseen++] = p.face;
+                const render::FaceMetrics fm = env.font.metrics(render::FaceKey{p.face}, t.st->font_size);
+                const float lead = fm.line_gap;
+                const float fa = fm.ascent + std::floor(lead / 2.f), fd = fm.ascent + fm.descent + lead - fa;
+                if (t.ibox) { IB& ib = ensure(t.ibox); ib.m.asc = std::max(ib.m.asc, fa); ib.m.desc = std::max(ib.m.desc, fd); }
+                else { fb_asc = std::max(fb_asc, fa); fb_desc = std::max(fb_desc, fd); }
+            }
+        }
         // inline boxes that start and end without tokens in between still matter: ensured above
-        float asc = root.asc, desc = root.desc;
+        float asc = std::max(root.asc, fb_asc), desc = std::max(root.desc, fb_desc);
         auto is_edge = [](VerticalAlign v) { return v == VerticalAlign::Top || v == VerticalAlign::Bottom; };
         for (auto& ib : ibs) {
             if (is_edge(ib.box->st->vertical_align)) continue;
