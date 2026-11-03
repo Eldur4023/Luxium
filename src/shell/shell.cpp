@@ -43,6 +43,9 @@ Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cf
 Shell::~Shell() {
     media::own::reset();
     if (cursor_hand_) SDL_FreeCursor(cursor_hand_);
+    if (cursor_text_) SDL_FreeCursor(cursor_text_);
+    if (cursor_no_) SDL_FreeCursor(cursor_no_);
+    if (text_input_on_) SDL_StopTextInput();
     if (texture_)  SDL_DestroyTexture(texture_);
     if (renderer_) SDL_DestroyRenderer(renderer_);
     if (window_ && !owns_window_ && !renderer_) SDL_DestroyWindowSurface(window_);   // the host may give the window to a renderer next
@@ -850,6 +853,7 @@ int Shell::run() {
 bool Shell::handle_event(const SDL_Event& e) {
     bool quit = false;
     need_paint_ = true;
+    if (!engine_cef_ && page_input(e)) return false;   // a form control / text input took it
             switch (e.type) {
             case SDL_QUIT:
                 quit = true;
@@ -1154,6 +1158,7 @@ void Shell::frame() {
         }
 #endif
         page_.tick();          // timers (page.after) fire here, frame-driven
+        form_frame();          // text input on/off, caret, file chooser result
         tick_media();
         if (page_.dirty()) {
             relayout();
@@ -1249,6 +1254,9 @@ int Shell::screenshot(const std::string& ppm_path) {
     const uint32_t t0 = SDL_GetTicks();
     unsigned end = shot_wait_ms_;
     for (const auto& c : shot_clicks_) end = std::max(end, c.at_ms);
+    for (const auto& ev : shot_events_) end = std::max(end, ev.at_ms + 50);
+    std::stable_sort(shot_events_.begin(), shot_events_.end(), [](const auto& a, const auto& b) { return a.at_ms < b.at_ms; });
+    size_t next_ev = 0;
     size_t next = 0;
     std::sort(shot_clicks_.begin(), shot_clicks_.end(), [](const auto& a, const auto& b) { return a.at_ms < b.at_ms; });
     while (SDL_GetTicks() - t0 < end || next < shot_clicks_.size()) {
@@ -1256,7 +1264,11 @@ int Shell::screenshot(const std::string& ppm_path) {
             handle_click(shot_clicks_[next].x, shot_clicks_[next].y);
             ++next;
         }
+        while (next_ev < shot_events_.size() && SDL_GetTicks() - t0 >= shot_events_[next_ev].at_ms)
+            run_shot_event(shot_events_[next_ev++]);
         page_.tick();
+        form_frame();
+        if (page_.dirty()) relayout();
         tick_media();
         repaint();   // overlays read the clock when drawn
         SDL_Delay(10);
@@ -1278,6 +1290,57 @@ int Shell::screenshot(const std::string& ppm_path) {
     std::fclose(f);
     std::printf("wrote %s (%dx%d)\n", ppm_path.c_str(), win_w_, win_h_);
     return 0;
+}
+
+bool Shell::load_shot_script(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char line[1024];
+    while (std::fgets(line, sizeof line, f)) {
+        ShotEvent ev;
+        char kind[32] = {0}, rest[900] = {0};
+        unsigned ms = 0;
+        if (std::sscanf(line, "%u %31s %899[^\n]", &ms, kind, rest) < 2) continue;
+        ev.at_ms = ms; ev.kind = kind; ev.s = rest;
+        std::sscanf(rest, "%d %d %d", &ev.a, &ev.b, &ev.c);
+        shot_events_.push_back(std::move(ev));
+    }
+    std::fclose(f);
+    return true;
+}
+
+void Shell::run_shot_event(const ShotEvent& ev) {
+    SDL_Event e{};
+    if (ev.kind == "click" || ev.kind == "down" || ev.kind == "up") {
+        e.button.x = ev.a; e.button.y = ev.b; e.button.button = SDL_BUTTON_LEFT; e.button.clicks = ev.c > 0 ? ev.c : 1;
+        if (ev.kind != "up") { e.type = SDL_MOUSEBUTTONDOWN; e.button.state = SDL_PRESSED; handle_event(e); }
+        if (ev.kind != "down") { e.type = SDL_MOUSEBUTTONUP; e.button.state = SDL_RELEASED; handle_event(e); }
+    } else if (ev.kind == "move") {
+        e.type = SDL_MOUSEMOTION; e.motion.x = ev.a; e.motion.y = ev.b; e.motion.state = ev.c ? SDL_BUTTON_LMASK : 0;
+        handle_event(e);
+    } else if (ev.kind == "wheel") {
+        mouse_x_ = ev.a; mouse_y_ = ev.b;
+        e.type = SDL_MOUSEWHEEL; e.wheel.y = ev.c; e.wheel.preciseY = float(ev.c);
+        handle_event(e);
+    } else if (ev.kind == "text") {
+        e.type = SDL_TEXTINPUT;
+        std::snprintf(e.text.text, sizeof e.text.text, "%s", ev.s.c_str());
+        handle_event(e);
+    } else if (ev.kind == "edit") {   // IME preedit
+        e.type = SDL_TEXTEDITING;
+        std::snprintf(e.edit.text, sizeof e.edit.text, "%s", ev.s.c_str());
+        handle_event(e);
+    } else if (ev.kind == "key") {
+        char name[64] = {0};
+        std::sscanf(ev.s.c_str(), "%63s", name);
+        SDL_Keycode k = SDL_GetKeyFromName(name);
+        e.key.keysym.sym = k;
+        if (ev.s.find("shift") != std::string::npos) e.key.keysym.mod |= KMOD_LSHIFT;
+        if (ev.s.find("ctrl") != std::string::npos) e.key.keysym.mod |= KMOD_LCTRL;
+        if (ev.s.find("alt") != std::string::npos) e.key.keysym.mod |= KMOD_LALT;
+        e.type = SDL_KEYDOWN; e.key.state = SDL_PRESSED; handle_event(e);
+        e.type = SDL_KEYUP; e.key.state = SDL_RELEASED; handle_event(e);
+    }
 }
 
 // El ORACULO (docs/plan-css.md fase 0): la pagina la pinta Chromium en
@@ -1491,7 +1554,7 @@ bool Shell::handle_click(int mx, int my, int clicks) {
 // :hover -- the element under the mouse and its ancestors carry the Hover
 // state; a style change re-runs layout (only pages that mention :hover).
 void Shell::update_hover() {
-    if (!page_.page_root() || !page_.uses_hover()) return;
+    if (!page_.page_root() || (!page_.uses_hover() && !page_.on_event)) return;
     const dom::Node* target = nullptr;
     if (mouse_y_ >= url_h() && mouse_y_ < win_h_ - bottom_h() && !url_focus_) {
         const float dx = static_cast<float>(mouse_x_);
@@ -1499,7 +1562,27 @@ void Shell::update_hover() {
         for (const auto& a : layout_.areas)
             if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h) target = a.node;
     }
+    if (page_.on_event && target) {   // pointer movement as events (mouseenter/leave need the chain diff below)
+        page::FormEvent mv{page::FormEvent::Kind::MouseMove, const_cast<dom::Node*>(target)};
+        mv.x = static_cast<float>(mouse_x_);
+        mv.y = static_cast<float>(mouse_y_ - url_h()) + scroll_;
+        page_.dispatch(mv);
+    }
     if (target == hover_node_) return;
+    if (page_.on_event) {
+        auto chain = [](const dom::Node* n) { std::vector<const dom::Node*> v; for (; n; n = n->parent) v.push_back(n); return v; };
+        const auto old_c = chain(hover_node_), new_c = chain(target);
+        for (const dom::Node* n : old_c)
+            if (std::find(new_c.begin(), new_c.end(), n) == new_c.end() && n->is_element()) {
+                page::FormEvent l{page::FormEvent::Kind::MouseLeave, const_cast<dom::Node*>(n)};
+                page_.dispatch(l);
+            }
+        for (auto it = new_c.rbegin(); it != new_c.rend(); ++it)
+            if (std::find(old_c.begin(), old_c.end(), *it) == old_c.end() && (*it)->is_element()) {
+                page::FormEvent en{page::FormEvent::Kind::MouseEnter, const_cast<dom::Node*>(*it)};
+                page_.dispatch(en);
+            }
+    }
     auto set = [](const dom::Node* n, bool on) {
         for (; n; n = n->parent) {
             auto* m = const_cast<dom::Node*>(n);
@@ -1509,7 +1592,7 @@ void Shell::update_hover() {
     set(hover_node_, false);
     set(target, true);
     hover_node_ = target;
-    relayout();
+    if (page_.uses_hover()) relayout();
 }
 
 void Shell::draw_scrollbar() {
@@ -1663,10 +1746,9 @@ void Shell::repaint() {
             if (h.button && dx >= h.x && dx <= h.x + h.w && dy >= h.y && dy <= h.y + h.h)
                 hover = &h;
     }
-    if ((hover != nullptr) != cursor_over_clickable_) {
-        cursor_over_clickable_ = hover != nullptr;
-        SDL_SetCursor(cursor_over_clickable_ ? cursor_hand_ : SDL_GetDefaultCursor());
-    }
+    cursor_over_clickable_ = hover != nullptr;
+    update_cursor_shape();
+    if (page_.uses_hover()) hover = nullptr;   // the page styles :hover itself: no lightening overlay on top
 
     // the page: display list in document coordinates, then fixed boxes in viewport coordinates
     {
@@ -1690,6 +1772,7 @@ void Shell::repaint() {
         paint::rasterize(layout_.fixed, cv, *font_);
         paint::rasterize(render::media_overlay(layout_, true, *font_), cv, *font_);
     }
+    draw_select_popup();
 
     if (!app_) draw_status();
     draw_scrollbar();

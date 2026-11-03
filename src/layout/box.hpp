@@ -250,7 +250,12 @@ void layout_table(Env& env, Box& b, const Constraint& c);
 Intrinsic table_intrinsic(Env& env, Box& b);
 
 // ── layout.cpp / paint.cpp ──────────────────────────────────────────────────
-struct HitRect { const dom::Node* node = nullptr; float x = 0, y = 0, w = 0, h = 0; bool button = false; };
+struct HitRect {
+    const dom::Node* node = nullptr; float x = 0, y = 0, w = 0, h = 0; bool button = false;
+    int cursor = 0;                     // style cursor of the box (see ComputedStyle::cursor)
+    // form controls: text origin (document x of the content box) and the font the text is drawn with
+    int ctl = -1; float tx = 0, ty = 0, th = 0, px = 0; int face = 0; bool password = false;
+};
 struct NamedRect { std::string name; float x = 0, y = 0, w = 0, h = 0; };
 struct WordRect { std::string text; float x = 0, y = 0, w = 0, h = 0; };
 using MediaRect = render::MediaBox;

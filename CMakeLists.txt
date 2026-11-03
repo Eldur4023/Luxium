@@ -122,7 +122,9 @@ add_executable(luxium
     src/layout/controls.cpp
     src/paint/raster.cpp
     src/shell/shell.cpp
+    src/shell/shell_forms.cpp
     src/page/page.cpp
+    src/page/forms.cpp
     src/page/bundle.cpp
     src/page/doc_codec.cpp
     src/page/luxp.cpp
@@ -180,6 +182,7 @@ add_executable(luxium_headless
     src/script/bytecode_io.cpp
     src/script/page_compile.cpp
     src/page/page.cpp
+    src/page/forms.cpp
     src/style/stylesheet.cpp
     src/style/selector.cpp
     src/page/bundle.cpp

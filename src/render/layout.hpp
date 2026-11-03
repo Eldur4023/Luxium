@@ -23,6 +23,12 @@ struct HitBox {
     const dom::Node* node = nullptr;
     float x = 0, y = 0, w = 0, h = 0;
     bool  button = false;        // hover overlay + hand cursor apply to these
+    int   cursor = 0;            // CSS cursor of the box: 0 auto, 1 pointer, 2 text, 3 default, 4 not-allowed, 5 grab, 6 grabbing
+    // form controls (ctl >= 0: Control::Type): where the text starts and the font it is drawn with
+    int   ctl = -1;
+    float tx = 0, ty = 0, th = 0, px = 0;   // text origin x (before scrolling), content top, line height, font size
+    int   face = 0;
+    bool  password = false;
 };
 
 // Border-box rect of an element carrying data-t (what the css-tests probe compares).

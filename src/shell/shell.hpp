@@ -31,6 +31,7 @@ struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Texture;
 struct SDL_Cursor;
+struct SDL_KeyboardEvent; struct SDL_MouseButtonEvent;
 typedef int SDL_Keycode;   // sdl.h defines it; the shell only stores keys it handles
 
 namespace luxium::net {
@@ -90,6 +91,10 @@ public:
     // --shot only: window-coordinate clicks (control bars) and a wait while media plays.
     void add_shot_click(int x, int y, unsigned at_ms) { shot_clicks_.push_back({x, y, at_ms}); }
     void set_shot_wait(unsigned ms) { shot_wait_ms_ = ms; }
+    // --shot only: a script of synthetic input, one step per line:
+    //   <ms> click X Y | down X Y | up X Y | move X Y | text STR | key NAME [shift] [ctrl] [alt] | wheel X Y DY
+    // (window coordinates; NAME is an SDL key name such as Return, Tab, Left, Backspace, a).
+    bool load_shot_script(const std::string& path);
     // El oraculo: Chromium (CEF off-screen) pinta la pagina en nuestro
     // framebuffer; para generar los goldens de css-tests.
     int cef_shot(const std::string& target, const std::string& ppm_path);
@@ -200,6 +205,9 @@ private:
     struct ShotClick { int x, y; unsigned at_ms; };
     std::vector<ShotClick> shot_clicks_;
     unsigned shot_wait_ms_ = 0;
+    struct ShotEvent { unsigned at_ms; std::string kind; int a = 0, b = 0, c = 0; std::string s; };
+    std::vector<ShotEvent> shot_events_;
+    void run_shot_event(const ShotEvent& ev);
     unsigned long cef_display_ = 0, cef_parent_ = 0;
     void    maybe_cef_handoff();
     bool    cef_available() const;
@@ -210,6 +218,37 @@ private:
     std::function<void(const std::string&)>  web_handler_;
     int     status_h() const { return app_ ? 0 : 20; }
     void    open_in_cef(const std::string& url);
+
+    // ── forms and text input in the own engine (shell_forms.cpp) ──
+    bool    page_input(const SDL_Event& e);          // true: the event was for a page control
+    bool    page_key_down(const SDL_KeyboardEvent& k);
+    bool    page_mouse_down(const SDL_MouseButtonEvent& b);
+    void    page_mouse_move(int x, int y, bool left_down);
+    void    form_frame();                             // text-input on/off, caret blink/scroll, file dialog result
+    const render::HitBox* control_hit(const dom::Node* n) const;
+    int     control_caret_at(const render::HitBox& h, float doc_x) const;
+    float   control_text_width(const render::HitBox& h, const std::string& shown, int byte) const;
+    void    open_select_popup(const render::HitBox& h);
+    void    close_select_popup() { popup_.node = nullptr; need_paint_ = true; }
+    void    draw_select_popup();
+    bool    popup_input_key(int sym);
+    void    open_file_dialog(dom::Node* input);
+    void    update_cursor_shape();
+    struct Popup {
+        dom::Node* node = nullptr;
+        float x = 0, y = 0, w = 0;                    // document coords of the list's top-left
+        std::vector<std::string> items;
+        int hover = 0;
+        float px = 13.333f; int face = 0;
+        float item_h = 20;
+    } popup_;
+    struct FileJob;                                   // zenity running on a worker thread
+    std::shared_ptr<FileJob> file_job_;
+    bool    text_input_on_ = false;
+    bool    form_drag_ = false;                       // selecting text in a control with the mouse
+    uint32_t caret_tick_ = 0;
+    int     cursor_kind_ = 0;
+    SDL_Cursor* cursor_text_ = nullptr; SDL_Cursor* cursor_no_ = nullptr; SDL_Cursor* cursor_move_ = nullptr;
 };
 
 } // namespace luxium::shell

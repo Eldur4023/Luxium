@@ -13,12 +13,27 @@
 #include <style/stylesheet.hpp>
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace luxium::page {
+
+// Everything the user does to the page, in one record.  The shell (own engine) fires these through
+// Page::dispatch(); whoever scripts the page (the LuxScript runtime) sets Page::on_event and routes
+// them to handlers.  A handler that wants to cancel the default action sets `prevented`.
+struct FormEvent {
+    enum class Kind { Input, Change, Submit, Focus, Blur, KeyDown, KeyUp, MouseEnter, MouseLeave, MouseMove, Scroll };
+    Kind        kind = Kind::Input;
+    dom::Node*  target = nullptr;     // the element concerned (focus owner, hovered element, scrolled box...)
+    std::string key;                  // KeyDown/KeyUp: "a", "Enter", "ArrowDown", "Tab"...; Input: the inserted text
+    std::string value;                // Input/Change: the control's value after the edit
+    int         mods = 0;             // bit 1 shift, 2 ctrl, 4 alt, 8 meta
+    float       x = 0, y = 0;         // MouseMove: document coords; Scroll: new scroll offset
+    bool        prevented = false;
+};
 
 class Page : public PageHost {
 public:
@@ -73,6 +88,50 @@ public:
     bool dirty() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
 
+    // ── forms and focus (page/forms.cpp) ──────────────────────────────────────
+    // THE dispatch point: every FormEvent goes through here.  Scripting hooks `on_event`; with none set
+    // the default actions below still happen.
+    std::function<void(FormEvent&)> on_event;
+    // Fires `e`; returns false when a handler prevented the default action.
+    bool dispatch(FormEvent& e);
+
+    // Value of <input>/<textarea> (the `value` attribute / the text child), <select> (the selected
+    // option's value or text).  Setters change the DOM and mark the page dirty; they fire no events.
+    std::string form_value(const dom::Node* n) const;
+    void        set_form_value(dom::Node* n, const std::string& v);
+    bool        form_checked(const dom::Node* n) const;          // checkbox / radio
+    void        set_form_checked(dom::Node* n, bool on);
+    int         select_index(const dom::Node* select) const;
+    void        select_option(dom::Node* select, int index);      // fires Input + Change
+    std::vector<std::string> form_files(const dom::Node* n) const { auto it = files_.find(n); return it == files_.end() ? std::vector<std::string>{} : it->second; }
+    void        set_form_files(dom::Node* n, std::vector<std::string> paths);   // file input (full paths)
+
+    dom::Node*  focused() const { return focus_; }
+    // Moves focus (null = blur).  `visible`: keyboard-driven, so :focus-visible applies (text fields always match).
+    void        focus(dom::Node* n, bool visible = false);
+    void        blur() { focus(nullptr); }
+    bool        focusable(const dom::Node* n) const;
+    void        focus_next(bool backwards);                       // Tab / Shift+Tab, document (tabindex 0) order
+    static bool is_text_control(const dom::Node* n);              // text-like <input> or <textarea>
+
+    // Editing of the focused text control (caret/anchor are byte offsets).  Each fires Input.
+    void        edit_insert(const std::string& utf8);
+    void        edit_backspace(bool word);
+    void        edit_delete(bool word);
+    void        edit_move(int dir, bool word, bool extend);       // dir -1 / +1
+    void        edit_home_end(bool end, bool extend);
+    void        edit_select_all();
+    void        edit_set_caret(int byte, bool extend);
+    std::string edit_selection() const;
+    bool        edit_replace_selection(const std::string& utf8);  // cut / paste; true if the value changed
+    // Enter in a text control: fires Submit on the enclosing <form> (default action: none).
+    void        edit_enter();
+    // A primary click that lands on `n` (not links): toggles checkbox/radio, label -> its control,
+    // focuses fields.  Returns true when it consumed the click (then Page::click should not run).
+    bool        activate(dom::Node* n);
+    void        edit_select_word();                               // double click: the word around the caret
+    void        drop_stale_focus();                               // focus owner left the document (set_html...)
+
     // Routes a click at a node (hit-tested by the shell) to script handlers.
     void click(const dom::Node* node);
 
@@ -100,6 +159,8 @@ private:
     std::vector<style::Rule>   sheet_;
     bool                       uses_hover_ = false;
     bool                       dark_scheme_ = false;
+    dom::Node*                 focus_ = nullptr;
+    std::map<const dom::Node*, std::vector<std::string>> files_;
     bool                       saw_js_ = false;
     std::string                source_;
     bool                       dirty_ = true;

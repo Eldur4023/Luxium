@@ -121,7 +121,8 @@ int main(int argc, char** argv) {
     struct At { int x, y; unsigned ms; };
     std::vector<At> click_at;
     unsigned wait_ms = 0;
-    bool check = false, headless = false;
+    bool check = false, headless = false, log_events = false;
+    const char* script = nullptr;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (std::strcmp(a, "--headless") == 0) headless = true;
@@ -131,6 +132,8 @@ int main(int argc, char** argv) {
             int x = 0, y = 0, at = 0;
             if (std::sscanf(argv[++i], "%d,%d@%d", &x, &y, &at) >= 2) click_at.push_back({x, y, static_cast<unsigned>(at)});
         }
+        else if (std::strcmp(a, "--script") == 0 && i + 1 < argc) script = argv[++i];
+        else if (std::strcmp(a, "--log-events") == 0) log_events = true;
         else if (std::strcmp(a, "--wait") == 0 && i + 1 < argc) wait_ms = static_cast<unsigned>(std::atoi(argv[++i]));
         else if (std::strcmp(a, "--shot") == 0 && i + 1 < argc) shot = argv[++i];
         else if (std::strcmp(a, "--cefshot") == 0 && i + 1 < argc) cefshot = argv[++i];
@@ -188,9 +191,17 @@ int main(int argc, char** argv) {
     // sin argumentos, la pantalla de inicio; el resto, carga directa.
     if (is_url) shell.navigate_to(path, true);
     else if (path == "luxium:inicio") shell.navigate_address(path, true);
+    if (log_events)   // prints every FormEvent: the hook scripting attaches to, made visible
+        page.on_event = [](luxium::page::FormEvent& e) {
+            static const char* k[] = {"input", "change", "submit", "focus", "blur", "keydown", "keyup", "mouseenter", "mouseleave", "mousemove", "scroll"};
+            if (e.kind == luxium::page::FormEvent::Kind::MouseMove) return;
+            std::printf("event %s <%s id=%s> key=\"%s\" value=\"%s\"\n", k[int(e.kind)], e.target ? e.target->name.c_str() : "?",
+                        e.target ? e.target->attr_or("id").c_str() : "", e.key.c_str(), e.value.c_str());
+        };
     for (const auto& id : clicks) page.click_by_id(id);
     for (const auto& c : click_at) shell.add_shot_click(c.x, c.y, c.ms);
     shell.set_shot_wait(wait_ms);
+    if (script && !shell.load_shot_script(script)) { std::fprintf(stderr, "luxium: cannot read script '%s'\n", script); return 1; }
     if (boxes) shell.set_boxes_out(boxes);
     if (cefprobe) shell.set_probe_out(cefprobe);
     if (cefshot) return shell.cef_shot(path, cefshot);

@@ -60,8 +60,11 @@ LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
     out.canvas_bg = po.canvas_bg;
     out.list = std::move(po.main);
     out.fixed = std::move(po.fixed);
-    for (auto& h : po.hits) out.hits.push_back({h.node, h.x, h.y, h.w, h.h, h.button});
-    for (auto& h : po.areas) out.areas.push_back({h.node, h.x, h.y, h.w, h.h, false});
+    for (auto& h : po.hits) {
+        HitBox hb{h.node, h.x, h.y, h.w, h.h, h.button, h.cursor, h.ctl, h.tx, h.ty, h.th, h.px, h.face, h.password};
+        out.hits.push_back(hb);
+    }
+    for (auto& h : po.areas) { HitBox hb{h.node, h.x, h.y, h.w, h.h, false}; hb.cursor = h.cursor; out.areas.push_back(hb); }
     for (auto& b : po.boxes) out.boxes.push_back({b.name, b.x, b.y, b.w, b.h});
     out.media = std::move(po.media);
     for (auto& w : po.words) out.words.push_back({w.text, w.x, w.y, w.w, w.h});

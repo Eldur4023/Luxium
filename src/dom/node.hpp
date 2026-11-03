@@ -74,4 +74,8 @@ public:
 
 std::unique_ptr<Node> make_document();
 
+// IME composition in progress (SDL_TEXTEDITING): drawn inline at the caret of `node`.
+struct ImeState { const Node* node = nullptr; std::string text; };
+extern ImeState g_ime;
+
 } // namespace luxium::dom

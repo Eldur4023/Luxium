@@ -520,7 +520,14 @@ struct Painter {
                     const float a = at(std::min(b.node->caret, b.node->anchor)), z = at(std::max(b.node->caret, b.node->anchor));
                     rect(cx - sx + a, cy, z - a, line, 0xFFB3D4FC);
                 }
-                text_item(shown, s, cx - sx, base, fg);
+                const bool composing = focused && dom::g_ime.node == b.node && !dom::g_ime.text.empty();
+                if (composing) {   // IME preedit sits at the caret, underlined
+                    const size_t at_b = pw ? shown.size() : size_t(std::min<int>(b.node->caret, int(shown.size())));
+                    const std::string pre = dom::g_ime.text;
+                    text_item(shown.substr(0, at_b) + pre + shown.substr(at_b), s, cx - sx, base, fg);
+                    const float x0 = cx - sx + text_width(shown.substr(0, at_b), s);
+                    rect(x0, base + 2, text_width(pre, s), 1, fg);
+                } else text_item(shown, s, cx - sx, base, fg);
                 if (focused && (b.node->state & dom::Node::CaretOn) && !c.readonly)
                     rect(cx - sx + at(b.node->caret), cy, 1, line, s.color);
             } else {
@@ -595,7 +602,7 @@ struct Painter {
                         if (!s.bg.empty()) bg_layers(s, r, r, rad);
                         borders(ib, r, rad, f.first, f.last);
                     }
-                    if (ib.node && (ib.node->name == "a" || ib.node->has_attr("id")) && r.w > 0)
+                    if (ib.node && (ib.node->name == "a" || ib.node->name == "label" || ib.node->has_attr("id")) && r.w > 0)
                         out.hits.push_back({ib.node, r.x, r.y, r.w, r.h, false});
                     break;
                 }
@@ -704,8 +711,19 @@ struct Painter {
         outline(b);
         if (b.node && b.kind != Box::Kind::Inline && !b.anonymous) {
             const std::string& tg = b.node->name;
-            if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media)
-                out.hits.push_back({b.node, sn(b.ax), sn(b.ay), b.w, b.h, tg == "button"});
+            if (b.ctl) {
+                const ComputedStyle& cs = *b.st;
+                HitRect h{b.node, sn(b.ax), sn(b.ay), b.w, b.h, false};
+                h.cursor = cs.cursor; h.ctl = int(b.ctl->type);
+                h.tx = sn(b.ax + b.border.l + b.padding.l); h.ty = sn(b.ay + b.border.t + b.padding.t);
+                h.th = line_height_px(env, cs); h.px = cs.font_size; h.face = face_of(env, cs).id;
+                h.password = b.ctl->type == Control::Type::Password;
+                out.hits.push_back(h);
+            } else if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media) {
+                HitRect h{b.node, sn(b.ax), sn(b.ay), b.w, b.h, tg == "button"};
+                h.cursor = b.st->cursor;
+                out.hits.push_back(h);
+            }
         }
     }
 
@@ -794,7 +812,7 @@ void paint_tree(Env& env, Tree& tree, float canvas_w, float canvas_h, PaintOutpu
     // every element box, for :hover hit-testing
     for (Box* k : tree.order)
         if (k->node && !k->anonymous && (k->kind == Box::Kind::Block || k->kind == Box::Kind::Replaced))
-            out.areas.push_back({k->node, k->ax, k->ay, k->w, k->h, false});
+            { HitRect ar{k->node, k->ax, k->ay, k->w, k->h, false}; ar.cursor = k->st->cursor; out.areas.push_back(ar); }
 
     // data-t boxes for the css-tests probe
     for (Box* k : tree.order)
