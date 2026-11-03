@@ -14,6 +14,9 @@
 //   key:KEY[@ID]        keydown + keyup (KEY is a DOM key: Enter, ArrowLeft, a, Space...)
 //   wait:MS             run the engine loop for MS milliseconds
 //   until:TEXT[:MS]     run the loop until a console line contains TEXT (default 5000 ms)
+//   csel:SEL            click the first element matching a CSS selector
+//   tsel:SEL=TEXT       like type:, by selector
+//   dump:SEL            print the text of the first match
 //   text:ID             print the element's text
 //   attr:ID.NAME        print an attribute
 //   count:SELECTOR      print how many elements match
@@ -129,7 +132,8 @@ int main(int argc, char** argv) {
         auto f = luxium::net::Fetch::start(target);
         while (!f->done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
         if (!f->ok()) { std::fprintf(stderr, "cannot fetch '%s': %s\n", target.c_str(), f->error().c_str()); return 2; }
-        page.load_string(f->body(), target);
+        if (f->is_luxp()) page.load_luxp(f->body(), target);   // a Lux server answers its compiled page
+        else page.load_string(f->body(), target);
     } else if (!page.load_file(target)) {
         std::fprintf(stderr, "cannot read '%s'\n", target.c_str());
         return 2;
@@ -179,6 +183,17 @@ int main(int argc, char** argv) {
             }
             spin(page, ms, needle);
             if (!console_has(page, needle)) { std::printf("until: '%s' never appeared\n", needle.c_str()); rc = 1; }
+        } else if (cmd == "csel" || cmd == "tsel" || cmd == "dump") {   // by CSS selector (first match)
+            const auto eq = cmd == "tsel" ? arg.find('=') : std::string::npos;
+            auto hits = select(page, arg.substr(0, eq));
+            if (hits.empty()) { std::printf("no element %s\n", arg.c_str()); rc = 1; continue; }
+            if (cmd == "csel") { page.click(hits[0]); spin(page, 5); }
+            else if (cmd == "tsel") {
+                set_value(hits[0], arg.substr(eq + 1));
+                page.dispatch("input", hits[0]);
+                page.dispatch("change", hits[0]);
+                spin(page, 5);
+            } else std::printf("dump %s = [%s]\n", arg.c_str(), hits[0]->text_content().c_str());
         } else if (cmd == "text") {
             Node* n = by_id(page, arg);
             std::printf("text #%s = [%s]\n", arg.c_str(), n ? n->text_content().c_str() : "<missing>");

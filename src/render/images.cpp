@@ -6,6 +6,7 @@
 #include <page/bundle.hpp>
 
 #include <zlib.h>
+#include <curl/curl.h>
 #include <jpeglib.h>
 #include <webp/decode.h>
 
@@ -16,6 +17,11 @@
 #include <cstring>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 
 namespace luxium::render {
 
@@ -134,8 +140,88 @@ ImageBitmap* decode_webp(const std::vector<uint8_t>& data, bool want_rgba) {
     return bm;
 }
 
-const ImageBitmap* decode(const std::string& path, bool want_rgba = false) {
-    auto bytes = bundle::read_file(path);
+// ── network images: a small worker pool; the page paints without the picture until the bytes land ──
+struct NetEntry { bool done = false; bool ok = false; std::string bytes; };
+std::mutex g_net_m;
+std::condition_variable g_net_cv;
+std::unordered_map<std::string, NetEntry> g_net;
+std::deque<std::string> g_net_q;
+std::atomic<uint64_t> g_generation{0};
+int g_net_workers = 0;
+
+size_t net_write(char* p, size_t sz, size_t nm, void* ud) {
+    auto* b = static_cast<std::string*>(ud);
+    if (b->size() + sz * nm > (24u << 20)) return 0;   // not an image, an attack
+    b->append(p, sz * nm);
+    return sz * nm;
+}
+
+void net_worker() {
+    for (;;) {
+        std::string url;
+        {
+            std::unique_lock<std::mutex> lk(g_net_m);
+            g_net_cv.wait(lk, [] { return !g_net_q.empty(); });
+            url = std::move(g_net_q.front());
+            g_net_q.pop_front();
+        }
+        std::string body;
+        bool ok = false;
+        if (CURL* c = curl_easy_init()) {
+            curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, net_write);
+            curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
+            curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(c, CURLOPT_MAXREDIRS, 3L);
+            curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
+            curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 6L);
+            curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+            long status = 0;
+            ok = curl_easy_perform(c) == CURLE_OK;
+            curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
+            ok = ok && status >= 200 && status < 300;
+            curl_easy_cleanup(c);
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_net_m);
+            NetEntry& e = g_net[url];
+            e.done = true; e.ok = ok; e.bytes = ok ? std::move(body) : std::string();
+        }
+        g_generation.fetch_add(1);
+    }
+}
+
+// 1 = bytes ready, 0 = still on its way, -1 = failed
+int net_bytes(const std::string& url, std::string& out) {
+    std::lock_guard<std::mutex> lk(g_net_m);
+    auto it = g_net.find(url);
+    if (it == g_net.end()) {
+        g_net[url] = NetEntry{};
+        g_net_q.push_back(url);
+        while (g_net_workers < 4) { ++g_net_workers; std::thread(net_worker).detach(); }
+        g_net_cv.notify_one();
+        return 0;
+    }
+    if (!it->second.done) return 0;
+    if (!it->second.ok) return -1;
+    out = std::move(it->second.bytes);   // the decoded bitmap is cached by load_image: the bytes are not needed again
+    return 1;
+}
+
+bool is_http(const std::string& s) { return s.starts_with("http://") || s.starts_with("https://"); }
+
+// -1 = failed, 0 = pending
+const ImageBitmap* decode(const std::string& path, bool want_rgba = false, bool* pending = nullptr) {
+    std::optional<std::string> bytes;
+    if (is_http(path)) {
+        std::string got;
+        const int st = net_bytes(path, got);
+        if (st == 0) { if (pending) *pending = true; return nullptr; }
+        if (st < 0) return nullptr;
+        bytes = std::move(got);
+    } else {
+        bytes = bundle::read_file(path);
+    }
     if (!bytes) return nullptr;
     std::vector<uint8_t> data(bytes->begin(), bytes->end());
 
@@ -230,9 +316,24 @@ const ImageBitmap* load_image(const std::string& path) {
     std::lock_guard<std::mutex> lk(g_mutex);
     auto it = g_cache.find(path);
     if (it != g_cache.end()) return it->second;
-    const ImageBitmap* bm = decode(path);
-    g_cache[path] = bm;   // tambien los fallos: no reintentar cada frame
+    bool pending = false;
+    const ImageBitmap* bm = decode(path, false, &pending);
+    if (!pending) g_cache[path] = bm;   // tambien los fallos: no reintentar cada frame (pero no lo que aun viaja)
     return bm;
+}
+
+uint64_t image_generation() { return g_generation.load(); }
+
+std::string resolve_image(const std::string& base_dir, const std::string& src) {
+    if (is_http(src)) return src;
+    if (is_http(base_dir)) {
+        if (src.starts_with("//")) return base_dir.substr(0, base_dir.find(':') + 1) + src;
+        if (src.starts_with('/')) {
+            const size_t slash = base_dir.find('/', base_dir.find("://") + 3);
+            return (slash == std::string::npos ? base_dir : base_dir.substr(0, slash)) + src;
+        }
+    }
+    return src.starts_with('/') ? src : base_dir + src;
 }
 
 } // namespace luxium::render

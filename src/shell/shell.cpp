@@ -342,6 +342,14 @@ void Shell::after_load() {
     relayout();
 }
 
+// A network image finished: lay the page out again so it shows up.
+void Shell::poll_images() {
+    const uint64_t g = render::image_generation();
+    if (g == image_gen_) return;
+    image_gen_ = g;
+    page_.page_mutated();
+}
+
 void Shell::poll_fetch() {
     if (!fetch_ || !fetch_->done()) return;
     const bool ok = fetch_->ok();
@@ -1240,6 +1248,7 @@ void Shell::frame() {
             }
         }
 #endif
+        poll_images();
         page_.tick();          // timers (page.after) fire here, frame-driven
         form_frame();          // text input on/off, caret, file chooser result
         if (anim_active_) page_.page_mutated();   // a transition is running: re-lay out with the next sample
@@ -1350,6 +1359,8 @@ int Shell::screenshot(const std::string& ppm_path) {
         }
         while (next_ev < shot_events_.size() && SDL_GetTicks() - t0 >= shot_events_[next_ev].at_ms)
             run_shot_event(shot_events_[next_ev++]);
+        poll_fetch();   // an http page lands here, and its scripts run in the frames that follow
+        poll_images();
         page_.tick();
         form_frame();
         if (anim_active_) page_.page_mutated();

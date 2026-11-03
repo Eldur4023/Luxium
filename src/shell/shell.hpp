@@ -225,6 +225,8 @@ private:
     void run_shot_event(const ShotEvent& ev);
     unsigned long cef_display_ = 0, cef_parent_ = 0;
     void    maybe_cef_handoff();
+    void    poll_images();
+    uint64_t image_gen_ = 0;
     bool    cef_available() const;
     bool    app_ = false, owns_window_ = true;
     int     top_inset_ = 0;

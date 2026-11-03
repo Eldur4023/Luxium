@@ -199,9 +199,7 @@ struct Painter {
 
     // ── backgrounds ─────────────────────────────────────────────────────────
     std::shared_ptr<const render::ImageBitmap> image_for(const std::string& url) {
-        std::string path = url;
-        if (!path.starts_with('/')) path = env.base_dir + path;
-        const render::ImageBitmap* bm = render::load_image(path);
+        const render::ImageBitmap* bm = render::load_image(render::resolve_image(env.base_dir, url));
         if (!bm) return nullptr;
         return std::shared_ptr<const render::ImageBitmap>(bm, [](const render::ImageBitmap*) {});
     }

@@ -116,13 +116,11 @@ struct Builder {
 
     void load_replaced(Box& b, const dom::Node& el) {
         const std::string src = el.attr_or("src");
-        if (src.empty() || src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:")) {
+        if (src.empty() || src.starts_with("data:")) {
             b.broken_img = true;
             return;
         }
-        std::string path = src;
-        if (!path.starts_with('/')) path = base_dir + path;
-        const render::ImageBitmap* bm = render::load_image(path);
+        const render::ImageBitmap* bm = render::load_image(render::resolve_image(base_dir, src));
         if (!bm) { b.broken_img = true; return; }
         // cached forever by load_image: a non-owning shared_ptr is enough
         b.img = std::shared_ptr<const render::ImageBitmap>(bm, [](const render::ImageBitmap*) {});
@@ -151,8 +149,8 @@ struct Builder {
         e.muted = el.has_attr("muted");
         const media::own::Info in = media::own::attach(&el, e);
         const std::string poster = el.attr_or("poster");
-        if (!audio && !poster.empty() && !poster.starts_with("http") && !poster.starts_with("data:")) {
-            if (const render::ImageBitmap* bm = render::load_image(poster.starts_with('/') ? poster : base_dir + poster))
+        if (!audio && !poster.empty() && !poster.starts_with("data:")) {
+            if (const render::ImageBitmap* bm = render::load_image(render::resolve_image(base_dir, poster)))
                 b.img = std::shared_ptr<const render::ImageBitmap>(bm, [](const render::ImageBitmap*) {});
         }
         if (audio) { b.nat_w = 300; b.nat_h = 54; }

@@ -15,6 +15,13 @@ struct ImageBitmap {
     std::vector<uint8_t> rgba;  // 4 bytes por pixel, alfa recta: solo en load_image_rgba(), y solo si trae alfa
 };
 
+// A page's image reference -> what load_image() takes: an absolute file path, or an http(s) URL when the
+// page itself came over http ("/api/x" resolves against its origin, "x" against its directory).
+std::string resolve_image(const std::string& base_dir, const std::string& src);
+
+// Bumped whenever a network image finishes (success or failure): the shell relayouts when it changes.
+uint64_t image_generation();
+
 // Decodifica una vez y devuelve el bitmap cacheado; null si falla.
 const ImageBitmap* load_image(const std::string& path);
 
