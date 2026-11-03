@@ -3,6 +3,8 @@
 
 namespace luxium::media::own {
 
+Scope::Scope(const void*) : prev_(nullptr) {}
+Scope::~Scope() {}
 Info attach(const void*, const Elem&) { return {}; }
 void sweep() {}
 void reset() {}

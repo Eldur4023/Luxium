@@ -21,12 +21,7 @@ using page::Page;
 
 namespace {
 
-int mods_of(uint16_t m) {
-    return ((m & KMOD_SHIFT) ? 1 : 0) | ((m & KMOD_CTRL) ? 2 : 0) | ((m & KMOD_ALT) ? 4 : 0) | ((m & KMOD_GUI) ? 8 : 0);
-}
-
-// SDL keysym -> DOM KeyboardEvent.key
-std::string dom_key(const SDL_Keysym& k) {
+[[maybe_unused]] std::string dom_key(const SDL_Keysym& k) {
     switch (k.sym) {
     case SDLK_RETURN: case SDLK_KP_ENTER: return "Enter";
     case SDLK_ESCAPE: return "Escape";
@@ -237,15 +232,23 @@ void Shell::open_file_dialog(dom::Node* input) {
 // ── scrolling boxes ─────────────────────────────────────────────────────────
 
 void Shell::fire_scroll(dom::Node* n) {
-    page::FormEvent ev{page::FormEvent::Kind::Scroll, n};
-    ev.x = n->scroll_x; ev.y = n->scroll_y;
-    page_.dispatch(ev);
+    EventData d;
+    d.x = n->scroll_x; d.y = n->scroll_y;
+    page_.dispatch("scroll", n, d);
     page_.page_mutated();
 }
 
 bool Shell::wheel_scroll(float dx, float dy) {
     const float px = float(mouse_x_), py = float(mouse_y_ - url_h()) + scroll_;
     if (mouse_y_ < url_h() || mouse_y_ >= win_h_ - bottom_h()) return false;
+    if (page_.wants_event("wheel")) {   // scripts see the wheel first and may take it over
+        const dom::Node* under = nullptr;
+        for (const auto& a : layout_.areas)
+            if (px >= a.x && px < a.x + a.w && py >= a.y && py < a.y + a.h && a.in_clip(px, py)) under = a.node;
+        EventData d;
+        d.x = px; d.y = py; d.delta = dy;
+        if (page_.dispatch("wheel", under, d)) return true;
+    }
     for (auto it = layout_.areas.rbegin(); it != layout_.areas.rend(); ++it) {
         const render::HitBox& a = *it;
         if (a.max_sx <= 0 && a.max_sy <= 0) continue;
@@ -352,10 +355,13 @@ bool Shell::page_key_down(const SDL_KeyboardEvent& k) {
     const bool shift = (k.keysym.mod & KMOD_SHIFT) != 0, ctrl = (k.keysym.mod & KMOD_CTRL) != 0;
     // F-keys (devtools, reload...) and Ctrl+R/L/U stay with the shell
     if ((k.keysym.sym >= SDLK_F1 && k.keysym.sym <= SDLK_F12)) return false;
+    // keydown reaches scripts first (Page::key_event, through forward_key_to_page); the defaults below only
+    // run when no handler called event.prevent().  The shell must not dispatch it a second time.
     {
-        page::FormEvent ev{page::FormEvent::Kind::KeyDown, f ? f : page_.page_root()->find_first("body")};
-        ev.key = dom_key(k.keysym); ev.mods = mods_of(k.keysym.mod);
-        if (!page_.dispatch(ev)) return true;   // the script took it
+        SDL_Event se{};
+        se.type = SDL_KEYDOWN; se.key = k;
+        key_dispatched_ = true;
+        if (forward_key_to_page(se, true)) return true;
     }
     if (popup_.node) return popup_input_key(k.keysym.sym);
     if (k.keysym.sym == SDLK_TAB) { page_.focus_next(shift); need_paint_ = true; return true; }
@@ -419,14 +425,7 @@ bool Shell::page_input(const SDL_Event& e) {
         }
         return false;
     case SDL_KEYDOWN: return page_key_down(e.key);
-    case SDL_KEYUP: {
-        dom::Node* f = page_.focused();
-        if (e.key.keysym.sym >= SDLK_F1 && e.key.keysym.sym <= SDLK_F12) return false;
-        page::FormEvent ev{page::FormEvent::Kind::KeyUp, f ? f : page_.page_root()->find_first("body")};
-        ev.key = dom_key(e.key.keysym); ev.mods = mods_of(e.key.keysym.mod);
-        page_.dispatch(ev);
-        return false;
-    }
+    case SDL_KEYUP: return false;   // forward_key_to_page (shell.cpp) delivers keyup
     case SDL_MOUSEBUTTONDOWN: return page_mouse_down(e.button);
     case SDL_MOUSEBUTTONUP: form_drag_ = false; sb_drag_ = {}; return false;
     case SDL_MOUSEMOTION: page_mouse_move(e.motion.x, e.motion.y, (e.motion.state & SDL_BUTTON_LMASK) != 0); return false;
@@ -446,10 +445,10 @@ void Shell::form_frame() {
         file_job_.reset();
         if (!paths.empty()) {
             page_.set_form_files(n, paths);
-            page::FormEvent in{page::FormEvent::Kind::Input, n}; in.value = page_.form_value(n);
-            page_.dispatch(in);
-            page::FormEvent ch{page::FormEvent::Kind::Change, n}; ch.value = in.value;
-            page_.dispatch(ch);
+            EventData d;
+            d.value = page_.form_value(n);
+            page_.dispatch("input", n, d);
+            page_.dispatch("change", n, d);
         }
     }
     dom::Node* f = page_.focused();
@@ -536,6 +535,77 @@ void Shell::apply_sticky() {
     for (auto* list : {&layout_.hits, &layout_.areas})
         for (auto& h : *list)
             if (h.sticky >= 0) h.y = h.base_y + sticky_dy_[size_t(h.sticky)];
+}
+
+} // namespace luxium::shell
+
+namespace luxium::shell {
+
+const render::HitBox* Shell::box_of(const dom::Node* n) const {
+    for (const auto& a : layout_.areas) if (a.node == n) return &a;     // block-level boxes
+    for (auto it = layout_.hits.rbegin(); it != layout_.hits.rend(); ++it) if (it->node == n) return &*it;   // inline ones
+    return nullptr;
+}
+
+// What the script runtime reaches (src/script/engine.hpp ShellHooks) that only the window knows.
+void Shell::wire_form_hooks() {
+    auto& h = page_.hooks();
+    h.rect = [this](const dom::Node* n, float out[4]) {
+        const render::HitBox* b = box_of(n);
+        if (!b) return false;
+        out[0] = b->x; out[1] = b->y; out[2] = b->w; out[3] = b->h;
+        return true;
+    };
+    h.scroll_get = [](const dom::Node* n, bool vertical) { return vertical ? n->scroll_y : n->scroll_x; };
+    h.scroll_set = [this](const dom::Node* n, bool vertical, float v) {
+        const render::HitBox* b = box_of(n);
+        const float mx = b ? (vertical ? b->max_sy : b->max_sx) : 0.f;
+        dom::Node* m = const_cast<dom::Node*>(n);
+        float& cur = vertical ? m->scroll_y : m->scroll_x;
+        const float nv = std::clamp(v, 0.f, mx);
+        if (nv == cur) return;
+        cur = nv;
+        fire_scroll(m);
+    };
+    // Bring `n` into view: every scrolling ancestor, innermost first, then the page itself.
+    h.scroll_into_view = [this](const dom::Node* n) {
+        const render::HitBox* target = box_of(n);
+        if (!target) return;
+        float top = target->y, bottom = target->y + target->h;
+        for (const dom::Node* a = n->parent; a; a = a->parent) {
+            const render::HitBox* ab = box_of(a);
+            if (!ab || ab->max_sy <= 0) continue;
+            dom::Node* m = const_cast<dom::Node*>(a);
+            const float vt = ab->y, vb = ab->y + ab->h;
+            float d = 0;
+            if (top < vt) d = top - vt; else if (bottom > vb) d = std::min(bottom - vb, top - vt);
+            if (d != 0) {
+                const float nv = std::clamp(m->scroll_y + d, 0.f, ab->max_sy);
+                const float moved = nv - m->scroll_y;
+                m->scroll_y = nv; top -= moved; bottom -= moved;
+                fire_scroll(m);
+            }
+        }
+        const float view = page_h();
+        if (top < scroll_) scroll_ = std::max(0.f, top);
+        else if (bottom > scroll_ + view) scroll_ = std::max(0.f, std::min(bottom - view, top));
+        scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_h_ - view));
+        need_paint_ = true;
+    };
+    h.focus = [this](dom::Node* n) { page_.focus(n, true); };
+    h.focused = [this] { return page_.focused(); };
+    // live values come from the DOM-backed form model (textarea text, selected <option>, file names)
+    h.get_value = [this](const dom::Node* n, std::string& out) {
+        if (!n || !n->is_element() || !(n->name == "input" || n->name == "textarea" || n->name == "select")) return false;
+        out = page_.form_value(n);
+        return true;
+    };
+    h.set_value = [this](dom::Node* n, const std::string& v) {
+        if (!n || !n->is_element() || !(n->name == "input" || n->name == "textarea" || n->name == "select")) return false;
+        page_.set_form_value(n, v);
+        return true;
+    };
+    h.files = [this](const dom::Node* n) { return page_.form_files(n); };
 }
 
 } // namespace luxium::shell

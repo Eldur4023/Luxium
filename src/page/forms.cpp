@@ -71,11 +71,6 @@ bool hidden_chain(const Node* n) {
 
 } // namespace
 
-bool Page::dispatch(FormEvent& e) {
-    if (on_event) on_event(e);
-    return !e.prevented;
-}
-
 bool Page::is_text_control(const Node* n) {
     if (!n || !n->is_element()) return false;
     if (n->name == "textarea") return true;
@@ -150,10 +145,8 @@ void Page::select_option(Node* select, int index) {
     set_attr(opts[index], "selected", "");
     page_mutated();
     if (!changed) return;
-    FormEvent in{FormEvent::Kind::Input, select}; in.value = form_value(select);
-    dispatch(in);
-    FormEvent ch{FormEvent::Kind::Change, select}; ch.value = in.value;
-    dispatch(ch);
+    { EventData d; d.value = form_value(select); dispatch("input", select, d); }
+    { EventData d; d.value = form_value(select); dispatch("change", select, d); }
 }
 
 void Page::set_form_files(Node* n, std::vector<std::string> paths) {
@@ -179,8 +172,7 @@ void Page::focus(Node* n, bool visible) {
     if (old) {
         old->state &= static_cast<unsigned char>(~(Node::Focus | Node::FocusVisible | Node::CaretOn));
         if (dom::g_ime.node == old) dom::g_ime = {};
-        FormEvent b{FormEvent::Kind::Blur, old};
-        dispatch(b);
+        dispatch("blur", old);
     }
     if (n) {
         n->state |= Node::Focus;
@@ -190,8 +182,7 @@ void Page::focus(Node* n, bool visible) {
             n->scroll_x = 0;
             n->state |= Node::CaretOn;
         }
-        FormEvent f{FormEvent::Kind::Focus, n};
-        dispatch(f);
+        dispatch("focus", n);
     }
     page_mutated();
 }
@@ -294,9 +285,7 @@ bool Page::edit_replace_selection(const std::string& utf8) {
     set_form_value(focus_, v);
     focus_->caret = focus_->anchor = a + int(ins.size());
     focus_->state |= Node::CaretOn;
-    FormEvent in{FormEvent::Kind::Input, focus_};
-    in.key = ins; in.value = v;
-    dispatch(in);
+    { EventData d; d.key = ins; d.value = v; dispatch("input", focus_, d); }
     return true;
 }
 
@@ -329,8 +318,7 @@ void Page::edit_enter() {
     if (focus_->name == "textarea") { edit_insert("\n"); return; }
     for (Node* f = focus_->parent; f; f = f->parent)
         if (f->is_element() && f->name == "form") {
-            FormEvent s{FormEvent::Kind::Submit, f};
-            dispatch(s);
+            dispatch("submit", f);
             return;
         }
 }
@@ -395,10 +383,8 @@ bool Page::activate(Node* n) {
                     }
                     set_form_checked(c, true);
                 } else set_form_checked(c, !form_checked(c));
-                FormEvent in{FormEvent::Kind::Input, c}; in.value = form_checked(c) ? "on" : "";
-                dispatch(in);
-                FormEvent ch{FormEvent::Kind::Change, c}; ch.value = in.value;
-                dispatch(ch);
+                { EventData d; d.value = form_checked(c) ? "on" : ""; dispatch("input", c, d); }
+                { EventData d; d.value = form_checked(c) ? "on" : ""; dispatch("change", c, d); }
                 return true;
             }
             focus(c, false);

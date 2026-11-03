@@ -142,15 +142,55 @@ void Page::console(int level, const std::string& msg) {
     if (console_.size() > 500) console_.erase(console_.begin());
 }
 
-void Page::click(const dom::Node* node) {
+bool Page::dispatch(const std::string& kind, const dom::Node* node, const EventData& d) {
+    if (event_tap) event_tap(kind, node, d);
+    return engine_.dispatch(kind, const_cast<dom::Node*>(node), d);
+}
+
+static const dom::Node* closest(const dom::Node* n, const char* tag) {
+    for (; n; n = n->parent) if (n->is_element(tag)) return n;
+    return nullptr;
+}
+
+// Enter in a text field submits its form; the key event itself reaches scripts first.
+bool Page::key_event(bool down, const EventData& d, const dom::Node* target) {
+    if (!target && hooks_.focused) target = hooks_.focused();
+    const bool prevented = dispatch(down ? "keydown" : "keyup", target, d);
+    if (down && !prevented && d.key == "Enter" && target && target->is_element("input")) {
+        const std::string type = target->attr_or("type", "text");
+        if (type != "checkbox" && type != "radio" && type != "button" && type != "file")
+            if (const dom::Node* form = closest(target, "form"))
+                dispatch("submit", form);
+    }
+    return prevented;
+}
+
+void Page::click(const dom::Node* node, float x, float y, int button) {
     if (!node) return;
     if (on_media_click && node->is_element() && (node->name == "video" || node->name == "audio"))
         on_media_click(node);
 
-    // The nearest ancestor with href owns the click: navigation first (the
-    // engine still runs its handlers, but the page is about to change).
+    EventData d;
+    d.x = x; d.y = y; d.button = button;
+    if (dispatch("click", node, d)) return;   // prevented
+
+    // Default actions, nearest first: a submit button submits its form
+    // (method=dialog closes the <dialog> with the button's value), then the
+    // nearest ancestor with href navigates.
     for (const dom::Node* n = node; n; n = n->parent) {
         if (!n->is_element()) continue;
+        if (n->is_element("button") || (n->is_element("input") && n->attr_or("type") == "submit")) {
+            const std::string type = n->attr_or("type", "submit");
+            if (type == "submit") {
+                if (const dom::Node* form = closest(n, "form")) {
+                    dom::Node* f = const_cast<dom::Node*>(form);
+                    if (!dispatch("submit", f) && form->attr_or("method") == "dialog")
+                        if (const dom::Node* dlg = closest(form, "dialog"))
+                            engine_.close_dialog(const_cast<dom::Node*>(dlg), n->attr_or("value"));
+                    return;
+                }
+            }
+        }
         std::string href = n->attr_or("href");
         if (!href.empty()) {
             if (href.rfind("javascript:", 0) == 0) {
@@ -161,7 +201,6 @@ void Page::click(const dom::Node* node) {
             return;
         }
     }
-    engine_.click_node(node);
 }
 
 bool Page::has_click_handler(const dom::Node* node) const {

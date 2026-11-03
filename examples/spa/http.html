@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><title>SPA http</title></head>
+<body>
+<div id="out"></div>
+<button id="slow1">slow1</button>
+<button id="slow2">slow2</button>
+<script>
+# top level awaits: http, json, errors
+Response r = await http.get("/api/hello?a=1")
+Json d = r.json()
+log.info("get: " + str(r.status()) + " ok=" + str(r.ok()) + " hello=" + d["hello"] + " n1=" + str(d["n"][1]) + " a=" + d["q"]["a"])
+
+Response r2 = await http.post("/api/post", { "name": "Zoe", "tags": ["a", "b"] })
+Json d2 = r2.json()
+log.info("post json: " + str(r2.status()) + " ctype=" + d2["ctype"] + " name=" + d2["json"]["name"])
+
+Response r3 = await http.post("/api/post", "plain text body", { "Content-Type": "text/plain" })
+log.info("post text: " + r3.json()["raw"])
+
+Response r4 = await http.get("/api/404")
+log.info("404: ok=" + str(r4.ok()) + " status=" + str(r4.status()) + " err=" + r4.json()["error"])
+
+Response r5 = await http.get("/api/nojson")
+log.info("header: " + r5.header("X-Custom") + " text=" + r5.text())
+try:
+    Json bad = r5.json()
+    log.info("json should have failed")
+catch e:
+    log.info("json error caught: " + e.message)
+
+try:
+    Response r6 = await http.get("/api/drop")
+    log.info("drop should have failed")
+catch e:
+    log.info("network error caught")
+
+try:
+    Response r7 = await http.get("http://example.invalid/x")
+    log.info("cross should have failed")
+catch e:
+    log.info("cross-origin: " + e.message)
+
+Response r8 = await http.get("/api/echo-headers", { "X-Test": "42" })
+log.info("headers: " + r8.json()["x-test"])
+
+Response r9 = await http.put("/api/put", "abcd")
+Response r10 = await http.patch("/api/patch", "ab")
+Response r11 = await http.delete("/api/del")
+log.info("verbs: " + r9.json()["method"] + " " + r10.json()["method"] + " " + str(r11.status()))
+
+# json module
+Json j = json.parse("{\"a\": [1, 2, {\"b\": null}], \"s\": \"x\"}")
+log.info("json: " + str(j["a"][1]) + " " + j["s"] + " " + json.stringify({ "k": [1, "two"] }))
+try:
+    json.parse("{nope")
+catch e:
+    log.info("json.parse error caught")
+
+# concurrency: two handlers sleeping different times
+fn void slow(string tag, int ms):
+    Response r = await http.get("/api/slow?ms=" + str(ms) + "&tag=" + tag)
+    log.info("slow done " + tag)
+
+fn void on_slow1():
+    await slow("one", 400)
+
+fn void on_slow2():
+    await slow("two", 100)
+
+document.get("slow1").click(on_slow1)
+document.get("slow2").click(on_slow2)
+
+log.info("top level done")
+</script>
+</body></html>

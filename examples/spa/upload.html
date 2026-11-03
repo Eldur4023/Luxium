@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><title>SPA upload</title></head>
+<body>
+<form id="uf"><input name="title" type="text" value="From form"><input id="file" name="avatar" type="file" data-files="examples/spa/sample.bin"><input name="skip" type="checkbox" value="x"></form>
+<script>
+List files = document.get("file").files()
+log.info("files: " + str(len(files)) + " name=" + files[0].name() + " size=" + str(files[0].size()) + " type=" + files[0].content_type())
+
+Form f = form_data()
+f.add("title", "Manual")
+f.add_file("image", files[0])
+Response r = await http.post("/api/upload", f)
+Json d = r.json()
+log.info("manual: " + str(len(d["parts"])) + " parts; " + d["parts"][0]["name"] + "=" + d["parts"][0]["head"] + "; " + d["parts"][1]["name"] + " file=" + d["parts"][1]["filename"] + " size=" + str(d["parts"][1]["size"]))
+
+Form g = form_data(document.get("uf"))
+Response r2 = await http.post("/api/upload", g)
+Json d2 = r2.json()
+Json pr = g.progress()
+log.info("progress total>0: " + str(pr["total"] > 0) + " sent==total: " + str(pr["sent"] == pr["total"]))
+log.info("from form: " + str(len(d2["parts"])) + " parts; " + d2["parts"][0]["head"] + "; " + d2["parts"][1]["name"] + "/" + d2["parts"][1]["filename"])
+</script>
+</body></html>

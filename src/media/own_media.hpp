@@ -34,12 +34,25 @@ struct State {
     std::string cue;                         // text of the subtitle cue active now ("" = none), '\n' between lines
 };
 
+// Who owns the players: one Shell (window) per page.  `attach` stamps the
+// current owner on a player; `sweep`/`reset` only touch the current owner's, so
+// two windows can play at once.  Set it with a Scope around layout/navigation.
+class Scope {
+public:
+    explicit Scope(const void* owner);
+    ~Scope();
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+private:
+    const void* prev_;
+};
+
 // Creates or updates the player for `key` (src changes reopen it).  Called by
 // layout on every build; marks the key as live for `sweep`.
 Info attach(const void* key, const Elem& e);
-// Closes the players whose element did not show up in the last layout.
+// Closes the current owner's players whose element did not show up in the last layout.
 void sweep();
-// Navigation: closes everything.
+// Navigation / window close: closes the current owner's players.
 void reset();
 
 // Per frame.  Returns bit 1 = a new picture or a state change (repaint),

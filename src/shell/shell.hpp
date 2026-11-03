@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <memory>
+#include <SDL_events.h>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,8 @@ struct ShellConfig {
     bool app      = false;
     bool devtools = false;   // app mode: F12 shows the console pane
 };
+
+class OwnMediaApi;
 
 class Shell {
 public:
@@ -142,6 +145,10 @@ private:
     Resolved resolve(const std::string& href) const;
 
     page::Page&    page_;
+    std::unique_ptr<OwnMediaApi> media_api_;   // <video> API for LuxScript (media_glue.cpp)
+    dom::Node* fullscreen_el_ = nullptr;       // document.fullscreen(e)
+    void wire_page_hooks();                    // clipboard, fullscreen, scroll, reload for scripts
+    bool forward_key_to_page(const SDL_Event& e, bool down);   // true: a script prevented it
     ShellConfig    cfg_;
     std::unique_ptr<render::Font> font_;
 
@@ -250,6 +257,9 @@ private:
     void    fire_scroll(dom::Node* n);
     void    apply_sticky();                            // shift sticky groups (and their hit boxes) for the current scroll
     std::vector<float> sticky_dy_;
+    void    wire_form_hooks();                         // ShellHooks: rect, scroll, focus, live values, files
+    const render::HitBox* box_of(const dom::Node* n) const;
+    bool    key_dispatched_ = false;                   // page_key_down already delivered this keydown to scripts
     bool    text_input_on_ = false;
     bool    form_drag_ = false;                       // selecting text in a control with the mouse
     uint32_t caret_tick_ = 0;

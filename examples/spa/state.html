@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><title>SPA state</title></head>
+<body>
+<a id="link" href="/page2">p2</a>
+<input id="file" type="file" name="avatar" data-files="">
+<script>
+# ── storage: persists across runs (same profile dir) ────────────────────────
+string seen = storage.get("visits")
+int visits = 0
+if seen != null:
+    visits = int(seen)
+visits = visits + 1
+storage.set("visits", str(visits))
+storage.set("user", json.stringify({ "id": 3, "name": "Ana" }))
+Json u = json.parse(storage.get("user"))
+log.info("storage visits=" + str(visits) + " user=" + u["name"] + " keys=" + str(len(storage.keys())))
+storage.remove("user")
+log.info("removed: " + str(storage.get("user") == null))
+
+# ── location, query, fragment ───────────────────────────────────────────────
+Json loc = page.location()
+log.info("loc path=" + loc["path"] + " q=" + str(loc["query"].get("q", "none")) + " hash=" + loc["hash"] + " frag-t=" + str(loc["fragment"].get("t", "none")))
+
+# ── history: push/replace/back + on_navigate ────────────────────────────────
+fn void on_nav():
+    log.info("popstate -> " + page.location()["path"])
+
+page.on_navigate(on_nav)
+history.push("/serie/9?x=1")
+log.info("pushed: " + page.location()["path"] + " x=" + page.location()["query"]["x"])
+history.replace("/serie/10")
+log.info("replaced: " + page.location()["path"])
+history.push("/other")
+history.back()
+log.info("after back: " + page.location()["path"])
+history.forward()
+log.info("after forward: " + page.location()["path"])
+try:
+    history.push("http://elsewhere.invalid/")
+catch e:
+    log.info("push cross-origin refused")
+
+# ── timers ──────────────────────────────────────────────────────────────────
+fn void tick():
+    int n = int(page.get("n")) + 1
+    page.set("n", n)
+    log.info("tick " + str(n))
+    if n == 3:
+        page.cancel(int(page.get("timer")))
+
+page.set("n", 0)
+page.set("timer", page.every(30, tick))
+fn void once():
+    log.info("after fired")
+page.after(50, once)
+int cancelled = page.after(10, once)
+page.cancel(cancelled)
+
+fn void frames():
+    await page.frame()
+    await page.frame()
+    log.info("two frames later")
+frames()
+
+page.title("Changed title")
+log.info("title: " + page.title() + " / doc " + document.title())
+
+# ── websocket: await recv and the handler style ─────────────────────────────
+fn void on_msg():
+    log.info("on_message " + event.message())
+
+fn void on_closed():
+    log.info("on_close code=" + str(event.close_code()))
+
+fn void talk():
+    Socket s = ws.connect("/api/ws")
+    bool open = await s.wait_open()
+    log.info("ws open=" + str(open))
+    string greeting = await s.recv()
+    log.info("greeting: " + greeting)
+    s.send("ping")
+    string m = await s.recv()
+    log.info("recv: " + m)
+    s.on_message(on_msg)
+    s.on_close(on_closed)
+    s.send("handler-style")
+    await sleep(150)
+    s.send("bye")
+    string last = await s.recv()
+    log.info("recv after bye: " + str(last == null) + " open=" + str(s.is_open()))
+
+talk()
+
+# ── clipboard, math, url, time ──────────────────────────────────────────────
+clipboard.write("copied")
+log.info("math: " + str(math.floor(2.7)) + " " + str(math.round(2.5)) + " " + math.fixed(3.14159, 1) + " " + str(math.max(3, 9)) + " " + str(math.abs(-4)))
+log.info("url: " + url.encode("a b&c/é") + " " + url.decode("a%20b") + " " + str(url.parse_query("?x=1&y=two%20words")["y"]))
+log.info("time ok: " + str(time.now() > 1700000000000))
+</script>
+</body></html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html><head><title>SPA dom</title></head>
+<body>
+<header><a id="logo" href="/">home</a></header>
+<main id="app" class="container"></main>
+<form id="f" method="get">
+  <input id="q" name="q" type="search" value="">
+  <select id="sel" name="sel"><option value="a">Aaa</option><option value="b" selected>Bbb</option></select>
+  <input id="ck" name="ck" type="checkbox" value="yes">
+  <button id="sub" type="submit">Go</button>
+</form>
+<dialog id="dlg"><form method="dialog"><button id="dok" type="submit" value="ok">Ok</button><button id="dno" type="submit" value="cancel">No</button></form></dialog>
+<div id="box" data-user-id="7" style="color: red;"></div>
+<script>
+# ── templates: Lux's engine over a string ───────────────────────────────────
+Json cards = [{ "title": "One", "id": 1 }, { "title": "T<wo>", "id": 2 }]
+string html = template.render("{% for c in cards %}<a class=\"card\" id=\"card{{ c.id }}\" href=\"/serie/{{ c.id }}\" data-id=\"{{ c.id }}\">{{ c.title }}</a>{% endfor %}<p>{{ n }} items</p>", { "cards": cards, "n": len(cards) })
+Element main_el = document.get("app")
+main_el.set_html(html)
+log.info("cards: " + str(len(main_el.query_all("a.card"))) + " first=" + main_el.query("a.card").text() + " second=" + main_el.query_all(".card")[1].text())
+log.info("p: " + main_el.query("p").text() + " html-has-escape=" + str(main_el.html().contains("T&lt;wo&gt;")))
+
+# ── scripts in set_html never run ───────────────────────────────────────────
+main_el.set_html("<b id=\"bb\">bold</b><scr" + "ipt>log.info(\"SHOULD NOT RUN\")</scr" + "ipt>")
+log.info("script dropped: " + str(len(main_el.query_all("script"))))
+main_el.set_html(html)
+
+# ── queries, classes, style, data, attrs ────────────────────────────────────
+Element box = document.get("box")
+box.add_class("a")
+box.add_class("b c")
+box.toggle_class("b")
+log.info("class: " + box.attr("class") + " has c=" + str(box.has_class("c")) + " has b=" + str(box.has_class("b")))
+box.set_style("width", "10px")
+box.set_style("color", "")
+log.info("style: " + box.attr("style") + " width=" + box.style("width"))
+log.info("data: " + box.data("userId") + " " + box.data("user-id"))
+log.info("closest: " + main_el.query("a.card").closest("main").id() + " parent=" + main_el.query("a.card").parent().tag())
+log.info("query null: " + str(document.query("#nope") == null))
+
+# ── mutation: create/insert_before/replace_with/clone/remove ────────────────
+Element li = document.create("span")
+li.set_text("x")
+li.set_attr("id", "made")
+main_el.prepend(li)
+Element two = document.create("em")
+two.set_text("y")
+main_el.insert_before(two, li)
+Element cl = li.clone()
+cl.set_attr("id", "cloned")
+two.replace_with(cl)
+log.info("order: " + main_el.children()[0].id() + "," + main_el.children()[1].id() + " count=" + str(main_el.child_count()))
+li.remove()
+log.info("after remove: connected=" + str(cl.connected()) + " first=" + main_el.children()[0].id() + " count=" + str(main_el.child_count()))
+
+# ── handlers: delegation, prevent, stop, capture ────────────────────────────
+fn void on_doc_click():
+    Element a = event.target().closest("a")
+    if a == null:
+        log.info("doc click on non-link " + event.target().tag())
+        return
+    log.info("doc click link " + a.attr("href") + " id=" + a.data("id"))
+    event.prevent()
+
+fn void on_app_capture():
+    log.info("capture main_el")
+
+fn void on_card_click():
+    log.info("card handler")
+
+fn void on_stop():
+    log.info("stopper")
+    event.stop()
+
+document.listen("click", on_doc_click)
+main_el.listen("click", on_app_capture, true)
+main_el.query("a.card").listen("click", on_card_click)
+document.get("logo").listen("click", on_stop)
+
+# ── keys, input, change, submit ─────────────────────────────────────────────
+fn void on_key():
+    log.info("key " + event.kind() + " " + event.key() + " ctrl=" + str(event.ctrl()) + " target=" + event.target().id())
+    if event.key() == "Enter":
+        event.prevent()
+
+fn void on_input():
+    log.info("input value=" + event.value() + " via-element=" + event.target().value())
+
+fn void on_change():
+    log.info("change value=" + event.value())
+
+fn void on_submit():
+    event.prevent()
+    log.info("submit q=" + document.get("q").value() + " sel=" + document.get("sel").value() + " ck=" + str(document.get("ck").checked()))
+
+document.listen("keydown", on_key)
+document.get("q").listen("input", on_input)
+document.get("q").listen("change", on_change)
+document.get("f").listen("submit", on_submit)
+
+# ── dialog ──────────────────────────────────────────────────────────────────
+fn void on_close():
+    log.info("dialog closed with " + event.target().return_value())
+
+fn void on_open_dialog():
+    document.get("dlg").show_modal()
+
+document.get("dlg").listen("close", on_close)
+document.get("box").listen("dblclick", on_open_dialog)
+
+# ── page store, select value ────────────────────────────────────────────────
+document.get("sel").set_value("a")
+log.info("select: " + document.get("sel").value() + " text=" + document.get("sel").selected_text())
+log.info("ready")
+</script>
+</body></html>

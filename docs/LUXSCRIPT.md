@@ -110,8 +110,158 @@ fn void suma():
 document.get("mas").click(suma)              # NOT .on("click", fn):
                                              # `on` is a language keyword
 
-The full per-context tables will be documented here as each milestone lands
-them, in the same style as the grammar's §45 ("the complete surface").
+### 3.1 The SPA surface (workstream A, `docs/plan-luxscript-spa.md` §1)
+
+The authoritative list is `Lux/include/lux_script/browser_api.inc` (the checker
+compiles against it; Luxium implements each entry in `src/script/engine.cpp`).
+**Status: everything below is implemented and covered by `tools/spatest.py`**
+(headless, `examples/spa/*.html`, a local python server; see §3.2). Items that
+need the shell are marked *(hook)*: they work as soon as the shell fills the
+corresponding `ShellHooks` member and are no-ops/zeros in the headless harness.
+
+**Execution model.** The top level, every event handler, every timer callback
+and every websocket callback run as VM coroutines on the main loop, so `await`
+is valid in any `fn`. Suspendable: `sleep(ms)`, `page.frame()` (resumes next
+frame), `http.*`, `await sock.recv()`, `await sock.wait_open()`. A runtime
+error inside a handler/callback is logged to the console and never stops the
+page. A handler is a named `fn` taking **no parameters** — the event is read
+through the reserved object `event` (`event.key()`, `event.target()`...).
+Context between handlers lives in the page store (`page.get/set`), in element
+data (`e.data("id")`) or in the DOM. There are no closures; a closure feature
+was not needed to write Homeflix.
+
+**Language facts that matter when porting JavaScript**
+
+- `app` is a reserved word (the server's `app:` block): name the root element
+  something else (`root_el`, `main_el`).
+- A `fn` cannot see the top level's locals (the top level is a function body).
+  Shared state lives in `page.get/set`, in the DOM, or is re-read
+  (`fn Element video(): return document.get("player")`).
+- `await` works in every fn/handler/timer; a fn that awaits can be called
+  without `await` (it then runs as its own coroutine from the first suspension).
+- `List.len()` does not exist: `len(x)`; `Json` is indexed with `[ ]`.
+- A `</script>` inside a string must be split (`"</scr" + "ipt>"`), it is HTML.
+
+**Reserved objects**
+
+| Object | Members |
+|---|---|
+| `log` | `info(s)` `warn(s)` `error(s)` |
+| `document` | `get(id)` `query(sel)` `query_all(sel)` `root()` `body()` `create(tag)` `title()` `listen(kind, fn [, capture])` `unlisten(kind, fn)` `fullscreen(e)` `exit_fullscreen()` `fullscreen_element()` `active_element()` `hidden()` |
+| `page` | `get(k)` `set(k, v)` `after(ms, fn) -> int` `every(ms, fn) -> int` `cancel(id)` `await frame()` `now()` (monotonic ms) `location() -> Dict{url, origin, path, query: Dict, search, hash}` `on_navigate(fn)` (back/forward) `listen(kind, fn)` (window: `resize`, `visibilitychange`, `fullscreenchange`) `title([s])` `scroll_y()` `scroll_to(y)` `reload()` `clicked()` |
+| `event` | `kind()` `target()` `current()` `key()` `code()` `value()` `button()` `x()` `y()` `delta()` `ctrl()` `shift()` `alt()` `meta()` `repeat()` `prevent()` `stop()` `prevented()` `message()` (ws text) `close_code()` |
+| `http` | `await get(url [, headers])` `await delete(url [, headers])` `await post(url, body [, headers])` `await put(...)` `await patch(...)` -> `Response`. Same origin only; relative URLs resolve against the page. `body`: string as-is, Dict/List -> JSON (`Content-Type` set), `Form` -> multipart. A network failure raises (catchable with `try`); an HTTP error status is a normal `Response` |
+| `json` | `parse(s) -> Json` (raises on bad JSON) `stringify(v) -> string` |
+| `ws` | `connect(url) -> Socket` (ws/wss, relative URLs resolve against the page) |
+| `storage` | `get(k) -> string?` `set(k, s)` `remove(k)` `keys()` `clear()` — persistent per origin, `$LUXIUM_PROFILE_DIR` or `~/.local/share/luxium/storage/` |
+| `history` | `push(path)` `replace(path)` `back()` `forward()` — no reload, no `on_navigate` for your own pushes |
+| `clipboard` | `write(s)` `read() -> string` |
+| `template` | `render(src, Dict) -> string` (Lux's template engine: `{{ x }}` escapes, `{% for %}`, `{% if %}`) `escape(s)` |
+| `url` | `encode(s)` `decode(s)` `parse_query(s) -> Dict` |
+| `math` | `floor` `ceil` `round` `abs` `min(a,b)` `max(a,b)` `fixed(x, digits) -> string` |
+| `time` | `now()` (epoch ms) |
+| globals | `sleep(ms)` (await) `form_data([formElement]) -> Form` plus `len str int float range` |
+
+**Event kinds** for `listen`: `click dblclick mousedown mouseup mousemove mouseenter
+mouseleave wheel keydown keyup input change submit focus blur scroll` on
+elements and the document (they bubble; `capture=true` as 3rd argument listens in
+the capture phase; `event.stop()` stops propagation; `event.prevent()` cancels the
+default action: link navigation, form submit). Media elements add `play pause
+ended timeupdate seeking seeked loadedmetadata durationchange volumechange error
+waiting playing cuechange`. `<a href>`: after bubbling, if not prevented, Luxium
+navigates; a SPA intercepts with a `document.listen("click", ...)` handler that
+calls `event.prevent()` and `history.push(...)`.
+
+**Types (receivers).**
+
+`Element` — DOM: `text() set_text(s) html() set_html(s)` (parsed; `<script>` dropped)
+`append(e) prepend(e) remove() insert_before(new, ref) replace_with(e) clone([deep])
+attr(n) set_attr(n, v) remove_attr(n) has_attr(n) tag() id() child_count()
+query(sel) query_all(sel) closest(sel) matches(sel) parent() children() next() prev()
+contains(e) connected()` — style/state: `add_class remove_class toggle_class(n [, force])
+has_class set_style(prop, v) style(prop) data(n) set_data(n, v) hidden() set_hidden(b)` —
+forms: `value() set_value(s) selected_text() checked() set_checked(b) disabled()
+set_disabled(b) files() -> List<File> show_modal() close([value]) return_value()` —
+events/geometry: `click(fn) listen(kind, fn [, capture]) unlisten(kind, fn) dispatch(kind)
+focus() blur() rect() -> Dict{x,y,w,h} scroll_into_view() scroll_top() set_scroll_top(f)
+scroll_left() set_scroll_left(f)` — media (`<video>`/`<audio>`, backed by `media::own`):
+`play() pause() seek(t) current_time() duration() paused() ended() seeking() set_volume(v)
+volume() set_muted(b) muted() audio_tracks() -> List<Dict{index,label,current}>
+select_audio(i) text_tracks() select_text(i) cue() -> string set_src(url) src()`
+(`select_text(-1)` = off). Queries return `null` when nothing matches.
+
+`Response`: `status() ok() text() json() header(name) url()`.
+`Socket`: `send(s) close([code]) is_open() on_open(fn) on_message(fn) on_close(fn)`
+`await recv() -> string?` (`null` once closed and drained) `await wait_open() -> bool`.
+In `on_*` callbacks `event.message()` / `event.close_code()` carry the data.
+`Form`: `add(name, value) add_file(name, File)`. `File`: `name() size() path() content_type()`.
+
+**Details worth knowing**
+
+- `event.target()` etc. read the event the *current coroutine* was started for;
+  `event.prevent()`/`stop()` only count if called before the handler's first
+  `await` (the default action is decided when the dispatch returns).
+- Element handles die when the node is removed (`remove`, `set_html`/`set_text`
+  on an ancestor, `replace_with`): using one raises "the element no longer
+  exists". Re-query after re-rendering.
+- `page.location()["hash"]` has no `#`; `["fragment"]` is the hash read as a query
+  (`http://127.0.0.1:9700/#t=<token>` -> `fragment["t"]`), which is how Lux-Local
+  hands its token to the page.
+- Same-origin: `http.*`/`ws.connect` accept relative URLs or the page's own origin
+  (ws follows the page scheme). A page opened from a file has no origin and no
+  network. `ws.connect` sends `Origin:`. TLS is libcurl's; the websocket framing is
+  Luxium's own (libcurl in Ubuntu ships without websocket support), and the
+  `Sec-WebSocket-Accept` value is not verified (same-origin only).
+- `form_data(formEl)` collects the named, enabled controls under the form (checkboxes
+  only when checked; file inputs via `ShellHooks::files`, or the `data-files`
+  attribute, one path per line, which is what the headless tests use).
+  `Form.progress()` -> `{sent, total}` while an upload is in flight.
+- `select_audio(i)`/`select_text(i)` turn the wanted index into the right number of
+  `media::own::cycle_audio/cycle_subtitle` steps (the engine only cycles).
+  `audio_tracks()` returns `{index, label, current}`; only the current track's real
+  label is known to the engine, the others read "Audio N".
+- Window events (`page.listen`): `resize`, `fullscreenchange`, `pagehide` (before a
+  navigation or quit). `visibilitychange` is declared but the shell does not send it yet.
+- Storage location: `Page::set_profile_dir()`; app windows get
+  `~/.local/share/luxium/apps/<app_id>/storage/<origin>.json`, the normal browser
+  `$LUXIUM_PROFILE_DIR` or `~/.local/share/luxium/storage/`.
+- `<dialog>`: `show_modal()` sets `open`; a click on a `<button>` in a
+  `<form method="dialog">` submits (fires `submit`) and closes the dialog with the
+  button's `value`; `close` event fires on the dialog. The UA stylesheet/B decide how
+  `dialog[open]` looks.
+- The shell sends `keydown`/`keyup` (DOM key names, modifiers, repeat), `click`
+  (+ `dblclick` on a double click), and Enter in an `<input>` fires `submit` on its
+  form. `mousemove/mouseenter/mouseleave/wheel/focus/blur/input/change/scroll` are
+  delivered by `Page::dispatch(kind, node, EventData)`: workstream B's input code
+  calls it where it already handles those; scripts only need the listeners.
+
+**Host hooks (for B/C/shell).** The engine reaches layout, focus, scroll,
+fullscreen, clipboard and media through `page::Page`'s hook structs
+(`src/page/page.hpp`: `ShellHooks`, `MediaApi`); each is optional and has a
+no-layout fallback so the headless harness runs everything except geometry.
+Input is delivered with `Page::dispatch(kind, node, EventData)`; keys with
+`Page::key_event(down, EventData, node)`; the page's own history with
+`Page::history_go(delta)` (the shell tries it before the browser's back/forward).
+`ShellHooks` members: `rect scroll_get scroll_set scroll_into_view page_scroll_y
+page_scroll_to focus focused fullscreen fullscreen_element clipboard_set/get
+get_value/set_value (live form values kept outside the DOM) files reload
+history_back_outside page_visible node_at`. The shell fills the ones it can
+(`Shell::wire_page_hooks`: clipboard, scroll, fullscreen, reload, visibility,
+element_from_point); focus/rect/scroll_*/get_value/set_value/files belong to the
+form/layout work (B).
+
+### 3.2 Testing
+
+```
+cmake --build build --target luxium_headless
+tools/spatest.py            # starts tools/spa_server.py on a free port, own process group
+build/luxium_headless PAGE [click:ID type:ID=TEXT key:KEY@ID wait:MS until:TEXT[:MS] text:ID attr:ID.N count:SEL expect:TEXT back print:T]
+LUXIUM_FAKE_MEDIA=1 build/luxium_headless examples/spa/media.html until:"run done"   # scripted <video>
+```
+`PAGE` may be an `http://` URL (headless fetches it with libcurl). The harness
+uses `LUXIUM_PROFILE_DIR` for storage. `luxium --shot` with
+`SDL_VIDEODRIVER=dummy` renders the same pages through the real shell.
+
 
 ## 4. Compilation and execution
 

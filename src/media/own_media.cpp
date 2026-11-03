@@ -21,6 +21,7 @@ constexpr int kMaxW = 1280;   // pictures wider than this are scaled down on con
 struct Entry {
     std::unique_ptr<Player> p = std::make_unique<Player>();
     Elem elem;
+    const void* scope = nullptr;     // the window that owns it (Scope)
     bool live = false;               // seen by the last layout
     bool started_auto = false;
     bool waiting = false;
@@ -33,6 +34,11 @@ struct Entry {
     size_t cue_n = 0;
     ~Entry() { if (sws) sws_freeContext(sws); p->close(); }
 };
+
+const void*& cur_scope() {
+    static thread_local const void* s = nullptr;
+    return s;
+}
 
 std::unordered_map<const void*, Entry>& reg() {
     static std::unordered_map<const void*, Entry> r;
@@ -62,8 +68,12 @@ void convert(Entry& e, const Frame& f) {
 
 } // namespace
 
+Scope::Scope(const void* owner) : prev_(cur_scope()) { cur_scope() = owner; }
+Scope::~Scope() { cur_scope() = prev_; }
+
 Info attach(const void* key, const Elem& el) {
     Entry& e = reg()[key];
+    e.scope = cur_scope();
     if (e.elem.src != el.src || e.elem.local != el.local) {
         e.bmp.reset(); e.seq = 0; e.started_auto = false; e.vw = e.vh = 0;
         e.sub_stream = -1; e.cues.clear(); e.cue_n = 0;
@@ -79,12 +89,16 @@ Info attach(const void* key, const Elem& el) {
 
 void sweep() {
     for (auto it = reg().begin(); it != reg().end();) {
-        if (!it->second.live) it = reg().erase(it);
+        if (it->second.scope != cur_scope()) ++it;
+        else if (!it->second.live) it = reg().erase(it);
         else { it->second.live = false; ++it; }
     }
 }
 
-void reset() { reg().clear(); }
+void reset() {
+    for (auto it = reg().begin(); it != reg().end();)
+        it = it->second.scope == cur_scope() ? reg().erase(it) : std::next(it);
+}
 
 int tick() {
     int r = 0;

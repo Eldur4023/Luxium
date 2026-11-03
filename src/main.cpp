@@ -191,12 +191,11 @@ int main(int argc, char** argv) {
     // sin argumentos, la pantalla de inicio; el resto, carga directa.
     if (is_url) shell.navigate_to(path, true);
     else if (path == "luxium:inicio") shell.navigate_address(path, true);
-    if (log_events)   // prints every FormEvent: the hook scripting attaches to, made visible
-        page.on_event = [](luxium::page::FormEvent& e) {
-            static const char* k[] = {"input", "change", "submit", "focus", "blur", "keydown", "keyup", "mouseenter", "mouseleave", "mousemove", "scroll"};
-            if (e.kind == luxium::page::FormEvent::Kind::MouseMove) return;
-            std::printf("event %s <%s id=%s> key=\"%s\" value=\"%s\"\n", k[int(e.kind)], e.target ? e.target->name.c_str() : "?",
-                        e.target ? e.target->attr_or("id").c_str() : "", e.key.c_str(), e.value.c_str());
+    if (log_events)   // prints every event the page dispatches: what scripts would receive
+        page.event_tap = [](const std::string& kind, const luxium::dom::Node* t, const luxium::EventData& d) {
+            if (kind == "mousemove") return;
+            std::printf("event %s <%s id=%s> key=\"%s\" value=\"%s\"\n", kind.c_str(), t ? t->name.c_str() : "?",
+                        t ? t->attr_or("id").c_str() : "", d.key.c_str(), d.value.c_str());
         };
     for (const auto& id : clicks) page.click_by_id(id);
     for (const auto& c : click_at) shell.add_shot_click(c.x, c.y, c.ms);
