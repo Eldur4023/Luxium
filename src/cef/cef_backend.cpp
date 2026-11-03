@@ -15,6 +15,8 @@
 #include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_render_handler.h"
+#include "include/cef_request_handler.h"
+#include "include/cef_parser.h"
 #include "include/cef_render_process_handler.h"
 #include "include/cef_dialog_handler.h"
 #include "include/cef_jsdialog_handler.h"
@@ -148,6 +150,7 @@ class LuxClient : public CefClient,
                   public CefLifeSpanHandler,
                   public CefDisplayHandler,
                   public CefLoadHandler,
+                  public CefRequestHandler,
                   public CefRenderHandler,
                   public CefDialogHandler,
                   public CefJSDialogHandler,
@@ -159,6 +162,7 @@ public:
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefDisplayHandler>  GetDisplayHandler()  override { return this; }
     CefRefPtr<CefLoadHandler>     GetLoadHandler()     override { return this; }
+    CefRefPtr<CefRequestHandler>  GetRequestHandler()  override { return this; }
     CefRefPtr<CefRenderHandler>   GetRenderHandler()   override { return this; }
     CefRefPtr<CefDialogHandler>   GetDialogHandler()   override { return this; }
     CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return this; }
@@ -348,6 +352,22 @@ public:
         if (w_->ev.on_loaded) w_->ev.on_loaded();
     }
 
+    // A failed main-frame load shows an error page in the window instead of a blank one.
+    void OnLoadError(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> f, ErrorCode code, const CefString& text,
+                     const CefString& url) override {
+        if (code == ERR_ABORTED || !f || !f->IsMain()) return;
+        std::string msg = "Could not load " + url.ToString() + ": " + text.ToString();
+        std::string html = "<meta charset=utf-8><body style=\"font:16px sans-serif;margin:3em;color:#444\"><h2>Could not load the page</h2><p>" +
+                           url.ToString() + "</p><p>" + text.ToString() + " (" + std::to_string((int)code) + ")</p>";
+        f->LoadURL("data:text/html;charset=utf-8," + CefURIEncode(html, false).ToString());
+        if (w_->ev.on_error) w_->ev.on_error(msg);
+    }
+    void OnRenderProcessTerminated(CefRefPtr<CefBrowser> b, TerminationStatus status, int, const CefString&) override {
+        if (w_->ev.on_error) w_->ev.on_error("renderer process ended (status " + std::to_string((int)status) + "), reloading");
+        if (b && ++crashes_ <= 3) b->Reload();
+    }
+    int crashes_ = 0;
+
     // CefRenderHandler
     void GetViewRect(CefRefPtr<CefBrowser>, CefRect& rect) override {
         const int w = std::max(1, w_->view_w.load());
@@ -514,6 +534,8 @@ static float detect_scale(unsigned long display) {
 
 void set_profile_root(const std::string& dir) { g_profile_root = dir; g_host_mode = true; }
 
+static bool g_init_failed = false;   // open_window() then returns null and the host reports an error
+
 void init(unsigned long display, unsigned long parent) {
     g_scale = detect_scale(display);
     static bool done = false;
@@ -562,13 +584,15 @@ void init(unsigned long display, unsigned long parent) {
         CefString(&settings.cache_path) = profile;
         settings.persist_session_cookies = true;
     }
-    if (!CefInitialize(args, settings, app(), nullptr) && !profile.empty()) {
+    bool ok = CefInitialize(args, settings, app(), nullptr);
+    if (!ok && !profile.empty()) {
         std::fprintf(stderr, "luxium: profile %s is in use by another instance; using a temporary one\n", profile.c_str());
         CefString(&settings.root_cache_path) = "";
         CefString(&settings.cache_path) = "";
         g_profile_root.clear();   // no private contexts without a root
-        CefInitialize(args, settings, app(), nullptr);
+        ok = CefInitialize(args, settings, app(), nullptr);
     }
+    if (!ok) { g_init_failed = true; std::fprintf(stderr, "luxium: CefInitialize failed\n"); }
 }
 
 static void create_browser(Win* w, const std::string& url, CefRefPtr<CefRequestContext> ctx) {
@@ -592,6 +616,7 @@ void attach(unsigned long display, unsigned long parent, const std::string& url)
 
 Win* open_window(const OpenParams& p) {
     init(p.display, p.parent);
+    if (g_init_failed) return nullptr;
     Win* w = new Win;
     w->ev = p.events;
     w->client = new LuxClient(w);

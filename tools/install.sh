@@ -34,3 +34,23 @@ mv "$stage" "$dest"
 rm -rf "$dest.old"
 ln -sf "$dest/luxium" "$bin/luxium"
 echo "installed: $dest ($(du -sh "$dest" | cut -f1)), $bin/luxium -> $dest/luxium"
+
+# Ask an idle running host to exit so the next app start runs the new binary; one with windows is left alone.
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/luxium/host.sock"
+if [ -S "$sock" ] && command -v python3 >/dev/null 2>&1; then
+  r=$(python3 - "$sock" <<'PY' 2>/dev/null || true
+import socket, sys
+s = socket.socket(socket.AF_UNIX); s.settimeout(2)
+try:
+    s.connect(sys.argv[1]); s.sendall(b'{"cmd":"quit"}\n'); d = s.recv(200)
+    print("bye" if b"bye" in d else "busy" if b"busy" in d else "old")
+except OSError:
+    print("none")
+PY
+)
+  case "$r" in
+    bye)  echo "note: the idle Luxium host was asked to exit; the next app start uses the new version" ;;
+    busy) echo "note: a Luxium host has windows open; it keeps the old version until those apps are closed (apps restart it by themselves when they start with no windows open)" ;;
+    old)  echo "note: the running Luxium host predates 'quit'; close its apps or run: kill \$(cat \"$(dirname "$sock")/host.pid\")" ;;
+  esac
+fi

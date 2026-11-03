@@ -33,6 +33,7 @@ struct Events {
     std::function<void(const std::string&)> on_message;  // console.debug("luxium-msg:<payload>")
     std::function<void()>                   on_loaded;
     std::function<void()>                   on_closed;   // browser fully closed
+    std::function<void(const std::string&)> on_error;    // load failed / render process died (message for the client)
 };
 
 struct OpenParams {

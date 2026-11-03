@@ -27,6 +27,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -34,6 +35,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -63,8 +65,86 @@ std::string runtime_dir() {
 }
 std::string socket_path() { return runtime_dir() + "/host.sock"; }
 std::string lock_path()   { return runtime_dir() + "/host.lock"; }
+static std::string pid_path() { return runtime_dir() + "/host.pid"; }
 
 namespace {
+
+// ── liveness state, shared with the reader and watchdog threads ─────────────
+std::atomic<bool> g_term{false};
+std::atomic<int> g_windows{0};             // live (non-closing) windows, kept by the main loop
+std::atomic<long long> g_beat_ms{0};       // main-loop heartbeat
+std::atomic<long long> g_deadline_ms{0};   // hard exit time once shutdown starts (0 = none)
+std::string g_build;                       // "<size>-<mtime>" of this executable, fixed at startup
+
+long long mono_ms() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
+}
+// Arms the watchdog (first caller wins). Async-signal-safe: lock-free atomics and clock_gettime only.
+void arm_deadline(long long ms) {
+    long long z = 0;
+    g_deadline_ms.compare_exchange_strong(z, mono_ms() + ms);
+}
+void on_term(int) { g_term = true; arm_deadline(3000); }
+
+// stat of /proc/self/exe follows the link to the inode even after an installer replaced the file, so a host
+// outliving its binary still reports the build it really runs. The client stats the same way.
+std::string build_id() {
+    struct stat st;
+    if (::stat("/proc/self/exe", &st) != 0) return "unknown";
+    return std::to_string((long long)st.st_size) + "-" + std::to_string((long long)st.st_mtime);
+}
+
+// SIGKILLs every descendant (CEF zygote, GPU, renderers, utility): they must not outlive the host.
+void kill_descendants() {
+    std::map<int, int> parent;   // pid -> ppid
+    if (DIR* d = ::opendir("/proc")) {
+        while (dirent* e = ::readdir(d)) {
+            const int pid = std::atoi(e->d_name);
+            if (pid <= 0) continue;
+            char path[64], buf[1024];
+            std::snprintf(path, sizeof path, "/proc/%d/stat", pid);
+            FILE* f = std::fopen(path, "r");
+            if (!f) continue;
+            size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+            std::fclose(f);
+            buf[n] = 0;
+            const char* rp = std::strrchr(buf, ')');   // comm may contain spaces/parens
+            int ppid = 0;
+            char st;
+            if (rp && std::sscanf(rp + 1, " %c %d", &st, &ppid) == 2) parent[pid] = ppid;
+        }
+        ::closedir(d);
+    }
+    std::vector<int> todo = {(int)::getpid()};
+    while (!todo.empty()) {
+        const int p = todo.back();
+        todo.pop_back();
+        for (auto& [pid, pp] : parent)
+            if (pp == p && pid != (int)::getpid()) { ::kill(pid, SIGKILL); todo.push_back(pid); }
+    }
+}
+
+void cleanup_files() {
+    ::unlink(socket_path().c_str());
+    ::unlink(pid_path().c_str());
+}
+
+// Once shutdown is armed (signal, quit, idle exit) this thread guarantees the process ends: a wedged CEF or
+// SDL must not keep the socket alive for hours.
+void watchdog() {
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const long long d = g_deadline_ms.load();
+        if (d && mono_ms() > d) {
+            std::fprintf(stderr, "luxium --host: shutdown timed out, forcing exit\n");
+            kill_descendants();
+            cleanup_files();
+            ::_exit(0);
+        }
+    }
+}
 
 // ── flat JSON (what the protocol needs: one object, scalar values) ──────────
 using Obj = std::map<std::string, std::string>;   // strings decoded, other scalars raw
@@ -189,6 +269,30 @@ struct Reader {
         e.type = SDL_USEREVENT;
         SDL_PushEvent(&e);   // thread-safe: wakes the main loop
     }
+    // hello / ping / quit are answered here, on the reader thread: they work while the main loop is busy
+    // rendering or wedged in CEF, which is what makes them a liveness probe. True = handled.
+    bool fast(const std::string& line, int fd, size_t nconn) {
+        Obj o;
+        if (!parse_obj(line, o)) return false;
+        const std::string cmd = get(o, "cmd");
+        if (cmd == "ping") { send_line(fd, "{\"ev\":\"pong\"}"); return true; }
+        if (cmd == "hello") {
+            send_line(fd, "{\"ev\":\"hello\",\"proto\":2,\"build\":" + jq(g_build) + ",\"pid\":" + std::to_string(::getpid()) +
+                          ",\"windows\":" + std::to_string(g_windows.load()) + ",\"beat_ms\":" + std::to_string(mono_ms() - g_beat_ms.load()) + "}");
+            return true;
+        }
+        if (cmd == "quit") {   // only an idle host leaves: the asker may be the only connection
+            if (g_windows.load() > 0 || nconn > 1) { send_line(fd, "{\"ev\":\"busy\",\"windows\":" + std::to_string(g_windows.load()) + "}"); return true; }
+            g_term = true;
+            arm_deadline(3000);
+            send_line(fd, "{\"ev\":\"bye\"}");
+            SDL_Event e{};
+            e.type = SDL_USEREVENT;
+            SDL_PushEvent(&e);
+            return true;
+        }
+        return false;
+    }
     void loop() {
         struct C { int id, fd; std::string buf; };
         std::vector<C> cs;
@@ -217,7 +321,7 @@ struct Reader {
                         while ((p = cs[i].buf.find('\n')) != std::string::npos) {
                             std::string line = cs[i].buf.substr(0, p);
                             cs[i].buf.erase(0, p + 1);
-                            if (!line.empty()) push({cs[i].id, cs[i].fd, std::move(line), false});
+                            if (!line.empty() && !fast(line, cs[i].fd, cs.size())) push({cs[i].id, cs[i].fd, std::move(line), false});
                         }
                         if (cs[i].buf.size() > (1u << 20)) dead = true;   // absurd line
                     }
@@ -238,7 +342,7 @@ struct Shared {
     std::mutex m;
     std::string title; bool title_dirty = false;
     std::string addr;  bool addr_dirty = false;
-    std::deque<std::string> msgs;
+    std::deque<std::string> msgs, errs;
     bool loaded = false;
     std::atomic<bool> closed{false};
 };
@@ -280,9 +384,6 @@ struct AppWin {
 
 struct Conn { int fd; AppWin* win = nullptr; };
 
-std::atomic<bool> g_term{false};
-void on_term(int) { g_term = true; }
-
 class Host {
 public:
     int run();
@@ -306,7 +407,7 @@ private:
     void on_line(int conn, const std::string& line);
     void cmd_open(int conn, const Obj& o);
     void start_own(AppWin* w, bool auto_engine);
-    void start_web(AppWin* w);
+    bool start_web(AppWin* w);   // false: Chromium could not start (the caller falls back to the own engine)
     void handle_own(AppWin* w, const SDL_Event& e);
     AppWin* event_win(const SDL_Event& e);
     void resize_surface(AppWin* w);
@@ -328,6 +429,7 @@ cef::Events Host::make_events(AppWin* w) {
     e.on_title = [sh](const std::string& t) { std::lock_guard<std::mutex> lk(sh->m); sh->title = t; sh->title_dirty = true; };
     e.on_address = [sh](const std::string& a) { std::lock_guard<std::mutex> lk(sh->m); sh->addr = a; sh->addr_dirty = true; };
     e.on_message = [sh](const std::string& m) { std::lock_guard<std::mutex> lk(sh->m); sh->msgs.push_back(m); };
+    e.on_error = [sh](const std::string& m) { std::lock_guard<std::mutex> lk(sh->m); sh->errs.push_back(m); };
     e.on_loaded = [sh] { std::lock_guard<std::mutex> lk(sh->m); sh->loaded = true; };
     e.on_closed = [sh] { sh->closed = true; };
     return e;
@@ -386,7 +488,7 @@ void Host::cmd_open(int conn, const Obj& o) {
     w->win = SDL_CreateWindow(get(o, "title", "Luxium").c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                               width, height, flags);
     if (!w->win) {
-        send_line(c.fd, "{\"ev\":\"error\",\"message\":" + jq(SDL_GetError()) + "}");
+        send_line(c.fd, "{\"ev\":\"error\",\"fatal\":true,\"message\":" + jq(SDL_GetError()) + "}");
         return;
     }
     if (resizable) SDL_SetWindowMinimumSize(w->win, std::max(1, geti(o, "min_width", 0)), std::max(1, geti(o, "min_height", 0)));
@@ -404,7 +506,7 @@ void Host::cmd_open(int conn, const Obj& o) {
     SDL_SysWMinfo wm;
     SDL_VERSION(&wm.version);
     if (!SDL_GetWindowWMInfo(w->win, &wm) || wm.subsystem != SDL_SYSWM_X11) {
-        send_line(c.fd, "{\"ev\":\"error\",\"message\":\"no X11 display\"}");
+        send_line(c.fd, "{\"ev\":\"error\",\"fatal\":true,\"message\":\"no X11 display\"}");
         SDL_DestroyWindow(w->win);
         return;
     }
@@ -424,8 +526,12 @@ void Host::cmd_open(int conn, const Obj& o) {
     // engine: "luxium" = own engine always, "web" = Chromium, "auto" (default) = own engine, and Chromium
     // only if the page turns out to run JavaScript (decided by the Page after it loads).
     const std::string engine = get(o, "engine", "auto");
-    if (engine == "web") start_web(w.get());
-    else start_own(w.get(), engine != "luxium");
+    if (engine == "web") {
+        if (!start_web(w.get())) {
+            send_line(c.fd, "{\"ev\":\"error\",\"message\":\"Chromium could not start; using the own engine (no JavaScript)\"}");
+            start_own(w.get(), false);
+        }
+    } else start_own(w.get(), engine != "luxium");
     resize_surface(w.get());
     if (w->cw) cef::set_focus(w->cw, true);
     c.win = w.get();
@@ -450,8 +556,7 @@ void Host::start_own(AppWin* w, bool auto_engine) {
 }
 
 // Chromium window on the already-created SDL window (the first call starts Chromium; nothing before does).
-void Host::start_web(AppWin* w) {
-    w->ren = SDL_CreateRenderer(w->win, -1, 0);
+bool Host::start_web(AppWin* w) {
     if (!cef_up_) {
         cef::set_profile_root(w->profile_root);
         cef_up_ = true;
@@ -465,6 +570,9 @@ void Host::start_web(AppWin* w) {
     w->cw = cef::open_window(p);
     std::signal(SIGTERM, on_term);   // CEF's init replaced the handlers
     std::signal(SIGINT, on_term);
+    if (!w->cw) return false;
+    w->ren = SDL_CreateRenderer(w->win, -1, 0);   // only now: the own engine paints through the window surface
+    return true;
 }
 
 void Host::open_devtools(AppWin* par) {
@@ -542,7 +650,7 @@ void Host::pump_shared(AppWin* w) {
     }
     std::string title, addr;
     bool td = false, ad = false;
-    std::deque<std::string> msgs;
+    std::deque<std::string> msgs, errs;
     bool loaded = false;
     {
         std::lock_guard<std::mutex> lk(w->sh->m);
@@ -550,6 +658,7 @@ void Host::pump_shared(AppWin* w) {
         title = w->sh->title; addr = w->sh->addr;
         w->sh->title_dirty = w->sh->addr_dirty = false;
         msgs.swap(w->sh->msgs);
+        errs.swap(w->sh->errs);
         loaded = w->sh->loaded;
     }
     if (w->conn < 0) {   // DevTools window: its own title
@@ -559,6 +668,7 @@ void Host::pump_shared(AppWin* w) {
         if (td) ev(w, "{\"ev\":\"title\",\"title\":" + jq(title) + "}");
         if (ad) ev(w, "{\"ev\":\"url\",\"url\":" + jq(addr) + "}");
         if (loaded && !w->loaded_sent) { w->loaded_sent = true; ev(w, "{\"ev\":\"loaded\"}"); }
+        for (auto& m : errs) ev(w, "{\"ev\":\"error\",\"message\":" + jq(m) + "}");
         for (auto& m : msgs) ev(w, "{\"ev\":\"message\",\"data\":" + jq(m) + "}");
     }
     const bool fs = cef::fullscreen(w->cw);
@@ -795,6 +905,7 @@ void Host::on_line(int conn, const std::string& line) {
     const std::string cmd = get(o, "cmd");
     if (cmd == "open") { cmd_open(conn, o); return; }
     if (cmd == "ping") { send_line(ci->second.fd, "{\"ev\":\"pong\"}"); return; }
+    if (cmd == "_wedge" && std::getenv("LUXIUM_HOST_TEST")) for (;;) ::pause();   // tests only: simulates a render loop stuck in CEF
     AppWin* w = ci->second.win;
     if (!w || w->closing) return;
     if (w->own && (cmd == "eval" || cmd == "post_message" || cmd == "devtools")) {
@@ -846,6 +957,11 @@ int Host::run() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
+    g_build = build_id();
+    g_beat_ms = mono_ms();
+    std::thread(watchdog).detach();
+    if (FILE* pf = std::fopen(pid_path().c_str(), "w")) { std::fprintf(pf, "%d\n", (int)::getpid()); std::fclose(pf); }
+
     // We own the lock, so any socket file is stale.
     ::unlink(socket_path().c_str());
     rd_.listen_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -860,7 +976,7 @@ int Host::run() {
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::fprintf(stderr, "luxium --host: SDL_Init: %s\n", SDL_GetError());
-        ::unlink(socket_path().c_str());
+        cleanup_files();
         return 1;
     }
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
@@ -873,6 +989,7 @@ int Host::run() {
     const int grace_s = std::getenv("LUXIUM_HOST_GRACE") ? std::atoi(std::getenv("LUXIUM_HOST_GRACE")) : 3;
     bool quit = false;
     while (!quit) {
+        g_beat_ms = mono_ms();
         SDL_Event e;
         bool any_own = false;
         for (auto& x : wins_) if (x->own) any_own = true;
@@ -904,25 +1021,33 @@ int Host::run() {
                 w->own.reset();
                 w->w = 0;
                 w->loaded_sent = false;
-                start_web(w);
-                resize_surface(w);
-                cef::set_focus(w->cw, true);
+                if (start_web(w)) {
+                    resize_surface(w);
+                    cef::set_focus(w->cw, true);
+                } else {   // Chromium is unavailable: keep showing the page without JavaScript, tell the app
+                    ev(w, "{\"ev\":\"error\",\"message\":\"Chromium could not start; the page needs JavaScript\"}");
+                    start_own(w, false);
+                    resize_surface(w);
+                }
             }
         }
         reap();
+        { int n = 0; for (auto& x : wins_) if (!x->closing) ++n; g_windows = n; }
         if (!wins_.empty() || !conns_.empty()) idle_since_ = Clock::now();
         else if (Clock::now() - idle_since_ > std::chrono::seconds(grace_s)) quit = true;
     }
 
-    // Shutdown: refuse new clients first, then close what is left.
+    // Shutdown: refuse new clients first, then close what is left. The watchdog ends the process if this wedges.
+    arm_deadline(6000);
     char b = 0;
     (void)!::write(rd_.wake[1], &b, 1);
     rd_.th.join();
     ::close(rd_.listen_fd);
-    ::unlink(socket_path().c_str());
+    cleanup_files();
     for (auto& w : wins_) begin_close(w.get());
     for (int i = 0; i < 60 && !wins_.empty(); ++i) { reap(); SDL_PumpEvents(); std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
     if (cef_up_) cef::shutdown();
+    kill_descendants();
     SDL_Quit();
     return 0;   // lock_fd closes with the process
 }

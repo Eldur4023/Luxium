@@ -12,6 +12,7 @@ luxium --host
   $XDG_RUNTIME_DIR/luxium/        0700   (fallback /tmp/luxium-<uid>)
     host.sock                     0600   unix stream socket
     host.lock                            flock held by the host for its whole life
+    host.pid                             pid of the host (removed on exit)
     spawn.lock                           flock clients take while starting a host
     host.log                             host stdout/stderr when a client spawned it
 ```
@@ -27,6 +28,37 @@ luxium --host
 - The host exits `LUXIUM_HOST_GRACE` seconds (default 3) after the last window
   and connection are gone. It stops listening before it shuts Chromium down.
 - A client that sees EOF before `opened` should reconnect (the host was exiting).
+
+## Liveness and recovery
+
+`hello`, `ping` and `quit` are answered by the host's socket-reader thread, not its render loop, so they work
+while rendering is slow or wedged in CEF. `hello` reports the build id (`<size>-<mtime>` of the host's
+executable, taken from `/proc/self/exe` so it is right even after an installer replaced the file), its pid, the
+number of live windows and `beat_ms`, the age of the main-loop heartbeat. `quit` makes a host with no windows and
+no other connection exit (`bye`); otherwise it answers `busy` and does nothing.
+
+Lux-Local's client (`src/luxium_window.cpp`) never waits blindly. Under `spawn.lock`, after connecting it sends
+`hello`+`ping` and expects the answer within 2 s (8 s for a host it just spawned). Then:
+
+| situation | client does |
+|---|---|
+| no host | spawns one (socket within 20 s) |
+| no answer, or `beat_ms` > 10 s | SIGTERM the host (pid from `hello`, `SO_PEERCRED` or `host.pid`), SIGKILL after 1 s, kill its leftover children, remove the socket, spawn a fresh host, once |
+| host does not accept connections | same, using `host.pid` |
+| `build` differs from the luxium it would spawn (`LUXIUM_BIN`, PATH, `~/.local/opt/luxium`, `/opt/luxium`) | no windows: `quit`, wait for it to leave, spawn the new one; with windows: keep it, log the skew |
+| no `opened` 15 s after `open` | host still pings with a live heartbeat: report an error; else kill it and retry |
+| `error` with `fatal` before `opened`, or recovery failed | the app falls back to the WebKitGTK window; if that is impossible it shows an error dialog (zenity/kdialog) and exits non-zero |
+
+Every step is logged to `$XDG_STATE_HOME/lux-desktop/<app>.log` (default `~/.local/state/lux-desktop`, rotated at
+1 MB); the host's own output is in `host.log`.
+
+Host side: SIGTERM/SIGINT and `quit` arm a watchdog thread. If the process has not left 3 s later (6 s for an
+idle exit that wedges in `cef::shutdown`), it kills every descendant (CEF zygote, GPU, renderers), removes socket
+and pidfile and `_exit`s. CEF children are also killed after a normal shutdown. If Chromium cannot start
+(`CefInitialize` fails) or a window cannot be handed to it, the window keeps the own engine and gets an `error`
+event; a failed page load in Chromium shows an error page and sends `error`; a crashed renderer is reloaded
+(three times at most) with an `error`. Own-engine windows never need CEF. `tools/hosttest.py` exercises all of
+this under Xvfb (`LUXIUM_HOST_TEST=1` enables a `_wedge` command that hangs the main loop on purpose).
 
 ## Protocol
 
@@ -49,13 +81,16 @@ Client to host:
 | `show`, `hide`, `toggle` | (`toggle`: hide a visible window, show and raise a hidden one; for tray clicks) |
 | `clipboard_write` | `text` |
 | `clipboard_read` | `id` (answered by a `result` event) |
+| `hello` | (answered with `hello`) |
 | `ping` | |
+| `quit` | (idle host only; see Liveness) |
 
 Host to client: `opened {width,height}`, `resized {width,height}`,
 `title {title}` (page title, informational), `url {url}`, `loaded`,
 `message {data}` (page called `console.debug("luxium-msg:<data>")`),
 `menu {action[,checked]}` (a menu item was activated; `checked` = new state, only for check items), `result {id,value}`, `closed` (window gone; the host then drops the connection),
-`error {message}`, `pong`.
+`error {message[,fatal]}` (`fatal:true` before `opened`: the window could not be created), `pong`,
+`hello {proto,build,pid,windows,beat_ms}`, `bye` / `busy {windows}` (answers to `quit`).
 
 ## Engines
 
@@ -105,4 +140,5 @@ native Wayland session is not supported). Icon: sent as ARGB `_NET_WM_ICON`.
 ## Install
 
 `tools/install.sh` (no sudo) copies the binary and the Chromium runtime to
-`~/.local/opt/luxium` and links `~/.local/bin/luxium`.
+`~/.local/opt/luxium` and links `~/.local/bin/luxium`. It then sends `quit` to a running host: an idle one
+exits and the next app starts the new binary; one with windows is left alone (a note says so).
