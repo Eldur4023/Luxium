@@ -28,6 +28,9 @@ struct Entry {
     int vw = 0, vh = 0;              // last display size reported to layout
     std::shared_ptr<const render::ImageBitmap> bmp;
     SwsContext* sws = nullptr;
+    int sub_stream = -1;             // subtitle stream shown, -1 = off
+    std::vector<SubCue> cues;        // of that stream, so far
+    size_t cue_n = 0;
     ~Entry() { if (sws) sws_freeContext(sws); p->close(); }
 };
 
@@ -63,6 +66,7 @@ Info attach(const void* key, const Elem& el) {
     Entry& e = reg()[key];
     if (e.elem.src != el.src || e.elem.local != el.local) {
         e.bmp.reset(); e.seq = 0; e.started_auto = false; e.vw = e.vh = 0;
+        e.sub_stream = -1; e.cues.clear(); e.cue_n = 0;
         if (!el.src.empty()) e.p->open(el.src, "", el.local);
         else e.p->close();
     }
@@ -126,6 +130,34 @@ State state(const void* key) {
     s.duration = std::isfinite(d) ? d : 0;
     for (const Range& r : p.buffered())
         if (r.start <= s.time + 0.5) s.buffered_end = std::max(s.buffered_end, r.end);
+    Entry& e = it->second;
+    auto label = [](const TrackInfo& t, bool audio) {
+        std::string l = t.lang.empty() ? t.codec : (audio ? t.codec + " " + t.lang : t.lang);
+        if (!t.title.empty()) l += " " + t.title;
+        if (audio && t.channels > 2) l += t.channels == 6 ? " 5.1" : t.channels == 8 ? " 7.1" : " " + std::to_string(t.channels) + "ch";
+        return l;
+    };
+    int n = 0;
+    for (const TrackInfo& t : p.audio_tracks()) {
+        if (!t.usable) continue;
+        ++n;
+        if (t.selected) { s.audio_cur = n; s.audio_label = label(t, true); }
+    }
+    s.audio_count = n;
+    n = 0;
+    for (const TrackInfo& t : p.subtitle_tracks()) {
+        if (!t.usable) continue;
+        ++n;
+        if (t.index == e.sub_stream) { s.sub_cur = n; s.sub_label = label(t, false); }
+    }
+    s.sub_count = n;
+    if (e.sub_stream >= 0) {
+        size_t total = 0;
+        for (SubCue& c : p.sub_cues(e.sub_stream, e.cue_n, total)) e.cues.push_back(std::move(c));
+        e.cue_n = total;
+        for (const SubCue& c : e.cues)
+            if (c.start <= s.time && s.time < c.end) { if (!s.cue.empty()) s.cue += '\n'; s.cue += c.text; }
+    }
     return s;
 }
 
@@ -140,6 +172,25 @@ void toggle(const void* key) {
     if (Player* p = find(key)) { if (p->paused() || p->ended()) p->play(); else p->pause(); }
 }
 void seek(const void* key, double s) { if (Player* p = find(key)) p->seek(std::max(0.0, s)); }
+void cycle_audio(const void* key) {
+    Player* p = find(key);
+    if (!p) return;
+    std::vector<TrackInfo> u;
+    for (const TrackInfo& t : p->audio_tracks()) if (t.usable) u.push_back(t);
+    for (size_t i = 0; i < u.size() && u.size() > 1; ++i)
+        if (u[i].selected) { p->select_audio(u[(i + 1) % u.size()].index); return; }
+}
+void cycle_subtitle(const void* key) {
+    auto it = reg().find(key);
+    if (it == reg().end()) return;
+    Entry& e = it->second;
+    std::vector<int> u;
+    for (const TrackInfo& t : e.p->subtitle_tracks()) if (t.usable) u.push_back(t.index);
+    int next = u.empty() ? -1 : u[0];
+    for (size_t i = 0; i < u.size(); ++i)
+        if (u[i] == e.sub_stream) { next = i + 1 < u.size() ? u[i + 1] : -1; break; }
+    e.sub_stream = next; e.cues.clear(); e.cue_n = 0;
+}
 void seek_fraction(const void* key, double f) {
     Player* p = find(key);
     if (!p) return;

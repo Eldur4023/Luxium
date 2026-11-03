@@ -30,5 +30,10 @@ std::shared_ptr<const Frame> Player::frame(uint64_t) { return nullptr; }
 Player::Stats Player::stats() const { return {}; }
 std::string can_play(const std::string&) { return ""; }
 bool built() { return false; }
+std::string capabilities_json() { return "{\"video\":[],\"audio\":[],\"subtitle\":[],\"containers\":[]}"; }
+std::vector<TrackInfo> Player::audio_tracks() const { return {}; }
+std::vector<TrackInfo> Player::subtitle_tracks() const { return {}; }
+bool Player::select_audio(int) { return false; }
+std::vector<SubCue> Player::sub_cues(int, size_t, size_t& total) const { total = 0; return {}; }
 
 } // namespace luxium::media

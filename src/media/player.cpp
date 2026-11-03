@@ -25,6 +25,8 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <set>
 
 namespace luxium::media {
 
@@ -141,7 +143,8 @@ struct Player::Impl {
 
     // container
     AVFormatContext* fmt = nullptr;
-    int vi = -1, ai = -1;
+    int vi = -1;
+    std::atomic<int> ai{-1};
     AVCodecContext *vctx = nullptr, *actx = nullptr;
     AVBufferRef* hwdev = nullptr;
     AVRational vtb{1, 1000}, atb{1, 1000};   // stream time bases, kept so the decoders never touch `fmt`
@@ -155,6 +158,27 @@ struct Player::Impl {
     double sar = 1.0;
     std::string vcodec;
     PQ vpq, apq;
+
+    // streams inside the file (tracks), text subtitle decoding
+    struct SubDec {
+        AVCodecContext* ctx = nullptr;
+        AVRational tb{1, 1000};
+        std::vector<SubCue> cues;            // append-only
+        std::set<std::string> seen;          // "start|text": a seek re-reads packets
+    };
+    mutable std::mutex tm;                   // guards the track lists and SubDec::cues
+    std::vector<TrackInfo> atracks, stracks;
+    std::map<int, SubDec> subs;              // by stream index
+    int pending_ai = -1;                     // select_audio(): applied by do_seek (guarded by dm)
+    std::mutex swm;                          // an audio stream switch waiting for the audio thread
+    AVCodecParameters* swap_par = nullptr;
+    AVRational swap_tb{1, 1000};
+    std::atomic<uint64_t> a_played{0};       // frames given to the device
+    std::atomic<float> a_peak{0};
+    std::string acodec, pixfmt;
+    int a_channels = 0;
+    std::atomic<bool> hw_used{false};        // a hardware frame was actually decoded
+    std::atomic<bool> deint{false};
 
     // demux <-> owner
     std::mutex dm;
@@ -272,7 +296,10 @@ struct Player::Impl {
                 const size_t have = c.s.size() / 2 - c.off;
                 const size_t n = std::min(have, want - done);
                 const float* src = c.s.data() + c.off * 2;
-                for (size_t i = 0; i < n * 2; ++i) out[done * 2 + i] = src[i] * vol;
+                float pk = 0;
+                for (size_t i = 0; i < n * 2; ++i) { out[done * 2 + i] = src[i] * vol; pk = std::max(pk, std::fabs(src[i])); }
+                if (pk > d->a_peak) d->a_peak = pk;
+                d->a_played += n;
                 c.off += n;
                 done += n;
                 d->aq_frames -= n;
@@ -297,9 +324,25 @@ struct Player::Impl {
         return d->abort || d->seek_req;
     }
 
+    // VA-API only decodes 4:2:0 at 8 bit (10 bit for HEVC/VP9/AV1); Hi10P H.264, 4:2:2/4:4:4 and
+    // 12 bit go straight to the (threaded) software decoder instead of failing 30 packets first.
+    static bool hw_plausible(const AVCodecParameters* par) {
+        // MPEG-2/MPEG-4 ASP/VC-1 advertise VA-API but drivers often lack them: ~30 failed packets, then software.
+        // They are cheap in software anyway.
+        if (par->codec_id != AV_CODEC_ID_H264 && par->codec_id != AV_CODEC_ID_HEVC && par->codec_id != AV_CODEC_ID_VP9 &&
+            par->codec_id != AV_CODEC_ID_AV1) return false;
+        const AVPixFmtDescriptor* pd = par->format >= 0 ? av_pix_fmt_desc_get((AVPixelFormat)par->format) : nullptr;
+        if (!pd) return true;
+        if (pd->log2_chroma_w != 1 || pd->log2_chroma_h != 1) return false;
+        const int depth = pd->comp[0].depth;
+        if (depth > 10) return false;
+        return depth <= 8 || par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_VP9 || par->codec_id == AV_CODEC_ID_AV1;
+    }
+
     bool open_codec(AVCodecContext*& ctx, AVCodecParameters* par, AVRational tb, bool try_hw) {
         const AVCodec* codec = avcodec_find_decoder(par->codec_id);
         if (!codec) return false;
+        if (try_hw && !hw_plausible(par)) try_hw = false;
         ctx = avcodec_alloc_context3(codec);
         avcodec_parameters_to_context(ctx, par);
         ctx->pkt_timebase = tb;
@@ -447,7 +490,7 @@ struct Player::Impl {
         int r = avformat_open_input(&nf, url.c_str(), nullptr, &o);
         av_dict_free(&o);
         if (r >= 0) r = avformat_find_stream_info(nf, nullptr);
-        if (r < 0 || (int)nf->nb_streams <= std::max(vi, ai)) {
+        if (r < 0 || (int)nf->nb_streams <= std::max(vi, ai.load())) {
             if (nf) avformat_close_input(&nf);
             free_mem_pb();
             mem_pb = old_pb;
@@ -455,13 +498,109 @@ struct Player::Impl {
         }
         for (unsigned i = 0; i < nf->nb_streams; ++i) nf->streams[i]->discard = AVDISCARD_ALL;
         if (vi >= 0) nf->streams[vi]->discard = AVDISCARD_DEFAULT;
-        if (ai >= 0) nf->streams[ai]->discard = AVDISCARD_DEFAULT;
+        if (ai >= 0) nf->streams[ai.load()]->discard = AVDISCARD_DEFAULT;
         dur_base = segs[pick].second;
         AVFormatContext* prev = fmt;
         fmt = nf;
         avformat_close_input(&prev);
         if (old_pb) { av_freep(&old_pb->buffer); avio_context_free(&old_pb); }
         return true;
+    }
+
+    // ── tracks ───────────────────────────────────────────────────────────────
+    void list_tracks() {
+        std::lock_guard<std::mutex> lk(tm);
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            AVStream* st = fmt->streams[i];
+            const AVCodecParameters* cp = st->codecpar;
+            if (cp->codec_type != AVMEDIA_TYPE_AUDIO && cp->codec_type != AVMEDIA_TYPE_SUBTITLE) continue;
+            TrackInfo t;
+            t.index = (int)i;
+            t.codec = avcodec_get_name(cp->codec_id);
+            if (AVDictionaryEntry* e = av_dict_get(st->metadata, "language", nullptr, 0)) t.lang = e->value;
+            if (AVDictionaryEntry* e = av_dict_get(st->metadata, "title", nullptr, 0)) t.title = e->value;
+            t.is_default = st->disposition & AV_DISPOSITION_DEFAULT;
+            if (cp->codec_type == AVMEDIA_TYPE_AUDIO) {
+                t.channels = cp->ch_layout.nb_channels;
+                t.usable = avcodec_find_decoder(cp->codec_id) != nullptr;
+                atracks.push_back(t);
+            } else {
+                const AVCodecDescriptor* cd = avcodec_descriptor_get(cp->codec_id);
+                // HLS subtitle renditions are separate playlists: opening them would cost requests for nothing
+                t.usable = cd && (cd->props & AV_CODEC_PROP_TEXT_SUB) && avcodec_find_decoder(cp->codec_id) &&
+                           !std::strstr(fmt->iformat->name, "hls");
+                stracks.push_back(t);
+            }
+        }
+    }
+
+    void open_sub_decoders() {
+        for (auto& t : stracks) {
+            if (!t.usable) continue;
+            AVStream* st = fmt->streams[t.index];
+            SubDec sd;
+            sd.tb = st->time_base;
+            if (!open_codec(sd.ctx, st->codecpar, sd.tb, false)) { t.usable = false; continue; }
+            st->discard = AVDISCARD_DEFAULT;
+            subs.emplace(t.index, std::move(sd));
+        }
+    }
+
+    // ASS "ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text" (what every FFmpeg
+    // text-subtitle decoder emits) -> WebVTT cue markup: line breaks and i/b/u kept, the rest dropped.
+    static bool ass_to_cue(const char* ass, std::string& out) {
+        std::string l = ass;
+        size_t p = 0;
+        for (int i = 0; i < 8; ++i) { p = l.find(',', p); if (p == std::string::npos) { p = 0; break; } ++p; }
+        l = l.substr(p);
+        std::string o;
+        bool tag[3] = {false, false, false};
+        static const char kTag[] = {'i', 'b', 'u'};
+        for (size_t i = 0; i < l.size(); ++i) {
+            const char c = l[i];
+            if (c == '{') {
+                const size_t e = l.find('}', i);
+                if (e == std::string::npos) break;
+                const std::string ov = l.substr(i + 1, e - i - 1);
+                if (ov.find("\\p1") != std::string::npos) return false;   // vector drawing, no text
+                for (int k = 0; k < 3; ++k) {
+                    const std::string on = std::string("\\") + kTag[k] + "1", off = std::string("\\") + kTag[k] + "0";
+                    if (ov.find(on) != std::string::npos && !tag[k]) { o += std::string("<") + kTag[k] + ">"; tag[k] = true; }
+                    if (ov.find(off) != std::string::npos && tag[k]) { o += std::string("</") + kTag[k] + ">"; tag[k] = false; }
+                }
+                i = e;
+            } else if (c == '\\' && i + 1 < l.size() && (l[i + 1] == 'N' || l[i + 1] == 'n')) { o += '\n'; ++i; }
+            else if (c == '\\' && i + 1 < l.size() && l[i + 1] == 'h') { o += ' '; ++i; }
+            else if (c == '&') o += "&amp;";
+            else if (c == '<') o += "&lt;";
+            else if (c == '>') o += "&gt;";
+            else o += c;
+        }
+        for (int k = 2; k >= 0; --k) if (tag[k]) o += std::string("</") + kTag[k] + ">";
+        while (!o.empty() && (o.back() == '\n' || o.back() == ' ')) o.pop_back();
+        out = o;
+        return !out.empty();
+    }
+
+    void decode_sub(SubDec& sd, const AVPacket* pkt) {
+        AVSubtitle sub{};
+        int got = 0;
+        if (avcodec_decode_subtitle2(sd.ctx, &sub, &got, const_cast<AVPacket*>(pkt)) < 0 || !got) return;
+        const double t0 = to_sec(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts, sd.tb);
+        double len = pkt->duration > 0 ? pkt->duration * av_q2d(sd.tb) : (sub.end_display_time - sub.start_display_time) / 1000.0;
+        if (!(len > 0) || len > 600) len = 3;
+        if (!std::isnan(t0)) {
+            const double start = t0 + sub.start_display_time / 1000.0;
+            for (unsigned i = 0; i < sub.num_rects; ++i) {
+                std::string text;
+                if (sub.rects[i]->type != SUBTITLE_ASS || !sub.rects[i]->ass || !ass_to_cue(sub.rects[i]->ass, text)) continue;
+                char key[48];
+                std::snprintf(key, sizeof key, "%.0f|", start * 1000);
+                std::lock_guard<std::mutex> lk(tm);
+                if (sd.seen.insert(std::string(key) + text).second) sd.cues.push_back({start, start + len, text});
+            }
+        }
+        avsubtitle_free(&sub);
     }
 
     void demux_main() {
@@ -482,8 +621,8 @@ struct Player::Impl {
         for (unsigned i = 0; i < fmt->nb_streams; ++i) fmt->streams[i]->discard = AVDISCARD_ALL;
         vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
         if (vi >= 0 && (fmt->streams[vi]->disposition & AV_DISPOSITION_ATTACHED_PIC)) vi = -1;
-        ai = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, vi, nullptr, 0);
-        if (vi < 0 && ai < 0) { fail(4, "no playable streams"); return; }
+        list_tracks();
+        if (vi < 0 && atracks.empty()) { fail(4, "no playable streams"); return; }
 
         if (vi >= 0) {
             AVStream* st = fmt->streams[vi];
@@ -497,22 +636,33 @@ struct Player::Impl {
             AVRational s = av_guess_sample_aspect_ratio(fmt, st, nullptr);
             sar = (s.num > 0 && s.den > 0) ? av_q2d(s) : 1.0;
             vcodec = avcodec_get_name(st->codecpar->codec_id);
+            pixfmt = av_get_pix_fmt_name((AVPixelFormat)st->codecpar->format) ? av_get_pix_fmt_name((AVPixelFormat)st->codecpar->format) : "";
             P.vw_ = (int)std::lround(st->codecpar->width * sar);
             P.vh_ = st->codecpar->height;
             P.has_video_ = true;
         }
-        if (ai >= 0) {
-            AVStream* st = fmt->streams[ai];
+        // The default-flagged audio stream first, then file order; the first one that opens plays.
+        std::vector<int> order;
+        for (auto& t : atracks) if (t.usable && t.is_default) order.push_back(t.index);
+        for (auto& t : atracks) if (t.usable && !t.is_default) order.push_back(t.index);
+        for (int idx : order) {
+            AVStream* st = fmt->streams[idx];
             atb = st->time_base;
-            if (!open_codec(actx, st->codecpar, atb, false)) {
-                if (vi < 0) { fail(4, "no decoder for the audio stream"); return; }
-                ai = -1;                 // video plays without sound
-            } else {
-                st->discard = AVDISCARD_DEFAULT;
-                P.has_audio_ = true;
-                open_audio_device();
-            }
+            if (!open_codec(actx, st->codecpar, atb, false)) continue;
+            ai = idx;
+            st->discard = AVDISCARD_DEFAULT;
+            acodec = avcodec_get_name(st->codecpar->codec_id);
+            a_channels = st->codecpar->ch_layout.nb_channels;
+            P.has_audio_ = true;
+            open_audio_device();
+            break;
         }
+        if (ai < 0 && vi < 0) { fail(4, "no decoder for the audio stream"); return; }
+        {
+            std::lock_guard<std::mutex> lk(tm);
+            for (auto& t : atracks) t.selected = t.index == ai;
+        }
+        open_sub_decoders();
         if (fmt->duration != AV_NOPTS_VALUE) dur = fmt->duration / (double)AV_TIME_BASE;
         else dur = std::numeric_limits<double>::infinity();
         P.ready_ = 1;
@@ -598,7 +748,12 @@ struct Player::Impl {
             }
             errors = 0;
             const int si = pkt->stream_index;
-            if (si != vi && si != ai) { av_packet_free(&pkt); continue; }
+            if (si != vi && si != ai) {
+                auto sd = subs.find(si);
+                if (sd != subs.end()) decode_sub(sd->second, pkt);
+                av_packet_free(&pkt);
+                continue;
+            }
             AVStream* st = fmt->streams[si];
             const double secs = pkt->duration > 0 ? pkt->duration * av_q2d(st->time_base) : 0;
             double pts = to_sec(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts, st->time_base);
@@ -625,11 +780,29 @@ struct Player::Impl {
 
     void do_seek() {
         double t;
+        int new_ai = -1;
         {
             std::lock_guard<std::mutex> lk(dm);
             t = seek_target;
             seek_req = false;
             eof = false;                 // poll() trusts eof only while no seek is pending
+            new_ai = pending_ai;
+            pending_ai = -1;
+        }
+        if (new_ai >= 0 && new_ai != ai && new_ai < (int)fmt->nb_streams) {
+            // Audio stream switch: the audio thread reopens its decoder when it meets the flush below.
+            fmt->streams[ai]->discard = AVDISCARD_ALL;
+            fmt->streams[new_ai]->discard = AVDISCARD_DEFAULT;
+            {
+                std::lock_guard<std::mutex> lk(swm);
+                if (swap_par) avcodec_parameters_free(&swap_par);
+                swap_par = avcodec_parameters_alloc();
+                avcodec_parameters_copy(swap_par, fmt->streams[new_ai]->codecpar);
+                swap_tb = fmt->streams[new_ai]->time_base;
+            }
+            ai = new_ai;
+            std::lock_guard<std::mutex> lk(tm);
+            for (auto& tr : atracks) tr.selected = tr.index == new_ai;
         }
         const double d = dur;
         if (std::isfinite(d)) t = std::min(t, d);
@@ -679,6 +852,7 @@ struct Player::Impl {
                 got_any = true;
                 AVFrame* src = fr;
                 if (fr->format == hw_pix && hw_on) {
+                    hw_used = true;
                     av_frame_unref(sw);
                     if (av_hwframe_transfer_data(sw, fr, 0) < 0) { av_frame_unref(fr); continue; }
                     sw->pts = fr->pts;
@@ -768,6 +942,7 @@ struct Player::Impl {
         case AVCOL_SPC_BT2020_NCL: case AVCOL_SPC_BT2020_CL: f->matrix = 2; break;
         default: f->matrix = s->height >= 720 ? 1 : 0;
         }
+        const bool interlaced = s->interlaced_frame != 0;
         uint8_t* dst[2] = {f->data.data(), f->data.data() + (size_t)f->w * f->h};
         if (pf == AV_PIX_FMT_NV12) {
             for (int y = 0; y < f->h; ++y) std::memcpy(dst[0] + (size_t)y * f->w, s->data[0] + (size_t)y * s->linesize[0], f->w);
@@ -780,6 +955,19 @@ struct Player::Impl {
                 int dstride[2] = {f->w, cw};
                 sws_scale(sws, s->data, s->linesize, 0, s->height, dst, dstride);
             }
+        }
+        if (interlaced) {                // shortcut: line-doubling of one field, no motion adaptation
+            deint = true;
+            auto bob = [](uint8_t* p, int rows, int stride) {
+                for (int y = 1; y < rows; y += 2) {
+                    const uint8_t* a = p + (size_t)(y - 1) * stride;
+                    const uint8_t* b = y + 1 < rows ? p + (size_t)(y + 1) * stride : a;
+                    uint8_t* o = p + (size_t)y * stride;
+                    for (int x = 0; x < stride; ++x) o[x] = (uint8_t)((a[x] + b[x] + 1) >> 1);
+                }
+            };
+            bob(dst[0], f->h, f->w);
+            bob(dst[1], ch, cw);
         }
         return f;
     }
@@ -839,7 +1027,22 @@ struct Player::Impl {
         Item it;
         while (apq.get(it)) {
             if (it.flush) {
-                avcodec_flush_buffers(actx);
+                AVCodecParameters* np = nullptr;
+                AVRational ntb{1, 1000};
+                {
+                    std::lock_guard<std::mutex> lk(swm);
+                    np = swap_par;
+                    swap_par = nullptr;
+                    ntb = swap_tb;
+                }
+                if (np) {                // audio stream switch
+                    if (actx) avcodec_free_context(&actx);
+                    atb = ntb;
+                    open_codec(actx, np, ntb, false);
+                    avcodec_parameters_free(&np);
+                    if (actx) { acodec = avcodec_get_name(actx->codec_id); a_channels = actx->ch_layout.nb_channels; }
+                    swr_free(&swr);
+                } else if (actx) avcodec_flush_buffers(actx);
                 swr_free(&swr);
                 discard_until = it.target;
                 next_pts = it.target;
@@ -849,14 +1052,16 @@ struct Player::Impl {
             }
             if (it.eof) {
                 if (it.serial == serial.load()) {
-                    avcodec_send_packet(actx, nullptr);
-                    drain();
-                    avcodec_flush_buffers(actx);
+                    if (actx) {
+                        avcodec_send_packet(actx, nullptr);
+                        drain();
+                        avcodec_flush_buffers(actx);
+                    }
                     a_eof = true;
                 }
                 continue;
             }
-            if (it.serial != serial.load()) { av_packet_free(&it.pkt); continue; }
+            if (it.serial != serial.load() || !actx) { av_packet_free(&it.pkt); continue; }
             avcodec_send_packet(actx, it.pkt);
             av_packet_free(&it.pkt);
             drain();
@@ -908,6 +1113,9 @@ struct Player::Impl {
         if (vctx) avcodec_free_context(&vctx);
         if (actx) avcodec_free_context(&actx);
         if (hwdev) av_buffer_unref(&hwdev);
+        for (auto& [i, sd] : subs) avcodec_free_context(&sd.ctx);
+        subs.clear();
+        if (swap_par) avcodec_parameters_free(&swap_par);
         if (fmt) avformat_close_input(&fmt);
         free_mem_pb();
         if (vpar) avcodec_parameters_free(&vpar);
@@ -1181,31 +1389,96 @@ Player::Stats Player::stats() const {
     s.decoded = d->n_decoded;
     s.presented = d->n_presented;
     s.dropped = d->n_dropped;
-    s.hw = d->hw_on;
+    s.hw = d->hw_used;
     s.codec = d->vcodec;
+    s.audio_frames = d->a_played;
+    s.audio_peak = d->a_peak;
+    s.audio_codec = d->acodec;
+    s.audio_channels = d->a_channels;
+    s.deinterlace = d->deint;
+    s.pix_fmt = d->pixfmt;
     return s;
+}
+
+std::vector<TrackInfo> Player::audio_tracks() const {
+    std::lock_guard<std::mutex> lk(d->tm);
+    return d->atracks;
+}
+std::vector<TrackInfo> Player::subtitle_tracks() const {
+    std::lock_guard<std::mutex> lk(d->tm);
+    return d->stracks;
+}
+
+bool Player::select_audio(int idx) {
+    Impl& s = *d;
+    if (!s.adec_t.joinable() || ready_ < 1) return false;
+    {
+        std::lock_guard<std::mutex> lk(s.tm);
+        bool ok = false;
+        for (auto& t : s.atracks) ok |= t.index == idx && t.usable;
+        if (!ok) return false;
+        if (idx == s.ai) return true;
+    }
+    {
+        std::lock_guard<std::mutex> lk(s.dm);
+        s.pending_ai = idx;
+    }
+    seek(current_time());                // same path as any seek: the demuxer applies the switch first
+    return true;
+}
+
+std::vector<SubCue> Player::sub_cues(int idx, size_t from, size_t& total) const {
+    std::lock_guard<std::mutex> lk(d->tm);
+    auto it = d->subs.find(idx);
+    total = 0;
+    if (it == d->subs.end()) return {};
+    total = it->second.cues.size();
+    if (from >= total) return {};
+    return std::vector<SubCue>(it->second.cues.begin() + from, it->second.cues.end());
 }
 
 // ── what we can play ─────────────────────────────────────────────────────────
 bool built() { return true; }
 
+// RFC 6381 / ISO sample-entry codec strings -> FFmpeg decoder.  Anything else is tried as an
+// FFmpeg codec or decoder name ("mpeg2video", "vc1", "dca", "truehd", "pcm_s16le"...).
 static bool codec_known(const std::string& c) {
     auto starts = [&](const char* p) { return c.rfind(p, 0) == 0; };
     AVCodecID id = AV_CODEC_ID_NONE;
     if (starts("avc1") || starts("avc3") || c == "h264") id = AV_CODEC_ID_H264;
-    else if (starts("hvc1") || starts("hev1") || c == "hevc") id = AV_CODEC_ID_HEVC;
+    else if (starts("hvc1") || starts("hev1") || starts("dvh1") || starts("dvhe") || c == "hevc" || c == "h265") id = AV_CODEC_ID_HEVC;
     else if (starts("av01") || c == "av1") id = AV_CODEC_ID_AV1;
-    else if (c == "vp8") id = AV_CODEC_ID_VP8;
+    else if (c == "vp8" || c == "vp08") id = AV_CODEC_ID_VP8;
     else if (starts("vp09") || c == "vp9") id = AV_CODEC_ID_VP9;
+    else if (starts("mp4v.20") || c == "mpeg4") id = AV_CODEC_ID_MPEG4;
+    else if (starts("mp4v.6") || starts("mp4v.105") || c == "mp2v" || c == "mpeg2video" || c == "mpeg1video") id = AV_CODEC_ID_MPEG2VIDEO;
+    else if (c == "vc-1" || c == "wvc1" || c == "vc1") id = AV_CODEC_ID_VC1;
+    else if (c == "wmv3") id = AV_CODEC_ID_WMV3;
+    else if (c == "wmv1" || c == "wmv2") id = c == "wmv1" ? AV_CODEC_ID_WMV1 : AV_CODEC_ID_WMV2;
+    else if (starts("ap4") || c == "apch" || c == "apcn" || c == "apcs" || c == "apco" || c == "prores") id = AV_CODEC_ID_PRORES;
+    else if (c == "mjpg" || c == "mjpeg" || c == "jpeg") id = AV_CODEC_ID_MJPEG;
+    else if (c == "theora") id = AV_CODEC_ID_THEORA;
+    else if (c == "h263" || c == "s263") id = AV_CODEC_ID_H263;
     else if (starts("mp4a.40") || starts("mp4a.66") || starts("mp4a.67") || starts("mp4a.68")) id = AV_CODEC_ID_AAC;
-    else if (starts("mp4a.69") || starts("mp4a.6b") || c == "mp3") id = AV_CODEC_ID_MP3;
-    else if (c == "ac-3" || starts("mp4a.a5")) id = AV_CODEC_ID_AC3;
-    else if (c == "ec-3" || starts("mp4a.a6")) id = AV_CODEC_ID_EAC3;
+    else if (starts("mp4a.69") || starts("mp4a.6b") || c == "mp3" || c == ".mp3") id = AV_CODEC_ID_MP3;
+    else if (c == "mp2" || c == "mp4a.6a") id = AV_CODEC_ID_MP2;
+    else if (c == "ac-3" || c == "ac3" || starts("mp4a.a5")) id = AV_CODEC_ID_AC3;
+    else if (c == "ec-3" || c == "eac3" || starts("mp4a.a6")) id = AV_CODEC_ID_EAC3;
+    else if (starts("dts") || starts("mp4a.a9") || starts("mp4a.aa") || starts("mp4a.ab") || starts("mp4a.ac")) id = AV_CODEC_ID_DTS;
+    else if (c == "mlpa" || c == "truehd") id = AV_CODEC_ID_TRUEHD;
     else if (c == "opus") id = AV_CODEC_ID_OPUS;
     else if (c == "vorbis") id = AV_CODEC_ID_VORBIS;
     else if (c == "flac") id = AV_CODEC_ID_FLAC;
-    else if (c == "wav" || c == "1") id = AV_CODEC_ID_PCM_S16LE;
-    return id != AV_CODEC_ID_NONE && avcodec_find_decoder(id);
+    else if (c == "alac") id = AV_CODEC_ID_ALAC;
+    else if (c == "wma" || c == "wmav2") id = AV_CODEC_ID_WMAV2;
+    else if (c == "wmav1") id = AV_CODEC_ID_WMAV1;
+    else if (c == "wmapro") id = AV_CODEC_ID_WMAPRO;
+    else if (c == "wav" || c == "1" || c == "pcm" || c == "ipcm" || c == "twos" || c == "sowt" || c == "lpcm") id = AV_CODEC_ID_PCM_S16LE;
+    else if (c == "fpcm" || c == "pcm_f32le") id = AV_CODEC_ID_PCM_F32LE;
+    if (id != AV_CODEC_ID_NONE) return avcodec_find_decoder(id) != nullptr;
+    if (avcodec_find_decoder_by_name(c.c_str())) return true;
+    const AVCodecDescriptor* cd = avcodec_descriptor_get_by_name(c.c_str());
+    return cd && avcodec_find_decoder(cd->id);
 }
 
 std::string can_play(const std::string& spec) {
@@ -1220,11 +1493,17 @@ std::string can_play(const std::string& spec) {
     };
     mime = trim(mime);
     for (auto& ch : mime) ch = (char)std::tolower((unsigned char)ch);
+    // Every container FFmpeg demuxes: the answer is "maybe" without codecs (the file may hold anything).
     static const char* ok[] = {
-        "video/mp4", "audio/mp4", "video/x-m4v", "video/quicktime", "video/webm", "audio/webm",
-        "video/x-matroska", "audio/x-matroska", "video/mp2t", "audio/mpeg", "audio/mp3", "audio/aac",
-        "audio/x-m4a", "audio/ogg", "video/ogg", "application/ogg", "audio/wav", "audio/x-wav",
-        "audio/wave", "audio/flac", "audio/x-flac", "video/mpeg", "audio/opus",
+        "video/mp4", "audio/mp4", "video/x-m4v", "video/m4v", "video/quicktime", "video/3gpp", "video/3gpp2", "audio/3gpp",
+        "audio/3gpp2", "video/webm", "audio/webm", "video/x-matroska", "audio/x-matroska", "application/x-matroska",
+        "video/mp2t", "video/mp2ts", "video/vnd.dlna.mpeg-tts", "video/mpeg", "video/x-mpeg", "video/mpg", "video/x-ms-wmv",
+        "video/x-ms-asf", "video/x-ms-wm", "video/x-msvideo", "video/avi", "video/msvideo", "video/x-flv", "video/flv",
+        "video/ogg", "application/ogg", "video/x-ogm", "video/divx", "video/x-divx", "video/dv", "video/mxf", "application/mxf",
+        "audio/mpeg", "audio/mp3", "audio/mpg", "audio/x-mpeg", "audio/aac", "audio/aacp", "audio/x-m4a", "audio/m4a", "audio/x-aac",
+        "audio/ogg", "audio/opus", "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave", "audio/flac", "audio/x-flac",
+        "audio/ac3", "audio/eac3", "audio/vnd.dolby.dd-raw", "audio/vnd.dts", "audio/vnd.dts.hd", "audio/x-dts", "audio/x-ms-wma",
+        "audio/x-ms-asf", "audio/aiff", "audio/x-aiff", "audio/x-ape", "audio/x-wavpack", "audio/x-matroska", "audio/x-mka",
         "application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl", "audio/x-mpegurl"};
     bool known = false;
     for (const char* m : ok) if (mime == m) known = true;
@@ -1243,6 +1522,36 @@ std::string can_play(const std::string& spec) {
         pos = comma + 1;
     }
     return all ? "probably" : "";
+}
+
+// Decoder/demuxer inventory for pages.  Names are FFmpeg's, i.e. what ffprobe reports as codec_name /
+// format_name, so a server that probes with ffprobe can compare directly.
+std::string capabilities_json() {
+    std::set<std::string> v, a, sub, cont;
+    void* it = nullptr;
+    while (const AVCodec* c = av_codec_iterate(&it)) {
+        if (!av_codec_is_decoder(c) || (c->capabilities & AV_CODEC_CAP_EXPERIMENTAL)) continue;
+        const char* n = avcodec_get_name(c->id);
+        if (c->type == AVMEDIA_TYPE_VIDEO) v.insert(n);
+        else if (c->type == AVMEDIA_TYPE_AUDIO) a.insert(n);
+        else if (c->type == AVMEDIA_TYPE_SUBTITLE) sub.insert(n);
+    }
+    it = nullptr;
+    while (const AVInputFormat* f = av_demuxer_iterate(&it)) {
+        std::string names = f->name;
+        for (size_t p = 0; p <= names.size();) {
+            const size_t q = names.find(',', p);
+            cont.insert(names.substr(p, q == std::string::npos ? std::string::npos : q - p));
+            if (q == std::string::npos) break;
+            p = q + 1;
+        }
+    }
+    auto arr = [](const std::set<std::string>& x) {
+        std::string o = "[";
+        for (auto& n : x) o += (o.size() > 1 ? ",\"" : "\"") + n + "\"";
+        return o + "]";
+    };
+    return "{\"video\":" + arr(v) + ",\"audio\":" + arr(a) + ",\"subtitle\":" + arr(sub) + ",\"containers\":" + arr(cont) + "}";
 }
 
 } // namespace luxium::media

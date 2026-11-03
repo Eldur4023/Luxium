@@ -28,6 +28,10 @@ struct State {
     bool   paused = true, ended = false, seeking = false, waiting = false, error = false;
     double time = 0, duration = 0; // duration 0 until known
     double buffered_end = 0;
+    int    audio_count = 0, audio_cur = 0;   // audio streams in the file, 1-based position of the one playing
+    int    sub_count = 0, sub_cur = 0;       // text subtitle streams, 1-based position shown (0 = off)
+    std::string audio_label, sub_label;      // "ac3 eng 5.1", "eng"
+    std::string cue;                         // text of the subtitle cue active now ("" = none), '\n' between lines
 };
 
 // Creates or updates the player for `key` (src changes reopen it).  Called by
@@ -50,5 +54,7 @@ void pause(const void* key);
 void toggle(const void* key);      // click: pause <-> play (restarts when ended)
 void seek(const void* key, double seconds);
 void seek_fraction(const void* key, double f);   // 0..1 of the duration
+void cycle_audio(const void* key);               // next audio stream of the file (re-sync at the same time)
+void cycle_subtitle(const void* key);           // off -> track 1 -> ... -> off
 
 } // namespace luxium::media::own

@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>matrix</title>
+<style>body{margin:0;background:#222} video{width:640px;display:block}</style>
+<video id="v" preload="auto"></video>
+<script>
+// tools/matrixtest.py drives this: ?f=fixtures/matrix/<file>
+const v = document.getElementById('v');
+window.__ev = [];
+for (const t of ['loadedmetadata', 'canplay', 'playing', 'seeking', 'seeked', 'error', 'ended'])
+  v.addEventListener(t, () => window.__ev.push(t));
+v.src = new URLSearchParams(location.search).get('f');
+</script>
