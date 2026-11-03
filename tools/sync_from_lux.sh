@@ -3,7 +3,7 @@
 # docs/ARCHITECTURE.md §4.1).
 #
 #   src/lux_script/*   the language: Lux's include/lux_script + src/lux_script,
-#                      EXCEPT natives.hpp, natives.cpp, template.cpp -- the
+#                      EXCEPT natives.hpp, natives.cpp -- the
 #                      browser's own face of those, drifting on purpose
 #   src/<dir>/...      the .luxp format: Lux's src/luxp/ (DOM, HTML and CSS
 #                      parsers, codecs, verifier, translator), same paths
@@ -18,7 +18,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 LUX=${LUX_DIR:-$HERE/../Lux}
 CHECK=${1:-}
-OWN="natives.hpp natives.cpp template.cpp"
+OWN="natives.hpp natives.cpp"
 
 pairs=()
 for f in "$HERE"/src/lux_script/*; do

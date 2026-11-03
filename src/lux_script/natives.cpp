@@ -10,6 +10,7 @@
 
 #include <lux_script/natives.hpp>
 #include <lux_script/vm.hpp>
+#include <lux_script/luxp_serve.hpp>
 
 #include <algorithm>
 #include <array>
@@ -22,78 +23,22 @@ namespace lux_script {
 namespace {
 
 // ── Host wrappers: the reserved objects ─────────────────────────────────────
+// Every LUX_BROWSER_CALL entry is one forwarding function; the engine looks
+// the name up (Host::call_native).  Async ones are never called this way (the
+// table gives them no fn), the wrapper just keeps the macro uniform.
+#define LUX_BROWSER_CALL(obj, member, min, max, is_async)                           \
+    Value host_##obj##_##member(NativeCtx& ctx, std::vector<Value>& args,           \
+                                std::string& error) {                               \
+        return ctx.host->call_native(#obj "_" #member, args, error);                \
+    }
+#include <lux_script/browser_api.inc>
+#undef LUX_BROWSER_CALL
 
-Value fn_log_info(NativeCtx& ctx, std::vector<Value>& args, std::string&) {
-    ctx.host->log(0, args[0].to_string());
-    return Value::null();
-}
-Value fn_log_warn(NativeCtx& ctx, std::vector<Value>& args, std::string&) {
-    ctx.host->log(1, args[0].to_string());
-    return Value::null();
-}
-Value fn_log_error(NativeCtx& ctx, std::vector<Value>& args, std::string&) {
-    ctx.host->log(2, args[0].to_string());
-    return Value::null();
-}
-
-Value fn_document_get(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
-    if (!args[0].is_str()) { error = "document.get() expects the id as a string"; return Value::null(); }
-    return ctx.host->document_get(args[0].as_str());
-}
-Value fn_document_query_all(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
-    if (!args[0].is_str()) { error = "document.query_all() expects the tag as a string"; return Value::null(); }
-    return ctx.host->document_query_all(args[0].as_str());
-}
-Value fn_document_title(NativeCtx& ctx, std::vector<Value>&, std::string&) {
-    return Value::str(ctx.host->document_title());
-}
-Value fn_document_root(NativeCtx& ctx, std::vector<Value>&, std::string&) {
-    return ctx.host->document_root();
-}
-
-bool element_handle(const Value& recv, long long& out);
-
-Value fn_document_create(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
-    if (!args[0].is_str()) { error = "document.create() expects the tag as a string"; return Value::null(); }
-    return ctx.host->document_create(args[0].as_str());
-}
-
-Value fn_page_after(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
-    if (!args[0].is_int()) { error = "page.after() expects the delay in ms as an int"; return Value::null(); }
-    if (!args[1].is_func()) { error = "page.after() expects a function: page.after(ms, fn)"; return Value::null(); }
-    ctx.host->page_after(static_cast<int>(args[0].as_int()), args[1]);
-    return Value::null();
-}
-
-Value fn_page_clicked(NativeCtx& ctx, std::vector<Value>&, std::string&) {
-    return ctx.host->page_clicked();
-}
-
-Value el_append(NativeCtx& ctx, Value& recv, std::vector<Value>& args, std::string& error) {
-    long long p;
-    if (!element_handle(recv, p)) { error = "internal: lost the element handle"; return Value::null(); }
-    long long ch;
-    if (!element_handle(args[0], ch)) { error = "append() expects an Element to append"; return Value::null(); }
-    std::string err;
-    if (!ctx.host->element_append(p, ch, err)) { error = err; return Value::null(); }
-    return recv;
-}
-Value el_remove(NativeCtx& ctx, Value& recv, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    std::string err;
-    if (!ctx.host->element_remove(h, err)) { error = err; return Value::null(); }
-    return Value::null();
-}
-
-Value fn_page_get(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
-    if (!args[0].is_str()) { error = "page.get() expects the key as a string"; return Value::null(); }
-    return ctx.host->page_get(args[0].as_str());
-}
-Value fn_page_set(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
-    if (!args[0].is_str()) { error = "page.set() expects the key as a string"; return Value::null(); }
-    ctx.host->page_set(args[0].as_str(), args[1]);
-    return Value::null();
+Value host_sleep(NativeCtx&, std::vector<Value>&, std::string&)       { return Value::null(); }
+Value host_socket_recv(NativeCtx&, std::vector<Value>&, std::string&) { return Value::null(); }
+Value host_socket_wait_open(NativeCtx&, std::vector<Value>&, std::string&) { return Value::null(); }
+Value host_form_data(NativeCtx& ctx, std::vector<Value>& args, std::string& error) {
+    return ctx.host->call_native("form_data", args, error);
 }
 
 Value fn_len(NativeCtx&, std::vector<Value>& args, std::string& error) {
@@ -162,66 +107,24 @@ Value fn_range(NativeCtx&, std::vector<Value>& args, std::string& error) {
     return Value::list(std::move(out));
 }
 
-// Element handles travel as a one-key Dict; every operation re-validates the
-// handle through the Host, so a forged or stale one is a clean script error.
-bool element_handle(const Value& recv, long long& out) {
-    if (!recv.is_dict()) return false;
-    const auto& d = recv.as_dict();
-    auto it = d.find(kElementKey);
-    if (it == d.end() || !it->second.is_int()) return false;
-    out = it->second.as_int();
-    return true;
+} // namespace
+
+Value make_object(const std::string& type, long long handle) {
+    Value::Dict d;
+    d.append(std::string(kObjType), Value::str(type));
+    d.append(std::string(kObjHandle), Value::integer(handle));
+    return Value::dict(std::move(d));
 }
 
-Value el_text(NativeCtx& ctx, Value& recv, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    return ctx.host->element_text(h);
-}
-Value el_set_text(NativeCtx& ctx, Value& recv, std::vector<Value>& args, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    if (!args[0].is_str()) { error = "set_text() expects a string"; return Value::null(); }
-    std::string err;
-    if (!ctx.host->element_set_text(h, args[0].as_str(), err)) { error = err; return Value::null(); }
-    return recv;
-}
-Value el_click(NativeCtx& ctx, Value& recv, std::vector<Value>& args, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    if (!args[0].is_func()) { error = "click() expects a function: el.click(fn)"; return Value::null(); }
-    std::string err;
-    if (!ctx.host->element_click(h, args[0], err)) { error = err; return Value::null(); }
-    return recv;
-}
-Value el_attr(NativeCtx& ctx, Value& recv, std::vector<Value>& args, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    if (!args[0].is_str()) { error = "attr() expects the attribute name as a string"; return Value::null(); }
-    return ctx.host->element_attr(h, args[0].as_str());
-}
-Value el_set_attr(NativeCtx& ctx, Value& recv, std::vector<Value>& args, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    if (!args[0].is_str() || !args[1].is_str()) { error = "set_attr() expects two strings"; return Value::null(); }
-    std::string err;
-    if (!ctx.host->element_set_attr(h, args[0].as_str(), args[1].as_str(), err)) { error = err; return Value::null(); }
-    return recv;
-}
-Value el_tag(NativeCtx& ctx, Value& recv, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    return Value::str(ctx.host->element_tag(h));
-}
-Value el_id(NativeCtx& ctx, Value& recv, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    return Value::str(ctx.host->element_id(h));
-}
-Value el_child_count(NativeCtx& ctx, Value& recv, std::string& error) {
-    long long h;
-    if (!element_handle(recv, h)) { error = "internal: lost the element handle"; return Value::null(); }
-    return Value::integer(ctx.host->element_child_count(h));
+bool host_object_of(const Value& v, std::string& type, long long& handle) {
+    if (!v.is_dict()) return false;
+    const auto& d = v.as_dict();
+    auto t = d.find(kObjType);
+    auto h = d.find(kObjHandle);
+    if (t == d.end() || h == d.end() || !t->second.is_str() || !h->second.is_int()) return false;
+    type   = t->second.as_str();
+    handle = h->second.as_int();
+    return true;
 }
 
 namespace {
@@ -323,16 +226,15 @@ Value call_func_value(NativeCtx& ctx, const Value& fn, std::vector<Value> args,
 
 
 // ── The table ────────────────────────────────────────────────────────────────
-// Ids are table indexes; the emitter bakes them into the bytecode.  Nothing
-// here is asynchronous: the browser's M-demo has no awaitables, and a page
-// that writes `await` gets a compile error at the call site, not a hang.
+// Ids are table indexes; the emitter bakes them into the bytecode.  The async
+// entries (sleep, http.*, page.frame, sockets) have no fn: the VM suspends on
+// CallAsync and script/engine.cpp's driver resumes it.
 
-const NativeDef kNatives[] = {
-#define LUX_BROWSER_NATIVE(name, min, max, impl) {name, min, max, impl},
+static const NativeDef kNatives[] = {
+#define LUX_BROWSER_NATIVE(name, min, max, impl, is_async) {name, min, max, is_async ? nullptr : impl, bool(is_async)},
 #include <lux_script/browser_api.inc>
 };
 
-} // namespace
 
 int native_id(const std::string& name) {
     for (size_t i = 0; i < std::size(kNatives); ++i)
@@ -349,21 +251,12 @@ NativeCtx*& current_native_ctx() {
 
 Value call_method(NativeCtx& ctx, Value& recv, const std::string& name,
                   std::vector<Value>& args, std::string& error) {
-    // ── Element ──────────────────────────────────────────────────────────
-    long long el;
-    if (element_handle(recv, el)) {
-        if (name == "text")        return el_text(ctx, recv, error);
-        if (name == "set_text")    return el_set_text(ctx, recv, args, error);
-        if (name == "append")      return el_append(ctx, recv, args, error);
-        if (name == "remove")      return el_remove(ctx, recv, error);
-        if (name == "click")       return el_click(ctx, recv, args, error);
-        if (name == "attr")        return el_attr(ctx, recv, args, error);
-        if (name == "set_attr")    return el_set_attr(ctx, recv, args, error);
-        if (name == "tag")         return el_tag(ctx, recv, error);
-        if (name == "id")          return el_id(ctx, recv, error);
-        if (name == "child_count") return el_child_count(ctx, recv, error);
-        error = "Elements have no method '" + name + "'";
-        return Value::null();
+    // ── Host-owned objects: Element, Response, Socket, Form, File ───────
+    {
+        std::string type;
+        long long   handle = 0;
+        if (host_object_of(recv, type, handle))
+            return ctx.host->call_method(type, handle, name, args, error);
     }
 
     // ── The stdlib, Lux's own code ───────────────────────────────────────
@@ -803,7 +696,7 @@ Value call_method(NativeCtx& ctx, Value& recv, const std::string& name,
 const std::vector<BuiltinMethod>* methods_of(const std::string& type) {
     struct Method { const char* type; BuiltinMethod m; };
     static const Method kMethods[] = {
-#define LUX_BROWSER_METHOD(type, name, min, max, ret) {type, {name, min, max, ret}},
+#define LUX_BROWSER_METHOD_X(type, name, min, max, ret, async_native) {type, {name, min, max, ret, async_native}},
 #include <lux_script/browser_api.inc>
     };
     static const std::map<std::string, std::vector<BuiltinMethod>> by_type = [] {
@@ -837,8 +730,16 @@ bool is_reserved_object(const std::string& name) {
     return false;
 }
 
+bool browser_profile_active() { return true; }
+
 bool is_db_module(const std::string&) {
     return false;   // no database modules exist in a browser
 }
 
+} // namespace lux_script
+
+namespace lux_script {
+// Lux the server attaches a .luxp rendering plan to each template; a browser
+// renders into a string and has no use for one (luxp_serve.hpp).
+void luxp_attach_plan(Template&) {}
 } // namespace lux_script
