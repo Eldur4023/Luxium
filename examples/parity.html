@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>parity</title>
+<style>body{font:15px sans-serif;margin:16px} .box{border:1px solid #888;padding:6px;margin:6px 0} #pad{width:200px;height:60px;background:#cde;cursor:grab}</style>
+<h3>Luxium modern-web parity (driven by tools/paritytest.py)</h3>
+<div class="box"><input id="file" type="file" multiple></div>
+<div class="box"><button id="alert">alert</button> <button id="confirm">confirm</button> <button id="prompt">prompt</button></div>
+<div class="box"><a id="blank" href="parity.html?popup=1" target="_blank">target=_blank</a> <a id="dl" href="data:text/plain;base64,aGVsbG8gZG93bmxvYWQ=" download="luxium-dl.txt">download</a></div>
+<div class="box"><input id="txt" value="clip me" size="12"> <textarea id="ta" rows="2"></textarea></div>
+<div class="box" id="pad">cursor: grab</div>
+<pre id="log"></pre>
+<script>
+const log = (...a) => { window.__log = window.__log || []; window.__log.push(a); };
+window.__keys = [];
+addEventListener('keydown', e => window.__keys.push(['down', e.key, e.code, e.keyCode]));
+addEventListener('keyup', e => window.__keys.push(['up', e.key]));
+addEventListener('wheel', e => { window.__wheel = (window.__wheel || 0) + 1; });
+document.getElementById('file').onchange = e => log('files', [...e.target.files].map(f => f.name));
+document.getElementById('alert').onclick = () => { alert('hello'); log('alert-returned'); };
+document.getElementById('confirm').onclick = () => log('confirm', confirm('sure?'));
+document.getElementById('prompt').onclick = () => log('prompt', prompt('name?', 'dflt'));
+</script>
