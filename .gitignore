@@ -1,7 +1,7 @@
 build/
 .cache/
 compile_commands.json
-third_party/cef/
+third_party/cef
 build/luxium
 build/*.pak
 build/icudtl.dat
