@@ -1113,6 +1113,15 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
                    has("grabbing") ? 6 : has("grab") ? 5 : 0;
         return true;
     }
+    if (name == "scrollbar-width") { s.scrollbar_thin = v == "thin"; return v == "thin" || v == "auto" || v == "none"; }
+    if (name == "scrollbar-color") {
+        if (v == "auto") { s.scrollbar_set = false; return true; }
+        if (t.size() != 2) return false;
+        uint32_t a, b;
+        if (!parse_color(t[0], a) || !parse_color(t[1], b)) return false;
+        s.scrollbar_thumb = a; s.scrollbar_track = b; s.scrollbar_set = true;
+        return true;
+    }
     if (name == "accent-color") {
         uint32_t c = 0;
         if (v != "auto" && !parse_color(v, c)) return false;

@@ -29,6 +29,11 @@ struct HitBox {
     float tx = 0, ty = 0, th = 0, px = 0;   // text origin x (before scrolling), content top, line height, font size
     int   face = 0;
     bool  password = false;
+    // visible part (clipping ancestors, document coords); hits outside it are not hits
+    float clip_x0 = -1e9f, clip_y0 = -1e9f, clip_x1 = 1e9f, clip_y1 = 1e9f;
+    // scroll containers: how far they scroll and where the vertical scrollbar track is
+    float max_sx = 0, max_sy = 0, sb_x = 0, sb_y = 0, sb_w = 0, sb_h = 0;
+    bool  in_clip(float px, float py) const { return px >= clip_x0 && px < clip_x1 && py >= clip_y0 && py < clip_y1; }
 };
 
 // Border-box rect of an element carrying data-t (what the css-tests probe compares).

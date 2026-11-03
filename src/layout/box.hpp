@@ -115,7 +115,9 @@ struct Box {
     std::vector<LineBox> lines;
     Strut bottom_strut;                 // margin sticking out below (collapsed with last child)
     bool has_inline_content = false;
-    float scroll_h = 0;                 // overflow content height (for scrollbars)
+    float scroll_h = 0;                 // in-flow content height
+    float max_sx = 0, max_sy = 0;       // scroll containers: how far the content can be scrolled (finalize)
+    float ext_r = 0, ext_b = 0;         // absolute right/bottom extent of the box and its overflowing content
     float content_right = 0;            // rightmost extent of content (intrinsic w/ overflow)
 
     // intrinsic widths of the CONTENT box (min-content / max-content)
@@ -255,6 +257,10 @@ struct HitRect {
     int cursor = 0;                     // style cursor of the box (see ComputedStyle::cursor)
     // form controls: text origin (document x of the content box) and the font the text is drawn with
     int ctl = -1; float tx = 0, ty = 0, th = 0, px = 0; int face = 0; bool password = false;
+    // visible part of the box: intersection of the clipping ancestors' padding boxes (document coords)
+    float clip_x0 = -1e9f, clip_y0 = -1e9f, clip_x1 = 1e9f, clip_y1 = 1e9f;
+    // scroll containers: reachable offsets and the vertical track (0 width = no scrollbar)
+    float max_sx = 0, max_sy = 0, sb_x = 0, sb_y = 0, sb_w = 0, sb_h = 0;
 };
 struct NamedRect { std::string name; float x = 0, y = 0, w = 0, h = 0; };
 struct WordRect { std::string text; float x = 0, y = 0, w = 0, h = 0; };

@@ -924,6 +924,10 @@ bool Shell::handle_event(const SDL_Event& e) {
                 }
 #endif
                 const float lines = static_cast<float>(-e.wheel.y) * 3;
+                if (!engine_cef_ && !popup_.node &&
+                    wheel_scroll(static_cast<float>(e.wheel.x) * 54.f * ((SDL_GetModState() & KMOD_SHIFT) && e.wheel.x == 0 ? 0 : 1) +
+                                 ((SDL_GetModState() & KMOD_SHIFT) && e.wheel.x == 0 ? lines * 18.f : 0.f),
+                                 (SDL_GetModState() & KMOD_SHIFT) && e.wheel.x == 0 ? 0.f : lines * 18.f)) break;
                 if (console_visible_ && mouse_y_ >= win_h_ - bottom_h()) {
                     // console pane scrolls its own history
                     console_scroll_ = std::clamp(console_scroll_ + lines * 18.f,

@@ -244,6 +244,10 @@ private:
     } popup_;
     struct FileJob;                                   // zenity running on a worker thread
     std::shared_ptr<FileJob> file_job_;
+    bool    wheel_scroll(float dx, float dy);          // scroll the innermost scrollable box under the mouse; false: the page scrolls
+    bool    scrollbar_press(float doc_x, float doc_y); // thumb drag / track page-jump of an overflow box
+    struct SbDrag { dom::Node* node = nullptr; float mouse0 = 0, scroll0 = 0, track = 0, thumb = 0, max = 0; } sb_drag_;
+    void    fire_scroll(dom::Node* n);
     bool    text_input_on_ = false;
     bool    form_drag_ = false;                       // selecting text in a control with the mouse
     uint32_t caret_tick_ = 0;

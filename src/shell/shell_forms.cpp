@@ -234,6 +234,52 @@ void Shell::open_file_dialog(dom::Node* input) {
     file_job_ = std::move(job);
 }
 
+// ── scrolling boxes ─────────────────────────────────────────────────────────
+
+void Shell::fire_scroll(dom::Node* n) {
+    page::FormEvent ev{page::FormEvent::Kind::Scroll, n};
+    ev.x = n->scroll_x; ev.y = n->scroll_y;
+    page_.dispatch(ev);
+    page_.page_mutated();
+}
+
+bool Shell::wheel_scroll(float dx, float dy) {
+    const float px = float(mouse_x_), py = float(mouse_y_ - url_h()) + scroll_;
+    if (mouse_y_ < url_h() || mouse_y_ >= win_h_ - bottom_h()) return false;
+    for (auto it = layout_.areas.rbegin(); it != layout_.areas.rend(); ++it) {
+        const render::HitBox& a = *it;
+        if (a.max_sx <= 0 && a.max_sy <= 0) continue;
+        if (px < a.x || px >= a.x + a.w || py < a.y || py >= a.y + a.h || !a.in_clip(px, py)) continue;
+        dom::Node* n = const_cast<dom::Node*>(a.node);
+        // a box that only scrolls sideways takes the vertical wheel too (and Shift+wheel)
+        if (dy != 0 && a.max_sy <= 0 && a.max_sx > 0 && dx == 0) { dx = dy; dy = 0; }
+        float ny = std::clamp(n->scroll_y + dy, 0.f, a.max_sy), nx = std::clamp(n->scroll_x + dx, 0.f, a.max_sx);
+        if (ny == n->scroll_y && nx == n->scroll_x) continue;   // at its end: let the next ancestor / the page have it
+        n->scroll_y = ny; n->scroll_x = nx;
+        fire_scroll(n);
+        return true;
+    }
+    return false;
+}
+
+bool Shell::scrollbar_press(float dx, float dy) {
+    for (auto it = layout_.areas.rbegin(); it != layout_.areas.rend(); ++it) {
+        const render::HitBox& a = *it;
+        if (a.sb_w <= 0 || dx < a.sb_x || dx >= a.sb_x + a.sb_w || dy < a.sb_y || dy >= a.sb_y + a.sb_h || !a.in_clip(dx, dy)) continue;
+        dom::Node* n = const_cast<dom::Node*>(a.node);
+        const float tl = std::max(24.f, a.sb_h * a.sb_h / (a.sb_h + a.max_sy));
+        const float ty = a.sb_y + n->scroll_y / a.max_sy * (a.sb_h - tl);
+        if (dy >= ty && dy < ty + tl) {
+            sb_drag_ = {n, dy, n->scroll_y, a.sb_h, tl, a.max_sy};
+        } else {   // the track: one page up/down
+            n->scroll_y = std::clamp(n->scroll_y + (dy < ty ? -1.f : 1.f) * a.sb_h * 0.9f, 0.f, a.max_sy);
+            fire_scroll(n);
+        }
+        return true;
+    }
+    return false;
+}
+
 // ── mouse ───────────────────────────────────────────────────────────────────
 
 bool Shell::page_mouse_down(const SDL_MouseButtonEvent& b) {
@@ -250,11 +296,12 @@ bool Shell::page_mouse_down(const SDL_MouseButtonEvent& b) {
         } else close_select_popup();
         return true;
     }
+    if (scrollbar_press(dx, dy)) return true;
     const dom::Node* under = nullptr;
     for (const auto& a : layout_.areas)
-        if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h) under = a.node;
+        if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h && a.in_clip(dx, dy)) under = a.node;
     for (auto it = layout_.hits.rbegin(); it != layout_.hits.rend(); ++it)   // a control wins over what is behind it
-        if ((it->ctl >= 0 || it->node->name == "label") && dx >= it->x && dx < it->x + it->w && dy >= it->y && dy < it->y + it->h) { under = it->node; break; }
+        if ((it->ctl >= 0 || it->node->name == "label") && it->in_clip(dx, dy) && dx >= it->x && dx < it->x + it->w && dy >= it->y && dy < it->y + it->h) { under = it->node; break; }
     if (!under) { page_.blur(); return false; }
     page_.activate(const_cast<dom::Node*>(under));
     dom::Node* f = page_.focused();
@@ -283,6 +330,14 @@ void Shell::page_mouse_move(int x, int y, bool left_down) {
             const int idx = std::clamp(int((dy - top - 1) / popup_.item_h), 0, int(popup_.items.size()) - 1);
             if (idx != popup_.hover) { popup_.hover = idx; need_paint_ = true; }
         }
+    }
+    if (sb_drag_.node && left_down) {
+        const float span = sb_drag_.track - sb_drag_.thumb;
+        if (span > 0) {
+            sb_drag_.node->scroll_y = std::clamp(sb_drag_.scroll0 + (dy - sb_drag_.mouse0) / span * sb_drag_.max, 0.f, sb_drag_.max);
+            fire_scroll(sb_drag_.node);
+        }
+        return;
     }
     if (form_drag_ && left_down && page_.focused() && Page::is_text_control(page_.focused())) {
         if (const render::HitBox* h = control_hit(page_.focused()))
@@ -373,7 +428,7 @@ bool Shell::page_input(const SDL_Event& e) {
         return false;
     }
     case SDL_MOUSEBUTTONDOWN: return page_mouse_down(e.button);
-    case SDL_MOUSEBUTTONUP: form_drag_ = false; return false;
+    case SDL_MOUSEBUTTONUP: form_drag_ = false; sb_drag_ = {}; return false;
     case SDL_MOUSEMOTION: page_mouse_move(e.motion.x, e.motion.y, (e.motion.state & SDL_BUTTON_LMASK) != 0); return false;
     default: return false;
     }
@@ -438,7 +493,7 @@ void Shell::update_cursor_shape() {
         const float dx = float(mouse_x_), dy = float(mouse_y_ - url_h()) + scroll_;
         const render::HitBox* top = nullptr;
         for (const auto& a : layout_.areas)
-            if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h) top = &a;
+            if (dx >= a.x && dx < a.x + a.w && dy >= a.y && dy < a.y + a.h && a.in_clip(dx, dy)) top = &a;
         if (top) {
             kind = top->cursor;
             if (kind == 0)

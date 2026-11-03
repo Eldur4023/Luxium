@@ -208,6 +208,8 @@ struct ComputedStyle {
     bool     pointer_events = true;
     uint32_t accent = 0;                // accent-color (0 = auto)
     bool     appearance_none = false;   // appearance: none (controls keep only their CSS look)
+    bool     scrollbar_thin = false, scrollbar_set = false;   // scrollbar-width: thin; scrollbar-color given
+    uint32_t scrollbar_thumb = 0, scrollbar_track = 0;
     float    aspect_ratio = 0;          // aspect-ratio (width/height); 0 = auto
     // outline: drawn outside the border edge, never affects layout.  `auto` = the focus ring.
     BorderStyle outline_style = BorderStyle::None;

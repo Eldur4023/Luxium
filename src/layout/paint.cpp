@@ -18,7 +18,14 @@ using style::Visibility;
 
 // ── absolute geometry ───────────────────────────────────────────────────────
 
-void finalize_positions(Env&, Tree& tree) {
+static bool scrolls(const Box* b) {
+    if (!b || !b->node || b->kind != Box::Kind::Block) return false;
+    using O = style::Overflow;
+    auto sc = [](O o) { return o == O::Auto || o == O::Scroll || o == O::Hidden; };
+    return sc(b->st->overflow_x) || sc(b->st->overflow_y);
+}
+
+static void place_all(Tree& tree) {
     for (Box* k : tree.order) {
         if (k->kind == Box::Kind::Text || k->kind == Box::Kind::Inline || k->kind == Box::Kind::Break ||
             k->kind == Box::Kind::Marker)
@@ -28,13 +35,15 @@ void finalize_positions(Env&, Tree& tree) {
         if (k->is_abs()) {
             const Box* cb = k->st->position == Position::Fixed ? nullptr : k->cb;
             const float bx = cb ? cb->ax + cb->border.l : 0.f, by = cb ? cb->ay + cb->border.t : 0.f;
-            k->ax = bx + k->x;
-            k->ay = by + k->y;
+            const float sx = scrolls(cb) ? cb->node->scroll_x : 0.f, sy = scrolls(cb) ? cb->node->scroll_y : 0.f;
+            k->ax = bx + k->x - sx;
+            k->ay = by + k->y - sy;
         } else if (!lp) {
             k->ax = k->x; k->ay = k->y;
         } else {
-            k->ax = lp->ax + lp->border.l + lp->padding.l + k->x;
-            k->ay = lp->ay + lp->border.t + lp->padding.t + k->y;
+            const float sx = scrolls(lp) ? lp->node->scroll_x : 0.f, sy = scrolls(lp) ? lp->node->scroll_y : 0.f;
+            k->ax = lp->ax + lp->border.l + lp->padding.l + k->x - sx;
+            k->ay = lp->ay + lp->border.t + lp->padding.t + k->y - sy;
         }
         k->rel_dx = k->rel_dy = 0;
         if (k->st->position == Position::Relative) {
@@ -48,6 +57,49 @@ void finalize_positions(Env&, Tree& tree) {
             k->rel_dx = dx; k->rel_dy = dy;
             k->ax += dx; k->ay += dy;
         }
+    }
+}
+
+// Absolute positions; scroll containers shift their content by the node's scroll offset, clamped to what
+// the content actually overflows by (so a shrinking list never leaves the view scrolled past its end).
+void finalize_positions(Env&, Tree& tree) {
+    place_all(tree);
+    bool any = false;
+    for (Box* k : tree.order) if (scrolls(k)) { any = true; break; }
+    if (!any) return;
+    for (int pass = 0; pass < 2; ++pass) {
+        // overflow extents, children before parents
+        for (Box* k : tree.order) {
+            if (scrolls(k)) { k->ext_r = k->ax + k->border.l + k->padding.l - k->node->scroll_x; k->ext_b = k->ay + k->border.t + k->padding.t + k->scroll_h - k->node->scroll_y; }   // content only (+ inline content height)
+            else { k->ext_r = k->ax + k->w; k->ext_b = k->ay + k->h; }
+        }
+        for (size_t i = tree.order.size(); i-- > 0;) {
+            Box* k = tree.order[i];
+            if (k->kind == Box::Kind::Text || k->kind == Box::Kind::Inline || k->kind == Box::Kind::Break || k->kind == Box::Kind::Marker) continue;
+            Box* lp = k->lparent ? k->lparent : k->parent;
+            while (lp && lp->kind == Box::Kind::Inline) lp = lp->parent;
+            if (!lp || k->st->position == Position::Fixed) continue;
+            const bool clipped = lp->st->overflow_x != style::Overflow::Visible || lp->st->overflow_y != style::Overflow::Visible;
+            if (clipped && !scrolls(lp)) continue;
+            const bool kc = k->st->overflow_x != style::Overflow::Visible || k->st->overflow_y != style::Overflow::Visible;
+            lp->ext_r = std::max(lp->ext_r, kc ? k->ax + k->w : k->ext_r);
+            lp->ext_b = std::max(lp->ext_b, kc ? k->ay + k->h : k->ext_b);
+        }
+        bool changed = false;
+        for (Box* k : tree.order) {
+            if (!scrolls(k)) continue;
+            // a clipping container's own extent must not include what it clips away from its parent: reset
+            const float inner_r = k->ax + k->w - k->border.r, inner_b = k->ay + k->h - k->border.b;
+            const float sx = k->node->scroll_x, sy = k->node->scroll_y;
+            k->max_sx = std::max(0.f, k->ext_r + sx + k->padding.r - inner_r);
+            k->max_sy = std::max(0.f, k->ext_b + sy + k->padding.b - inner_b);
+            if (k->st->overflow_x == style::Overflow::Visible || k->st->overflow_x == style::Overflow::Clip) k->max_sx = 0;
+            if (k->st->overflow_y == style::Overflow::Visible || k->st->overflow_y == style::Overflow::Clip) k->max_sy = 0;
+            const float nx = std::clamp(sx, 0.f, k->max_sx), ny = std::clamp(sy, 0.f, k->max_sy);
+            if (nx != sx || ny != sy) { auto* nn = const_cast<dom::Node*>(k->node); nn->scroll_x = nx; nn->scroll_y = ny; changed = true; }
+        }
+        if (!changed) break;
+        place_all(tree);
     }
 }
 
@@ -422,6 +474,61 @@ struct Painter {
         dl->push_back(std::move(it));
     }
 
+    // ── clipping and scrollbars ─────────────────────────────────────────────
+    // Visible part of `b`: the padding boxes of the clipping ancestors, intersected.
+    void clip_of(const Box& b, HitRect& h) const {
+        for (const Box* p = b.lparent ? b.lparent : b.parent; p; p = p->lparent ? p->lparent : p->parent) {
+            if (p->kind == Box::Kind::Inline || !p->st) continue;
+            if (b.st && b.st->position == Position::Fixed) break;
+            if (clips(*p) && p->kind == Box::Kind::Block) {
+                h.clip_x0 = std::max(h.clip_x0, sn(p->ax + p->border.l)); h.clip_y0 = std::max(h.clip_y0, sn(p->ay + p->border.t));
+                h.clip_x1 = std::min(h.clip_x1, sn(p->ax + p->w - p->border.r)); h.clip_y1 = std::min(h.clip_y1, sn(p->ay + p->h - p->border.b));
+            }
+        }
+    }
+    static bool dark_page(const Tree& t) { return t.root && t.root->node && t.root->node->attr_or("data-luxium-scheme") == "dark"; }
+    // Vertical scrollbar track of a scroll container (overlay: it takes no layout space).
+    static void sb_track(const Box& b, float& x, float& y, float& w, float& h) {
+        const bool thin = b.st->scrollbar_thin;
+        w = thin ? 8.f : 12.f;
+        x = sn(b.ax + b.w - b.border.r - w); y = sn(b.ay + b.border.t);
+        h = sn(b.ay + b.h - b.border.b) - y;
+    }
+    void scrollbar_h(Box& b) {
+        if (!b.node || b.kind != Box::Kind::Block || b.max_sx <= 0 || (b.st->overflow_x != Overflow::Auto && b.st->overflow_x != Overflow::Scroll)) return;
+        const ComputedStyle& s = *b.st;
+        const bool dark = dark_page(tree);
+        const float t = s.scrollbar_thin ? 8.f : 12.f;
+        const float x = sn(b.ax + b.border.l), w = sn(b.ax + b.w - b.border.r) - x, y = sn(b.ay + b.h - b.border.b - t);
+        const uint32_t track = s.scrollbar_set ? s.scrollbar_track : (dark ? 0xFF2C2C2C : 0xFFFCFCFC);
+        const uint32_t thumb = s.scrollbar_set ? s.scrollbar_thumb : (dark ? 0xFF9F9F9F : 0xFF8B8B8B);
+        if (s.scrollbar_set && !has_alpha(s.scrollbar_thumb)) return;
+        rect(x, y, w, t, track);
+        const float tl = std::max(24.f, w * w / (w + b.max_sx));
+        const float tx = x + b.node->scroll_x / b.max_sx * (w - tl);
+        rect(sn(tx) + 1.5f, y + 1.5f, tl - 3.f, t - 3.f, thumb, {(t - 3.f) / 2, (t - 3.f) / 2, (t - 3.f) / 2, (t - 3.f) / 2});
+    }
+    void scrollbar(Box& b) {
+        scrollbar_h(b);
+        if (!scrolls_y(b)) return;
+        float x, y, w, h;
+        sb_track(b, x, y, w, h);
+        const bool dark = dark_page(tree);
+        const ComputedStyle& s = *b.st;
+        const uint32_t track = s.scrollbar_set ? s.scrollbar_track : (dark ? 0xFF2C2C2C : 0xFFFCFCFC);
+        const uint32_t thumb = s.scrollbar_set ? s.scrollbar_thumb : (dark ? 0xFF9F9F9F : 0xFF8B8B8B);
+        if (s.scrollbar_set && !has_alpha(s.scrollbar_thumb)) return;
+        rect(x, y, w, h, track);
+        const float view = h, total = view + b.max_sy;
+        const float tl = std::max(24.f, h * view / total);
+        const float ty = y + b.node->scroll_y / b.max_sy * (h - tl);
+        rect(x + 1.5f, sn(ty) + 1.5f, w - 3.f, tl - 3.f, thumb, {(w - 3.f) / 2, (w - 3.f) / 2, (w - 3.f) / 2, (w - 3.f) / 2});
+    }
+    static bool scrolls_y(const Box& b) {
+        return b.node && b.kind == Box::Kind::Block && b.max_sy > 0 &&
+               (b.st->overflow_y == Overflow::Auto || b.st->overflow_y == Overflow::Scroll);
+    }
+
     // ── form controls ───────────────────────────────────────────────────────
     void text_item(const std::string& txt, const ComputedStyle& s, float x, float baseline, uint32_t color) {
         if (txt.empty()) return;
@@ -602,8 +709,15 @@ struct Painter {
                         if (!s.bg.empty()) bg_layers(s, r, r, rad);
                         borders(ib, r, rad, f.first, f.last);
                     }
-                    if (ib.node && (ib.node->name == "a" || ib.node->name == "label" || ib.node->has_attr("id")) && r.w > 0)
-                        out.hits.push_back({ib.node, r.x, r.y, r.w, r.h, false});
+                    if (ib.node && (ib.node->name == "a" || ib.node->name == "label" || ib.node->has_attr("id")) && r.w > 0) {
+                        HitRect h{ib.node, r.x, r.y, r.w, r.h, false};
+                        clip_of(blk, h);
+                        if (clips(blk) && blk.kind == Box::Kind::Block) {   // the block itself clips its lines too
+                            h.clip_x0 = std::max(h.clip_x0, sn(blk.ax + blk.border.l)); h.clip_y0 = std::max(h.clip_y0, sn(blk.ay + blk.border.t));
+                            h.clip_x1 = std::min(h.clip_x1, sn(blk.ax + blk.w - blk.border.r)); h.clip_y1 = std::min(h.clip_y1, sn(blk.ay + blk.h - blk.border.b));
+                        }
+                        out.hits.push_back(h);
+                    }
                     break;
                 }
                 case LineFrag::Kind::Text: {
@@ -718,10 +832,12 @@ struct Painter {
                 h.tx = sn(b.ax + b.border.l + b.padding.l); h.ty = sn(b.ay + b.border.t + b.padding.t);
                 h.th = line_height_px(env, cs); h.px = cs.font_size; h.face = face_of(env, cs).id;
                 h.password = b.ctl->type == Control::Type::Password;
+                clip_of(b, h);
                 out.hits.push_back(h);
             } else if (b.node->has_attr("id") || tg == "a" || tg == "button" || b.media) {
                 HitRect h{b.node, sn(b.ax), sn(b.ay), b.w, b.h, tg == "button"};
                 h.cursor = b.st->cursor;
+                clip_of(b, h);
                 out.hits.push_back(h);
             }
         }
@@ -749,6 +865,7 @@ struct Painter {
                                                   std::max(0.f, rad.br - sc.border.r), std::max(0.f, rad.bl - sc.border.l)});
         }
         content(sc);
+        if (cl) scrollbar(sc);
         if (cl) clip_pop();
         if (lay) layer_pop(layer);
     }
@@ -812,7 +929,16 @@ void paint_tree(Env& env, Tree& tree, float canvas_w, float canvas_h, PaintOutpu
     // every element box, for :hover hit-testing
     for (Box* k : tree.order)
         if (k->node && !k->anonymous && (k->kind == Box::Kind::Block || k->kind == Box::Kind::Replaced))
-            { HitRect ar{k->node, k->ax, k->ay, k->w, k->h, false}; ar.cursor = k->st->cursor; out.areas.push_back(ar); }
+            {
+                HitRect ar{k->node, k->ax, k->ay, k->w, k->h, false};
+                ar.cursor = k->st->cursor;
+                p.clip_of(*k, ar);
+                if (scrolls(k)) {
+                    ar.max_sx = k->max_sx; ar.max_sy = k->max_sy;
+                    if (Painter::scrolls_y(*k)) Painter::sb_track(*k, ar.sb_x, ar.sb_y, ar.sb_w, ar.sb_h);
+                }
+                out.areas.push_back(ar);
+            }
 
     // data-t boxes for the css-tests probe
     for (Box* k : tree.order)

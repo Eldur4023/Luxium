@@ -43,7 +43,7 @@ struct Node {
     unsigned char state = 0;
     // Edit state of a focused text control (caret/anchor are byte offsets into its value, scroll_x in px).
     int   caret = 0, anchor = 0;
-    float scroll_x = 0;
+    float scroll_x = 0, scroll_y = 0;   // text control: horizontal text scroll; scroll containers: current offset
 
     explicit Node(NodeType t) : type(t) {}
 

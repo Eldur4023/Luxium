@@ -123,6 +123,15 @@ void Page::set_rules(std::vector<style::Rule> rules) {
             if (m->attr_or("name") == "color-scheme" && m->attr_or("content").find("dark") != std::string::npos) dark_scheme_ = true;
     if (root_ && dark_scheme_)
         if (dom::Node* h = root_->find_first("html")) h->attrs.emplace_back("data-luxium-scheme", "dark");
+    focus_ = nullptr;
+    if (root_) {   // `autofocus`: the first such control takes focus on load
+        std::vector<dom::Node*> st{root_.get()};
+        while (!st.empty() && !focus_) {
+            dom::Node* n = st.back(); st.pop_back();
+            if (n->is_element() && n->has_attr("autofocus") && focusable(n)) focus(n);
+            for (size_t i = n->children.size(); i-- > 0;) st.push_back(n->children[i].get());
+        }
+    }
     uses_hover_ = false;
     for (const auto& r : sheet_)
         for (const auto& sel : r.selectors) uses_hover_ = uses_hover_ || sel_uses_hover(sel);
