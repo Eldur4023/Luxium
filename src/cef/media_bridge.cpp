@@ -59,6 +59,7 @@ public:
             ret = CefV8Value::CreateString(media::can_play(a.empty() ? "" : a[0]->GetStringValue().ToString()));
             return true;
         }
+        if (n == "caps") { ret = CefV8Value::CreateString(media::capabilities_json()); return true; }
         if (n == "create") {
             const int i = c_->next_id++;
             c_->players[i] = std::make_unique<media::Player>();
@@ -92,6 +93,14 @@ public:
                 pair->SetValue(1, CefV8Value::CreateDouble(r[i].end));
                 ret->SetValue((int)i, pair);
             }
+        } else if (n == "tracks") {
+            ret = CefV8Value::CreateString(tracks(*p));
+        } else if (n == "selectAudio") {
+            ret = CefV8Value::CreateBool(p->select_audio((int)num(1)));
+        } else if (n == "cues") {
+            ret = CefV8Value::CreateString(cues(*p, (int)num(1), (size_t)num(2)));
+        } else if (n == "stats") {
+            ret = CefV8Value::CreateString(stats(*p));
         } else if (n == "frame") {
             frame(*p, a, ret);
         } else {
@@ -110,6 +119,49 @@ private:
                       p.ready_state(), p.network_state(), p.error_code(), p.video_width(), p.video_height(),
                       p.has_video() ? "true" : "false");
         return std::string(b) + dur + ",\"m\":\"" + json_escape(p.error_message()) + "\"}";
+    }
+
+    // {"audio":[{"i":stream,"codec","lang","title","ch","def","sel","ok"}],"subs":[{...}]}
+    static std::string tracks(media::Player& p) {
+        auto list = [](const std::vector<media::TrackInfo>& v) {
+            std::string o = "[";
+            for (const auto& t : v) {
+                if (o.size() > 1) o += ",";
+                o += "{\"i\":" + std::to_string(t.index) + ",\"codec\":\"" + json_escape(t.codec) + "\",\"lang\":\"" +
+                     json_escape(t.lang) + "\",\"title\":\"" + json_escape(t.title) + "\",\"ch\":" + std::to_string(t.channels) +
+                     ",\"def\":" + (t.is_default ? "true" : "false") + ",\"sel\":" + (t.selected ? "true" : "false") +
+                     ",\"ok\":" + (t.usable ? "true" : "false") + "}";
+            }
+            return o + "]";
+        };
+        return "{\"audio\":" + list(p.audio_tracks()) + ",\"subs\":" + list(p.subtitle_tracks()) + "}";
+    }
+
+    // "" when there is nothing new, else {"n":total,"c":[[start,end,"text"],...]}
+    static std::string cues(media::Player& p, int stream, size_t from) {
+        size_t total = 0;
+        const auto v = p.sub_cues(stream, from, total);
+        if (v.empty()) return "";
+        std::string o = "{\"n\":" + std::to_string(total) + ",\"c\":[";
+        char b[64];
+        for (size_t i = 0; i < v.size(); ++i) {
+            std::snprintf(b, sizeof b, "%s[%.3f,%.3f,\"", i ? "," : "", v[i].start, v[i].end);
+            o += b + json_escape(v[i].text) + "\"]";
+        }
+        return o + "]}";
+    }
+
+    static std::string stats(media::Player& p) {
+        const auto s = p.stats();
+        char b[512];
+        std::snprintf(b, sizeof b,
+                      "{\"decoded\":%llu,\"presented\":%llu,\"dropped\":%llu,\"hw\":%s,\"audioFrames\":%llu,\"audioPeak\":%.4f,"
+                      "\"audioChannels\":%d,\"deinterlace\":%s,",
+                      (unsigned long long)s.decoded, (unsigned long long)s.presented, (unsigned long long)s.dropped,
+                      s.hw ? "true" : "false", (unsigned long long)s.audio_frames, s.audio_peak, s.audio_channels,
+                      s.deinterlace ? "true" : "false");
+        return std::string(b) + "\"vcodec\":\"" + json_escape(s.codec) + "\",\"acodec\":\"" + json_escape(s.audio_codec) +
+               "\",\"pixFmt\":\"" + json_escape(s.pix_fmt) + "\"}";
     }
 
     std::string poll() {
@@ -164,7 +216,7 @@ void on_context_created(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, CefRef
     CefRefPtr<MediaV8> h = new MediaV8(c.get());
     CefRefPtr<CefV8Value> obj = CefV8Value::CreateObject(nullptr, nullptr);
     for (const char* n : {"canPlay", "create", "open", "close", "play", "pause", "seek", "setVolume", "setMuted",
-                          "setRate", "setLoop", "time", "state", "ranges", "poll", "frame"})
+                          "setRate", "setLoop", "time", "state", "ranges", "poll", "frame", "caps", "tracks", "selectAudio", "cues", "stats"})
         obj->SetValue(n, CefV8Value::CreateFunction(n, h), V8_PROPERTY_ATTRIBUTE_NONE);
     ctx->GetGlobal()->SetValue("__luxiumMedia", obj, V8_PROPERTY_ATTRIBUTE_NONE);
     contexts()[frame->GetIdentifier().ToString()] = std::move(c);

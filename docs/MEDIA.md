@@ -121,12 +121,78 @@ All calls are synchronous. `id` is an integer from `create()`.
 `ceil(h/2)` bytes), tightly packed. The shim uploads it with two
 `texSubImage2D` calls (R8 for Y, RG8 for UV) and draws one quad.
 
+## Every container and codec, direct (no remux, no transcode)
+
+The engine is a plain FFmpeg player, so whatever libavformat demuxes and libavcodec decodes plays
+as it is: MKV/WebM/MP4/MOV/AVI/TS/FLV/WMV/ASF/OGG..., with any codec the system FFmpeg has.
+
+- **Decoding**: VA-API for H.264/HEVC/VP9/AV1 8-bit 4:2:0 (and 10-bit HEVC/VP9/AV1); everything else
+  (Hi10P H.264, 4:2:2/4:4:4, 12-bit, ProRes, MPEG-2/4, VC-1, WMV, FLV, ...) goes straight to the threaded
+  software decoder (`hw_plausible()`), and a hardware decoder that fails still falls back mid-stream.
+  Output is always converted to NV12 8-bit by swscale.
+- **Interlaced** pictures (decoder flag) are line-doubled from one field before conversion (no motion
+  adaptation; there are no libavfilter headers in the build).
+- **Audio**: any decoder; surround is downmixed to stereo float by swresample (`rematrix_maxval`), any
+  sample rate is resampled to 48 kHz. The engine never outputs more than 2 channels.
+- **Audio tracks inside the file**: `Player::audio_tracks()` / `select_audio(stream)`. The demuxer swaps
+  the stream, the audio thread reopens its decoder and the player re-seeks to the current time (short
+  `seeking`/`seeked`, the URL is not reopened). The default-flagged stream plays first.
+- **Embedded text subtitles** (SRT, ASS/SSA, mov_text, WebVTT, any FFmpeg text-sub decoder): decoded in
+  the demux thread into append-only cues (`subtitle_tracks()`, `sub_cues()`); ASS is reduced to WebVTT
+  markup (`<i> <b> <u>`, line breaks; drawings and positioning dropped). Cues are collected as the demuxer
+  reads, so after a seek past unread data the cues in the skipped part are missing until read. Bitmap
+  subtitles (PGS, VobSub, DVB) are listed with `usable = false` and not rendered.
+- **Capability inventory**: `media::capabilities_json()` (decoder and demuxer names as ffprobe reports
+  them); `can_play()` answers for ~70 container MIME types and RFC 6381 / FFmpeg codec names.
+
+### In the CEF shim
+
+- `navigator.luxiumMedia` = `{engine:'luxium', version, decoders:{video,audio,subtitle}, containers,
+  canDecodeVideo(name), canDecodeAudio(name), canDemux(format_name), audioTracks, embeddedSubtitles}`.
+  Names are ffprobe's, so an app that probes server-side can decide without guessing.
+- `HTMLMediaElement.audioTracks` (id/kind/label/language/enabled, `change`, `addtrack`); setting
+  `enabled = true` on a track selects it in the engine. Embedded text subtitles appear in `textTracks`
+  (mode `disabled` until the page changes it) with `VTTCue`s.
+- `window.__luxiumMediaStats()` carries the engine counters (`engine`: dropped, hw, audioFrames, audioPeak...).
+- Extra wire calls: `caps()`, `tracks(id)`, `selectAudio(id, stream)`, `cues(id, stream, from)`, `stats(id)`.
+
+### In the own engine (`src/media/own_media.*`, `src/layout/media_ui.cpp`)
+
+The control bar shows a note button with the audio stream number (only with 2+ audio streams; click =
+next stream) and a `CC` button (any text subtitle stream; click cycles off/1/2/...); the active cue is
+drawn centred above the bar. `examples/media/own-tracks.html` is the test page.
+
+## Format matrix (this machine, `tools/media_matrix_fixtures.sh`, 6 s clips)
+
+`luxium_mediatest <file> 9 -q` (engine alone) and `tools/matrixtest.py` (CEF shim, Xvfb :99, dummy audio:
+canPlayType, picture, audio, tracks, subs; 0 failed checks). 0 frames dropped everywhere.
+
+| fixture | video | audio | decode | notes |
+| --- | --- | --- | --- | --- |
+| MKV | HEVC 10-bit | AC-3 5.1 + AAC | VA-API | audioTracks 2, switch ok, SRT + ASS cues ok |
+| MKV | H.264 | DTS | VA-API | |
+| MKV | H.264 | FLAC | VA-API | |
+| MKV | H.264 | TrueHD (stereo) | VA-API | |
+| MKV | H.264 4:4:4 | AAC | software | |
+| AVI | MPEG-4 ASP | MP3 | software | |
+| MOV | ProRes 4:2:2 10-bit | PCM | software | |
+| WMV | WMV2 | WMA2 | software | no VC-1 encoder here: VC-1 decoder only checked in the inventory |
+| TS | MPEG-2 interlaced 720x576 | MP2 | software | deinterlace flag seen |
+| FLV | FLV1 | MP3 | software | |
+| FLV | H.264 | AAC | VA-API | |
+| WebM | AV1 | Opus | software (libdav1d) | |
+| WebM | VP9 | Vorbis | VA-API | |
+| MP4 | H.264 Hi10P | E-AC-3 | software | |
+| MP4 | MPEG-4 ASP | AAC | software | |
+
+The canvas pixel check of `matrixtest.py` is skipped when the page has no WebGL2 (Xvfb here), as for
+`tools/mediatest.py`, which fails that one check on the same setup.
+
 ## Limits
 
 - 8-bit NV12 on the wire: 10-bit video is converted down in the engine (no HDR
   tone mapping; BT.2020 is only a matrix).
-- One audio track is played; track switching is the page's business (homeflix
-  reloads another HLS rendition).
+- One audio track plays at a time (switchable, see above); no mixing of tracks.
 - `playbackRate` shifts pitch. No `captureStream`, no EME, no PiP, no WebRTC.
 - No `srcObject` on shim-owned elements.
 - Audio output goes to the SDL default device; there is no per-element routing

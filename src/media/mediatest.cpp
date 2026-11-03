@@ -18,10 +18,10 @@ using namespace luxium::media;
 using Clock = std::chrono::steady_clock;
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: luxium_mediatest url [seconds] [--seek t[,t...]] [--rate r] [--dump f.ppm] [--audio]\n"); return 2; }
+    if (argc < 2) { std::fprintf(stderr, "usage: luxium_mediatest url [seconds] [--seek t[,t...]] [--rate r] [--dump f.ppm] [--audio] [--switch-audio] [--tracks]\n"); return 2; }
     double secs = 5, rate = 1;
     std::string dump, seeks;
-    bool real_audio = false, quiet = false;
+    bool real_audio = false, quiet = false, switch_audio = false, tracks = false;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--seek" && i + 1 < argc) seeks = argv[++i];
@@ -29,6 +29,8 @@ int main(int argc, char** argv) {
         else if (a == "--dump" && i + 1 < argc) dump = argv[++i];
         else if (a == "--audio") real_audio = true;
         else if (a == "-q") quiet = true;
+        else if (a == "--switch-audio") switch_audio = true;   // at half time, select the next audio stream
+        else if (a == "--tracks") tracks = true;               // list audio/subtitle streams and decoded cue counts
         else secs = std::atof(a.c_str());
     }
     if (!real_audio) setenv("SDL_AUDIODRIVER", "dummy", 0);
@@ -51,6 +53,9 @@ int main(int argc, char** argv) {
     size_t next_seek = 0;
     double seek_time = secs / (seek_at.size() + 1);
     uint64_t seq = 0, shown = 0;
+    bool switched = false;
+    std::string acodec_before, acodec_after;
+    uint64_t a_before = 0;
     std::shared_ptr<const Frame> last;
     int errors = 0;
     double first_frame = -1, max_gap = 0, last_present = 0, frame_ms = 0;
@@ -73,6 +78,23 @@ int main(int argc, char** argv) {
             if (last_present > 0) max_gap = std::max(max_gap, at() - last_present);
             last_present = at();
         }
+        if (switch_audio && !switched && p.ready_state() >= 3 && at() >= secs / 2) {
+            const auto tr = p.audio_tracks();
+            for (size_t i = 0; i < tr.size(); ++i)
+                if (tr[i].selected) {
+                    for (size_t k = 1; k < tr.size(); ++k) {
+                        const auto& n = tr[(i + k) % tr.size()];
+                        if (!n.usable) continue;
+                        acodec_before = p.stats().audio_codec;
+                        a_before = p.stats().audio_frames;
+                        std::printf("%7.3f  >> select_audio(%d %s)\n", at(), n.index, n.codec.c_str());
+                        switched = p.select_audio(n.index);
+                        break;
+                    }
+                    break;
+                }
+            if (!switched) switch_audio = false;
+        }
         if (next_seek < seek_at.size() && at() >= seek_time * (next_seek + 1)) {
             std::printf("%7.3f  >> seek(%.2f)\n", at(), seek_at[next_seek]);
             p.seek(seek_at[next_seek++]);
@@ -92,6 +114,23 @@ int main(int argc, char** argv) {
             std::fprintf(f, "P5\n%d %d\n255\n", last->w, last->h);
             std::fwrite(last->data.data(), 1, (size_t)last->w * last->h, f);
             std::fclose(f);
+        }
+    }
+    std::printf("RESULT video=%s %dx%d pix=%s hw=%d presented=%llu dropped=%llu audio=%s ch=%d frames=%llu peak=%.3f deint=%d\n",
+                st.codec.c_str(), p.video_width(), p.video_height(), st.pix_fmt.c_str(), (int)st.hw,
+                (unsigned long long)st.presented, (unsigned long long)st.dropped, st.audio_codec.c_str(), st.audio_channels,
+                (unsigned long long)st.audio_frames, st.audio_peak, (int)st.deinterlace);
+    if (switched)
+        std::printf("SWITCH %s -> %s, +%llu audio frames after, t=%.2f\n", acodec_before.c_str(), st.audio_codec.c_str(),
+                    (unsigned long long)(st.audio_frames - a_before), p.current_time());
+    if (tracks) {
+        for (const auto& t : p.audio_tracks())
+            std::printf("AUDIO #%d %s lang=%s ch=%d%s%s\n", t.index, t.codec.c_str(), t.lang.c_str(), t.channels, t.is_default ? " default" : "", t.selected ? " playing" : "");
+        for (const auto& t : p.subtitle_tracks()) {
+            size_t total = 0;
+            const auto cues = p.sub_cues(t.index, 0, total);
+            std::printf("SUB #%d %s lang=%s %s cues=%zu%s%s\n", t.index, t.codec.c_str(), t.lang.c_str(), t.usable ? "text" : "bitmap/unsupported", total,
+                        cues.empty() ? "" : " first=", cues.empty() ? "" : cues[0].text.c_str());
         }
     }
     p.close();

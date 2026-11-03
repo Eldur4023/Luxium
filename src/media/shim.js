@@ -11,6 +11,9 @@
 //     WebGL2 (YUV -> RGB in a shader), keeping its geometry synced to the box;
 //   * implements text tracks (<track> + WebVTT, cuechange, activeCues) because
 //     Chromium never advances cues of an element it is not playing;
+//   * exposes the tracks inside the file: audioTracks (switching without reopening) and text
+//     subtitles (SRT/ASS/mov_text/WebVTT) as textTracks with engine-decoded cues;
+//   * publishes navigator.luxiumMedia, the engine's decoder/demuxer inventory;
 //   * draws its own controls when the `controls` attribute is set;
 //   * routes fullscreen to the element's container so canvas + controls follow.
 // Elements whose source is a blob:/MediaStream (MSE, WebRTC) are left to Chromium.
@@ -194,6 +197,7 @@
       s.id = -1;
     }
     active.delete(s);
+    resetTracks(s);
     for (const p of s.plays.splice(0)) p.reject(new DOMException('The play() request was interrupted by a new load request.', 'AbortError'));
     destroySurface(s);
   }
@@ -215,6 +219,7 @@
         return;
       case 'loadedmetadata':
         applySize(s);
+        loadTracks(s);                  // before the event: pages read audioTracks in the handler
         fire(el, type);
         if (s.hasVideo) { ensureSurface(s); if (s.pendingTime > 0) { LXM.seek(s.id, s.pendingTime); refresh(s); } }
         else if (s.pendingTime > 0) { LXM.seek(s.id, s.pendingTime); refresh(s); }
@@ -685,6 +690,55 @@ svg{width:22px;height:22px;fill:#fff}
       .catch(() => { t.readyState = 3; fire(t.node, 'error'); })
       .finally(() => { t._loading = false; });
   }
+  // ── tracks inside the file (engine streams) ────────────────────────────────
+  class LXAudioTrack {
+    constructor(owner, o, idx) {
+      this._owner = owner; this._stream = o.i; this._enabled = !!o.sel;
+      this.id = String(idx); this.kind = o.def || idx === 0 ? 'main' : 'alternative';
+      this.language = o.lang && o.lang !== 'und' ? o.lang : '';
+      this.label = o.title || (this.language ? this.language : '') || '';
+      this.codec = o.codec; this.channels = o.ch; this.usable = o.ok;
+    }
+    get enabled() { return this._enabled; }
+    set enabled(v) {
+      const s = this._owner;
+      if (!v || this._enabled || !this.usable || s.id < 0) return;     // exactly one track plays: enable another to switch
+      if (!LXM.selectAudio(s.id, this._stream)) return;
+      for (const t of s.audioList._a) t._enabled = t === this;
+      refresh(s);
+      later(() => fire2(s.audioList, 'change'));
+    }
+  }
+  function resetTracks(s) {
+    if (s.audioList) { for (const t of [...s.audioList._a]) s.audioList._remove(t); }
+    if (s.tracks) for (const t of [...s.tracks._a]) if (t._stream !== undefined) s.tracks._remove(t);
+  }
+  function loadTracks(s) {
+    let o;
+    try { o = JSON.parse(LXM.tracks(s.id)); } catch (e) { return; }
+    const al = s.audioList || (s.audioList = new LXTrackList());
+    resetTracks(s);
+    o.audio.forEach((a, i) => al._add(new LXAudioTrack(s, a, i)));
+    const tl = tracksOf(s);
+    for (const x of o.subs) {
+      if (!x.ok) continue;                                  // bitmap subtitles (PGS, VobSub, DVB) are not rendered
+      const t = new LXTextTrack(s, 'subtitles', x.title || x.lang || x.codec, x.lang && x.lang !== 'und' ? x.lang : '', 'sub' + x.i);
+      t._stream = x.i; t._n = 0; t._loaded = true; t.inBand = true;
+      tl._add(t);
+    }
+  }
+  function pullCues(s, tr) {
+    if (s.id < 0) return;
+    const now = performance.now();
+    if (now - (tr._pulled || 0) < 200) return;
+    tr._pulled = now;
+    const j = LXM.cues(s.id, tr._stream, tr._n);
+    if (!j) return;
+    const o = JSON.parse(j);
+    for (const [a, b, text] of o.c) { const c = new VTTCue(a, b, text); c.id = ''; tr._cues.push(c); }
+    tr._cues.sort((x, y) => x.startTime - y.startTime);
+    tr._n = o.n; s.cueDirty = true;
+  }
   function tracksNeedLoad(s) { /* lazy: tracks load when their mode leaves 'disabled' */ }
 
   // keep s.tracks in sync with the <track> children
@@ -711,9 +765,10 @@ svg{width:22px;height:22px;fill:#fff}
   function tickTracks(s) {
     const list = s.tracks;
     if (!list || !list._a.length) return;
+    for (const tr of list._a) if (tr._stream !== undefined && tr._mode !== 'disabled') pullCues(s, tr);
     const t = LXM.time(s.id);
     if (t === s.lastCueT && !s.cueDirty) return;
-    s.lastCueT = t;
+    s.lastCueT = t; s.cueDirty = false;
     for (const tr of list._a) {
       if (tr._mode === 'disabled') continue;
       const now = tr._cues.filter((c) => c.startTime <= t && t < c.endTime);
@@ -812,6 +867,7 @@ svg{width:22px;height:22px;fill:#fff}
     s.rate = Math.min(4, Math.max(0.25, v)); if (s.id >= 0) LXM.setRate(s.id, s.rate);
     later(() => fire(this, 'ratechange'));
   });
+  def('audioTracks', function () { const s = st(this); if (s.native) return undefined; return s.audioList || (s.audioList = new LXTrackList()); });
   def('textTracks', function () { const s = st(this); if (s.native) return orig.textTracks.get.call(this); syncTrackElements(this); return tracksOf(s); });
   proto.addTextTrack = function (kind, label, lang) {
     const s = st(this);
@@ -885,6 +941,28 @@ svg{width:22px;height:22px;fill:#fff}
     get() { return hlsRef; },
     set(v) { hlsRef = v; if (v && typeof v.isSupported === 'function') { try { v.isSupported = () => false; } catch (e) {} } } });
 
+  // Engine inventory for apps that decide direct play vs. remux/transcode: names are FFmpeg's
+  // (= ffprobe's codec_name / format_name).  Built on first use.
+  let caps;
+  const getCaps = () => {
+    if (caps) return caps;
+    const o = JSON.parse(LXM.caps());
+    const sets = { video: new Set(o.video), audio: new Set(o.audio), subtitle: new Set(o.subtitle), containers: new Set(o.containers) };
+    // ffprobe reports a demuxer family as "matroska,webm" or "mov,mp4,m4a,3gp,3g2,mj2": any member will do
+    const hasContainer = (f) => String(f || '').split(',').some((n) => sets.containers.has(n.trim()));
+    caps = Object.freeze({
+      engine: 'luxium', version: 2,
+      decoders: Object.freeze({ video: Object.freeze([...sets.video]), audio: Object.freeze([...sets.audio]), subtitle: Object.freeze([...sets.subtitle]) }),
+      containers: Object.freeze([...sets.containers]),
+      canDecodeVideo: (codec) => sets.video.has(String(codec).toLowerCase()),
+      canDecodeAudio: (codec) => sets.audio.has(String(codec).toLowerCase()),
+      canDemux: hasContainer,
+      audioTracks: true, embeddedSubtitles: true,
+    });
+    return caps;
+  };
+  try { Object.defineProperty(Navigator.prototype, 'luxiumMedia', { configurable: true, enumerable: true, get: getCaps }); } catch (e) {}
+
   // ── discovering elements the parser created (src/<source>/<track>/controls) ─
   function adopt(el) {
     if (tracked.has(el)) return;
@@ -946,5 +1024,6 @@ svg{width:22px;height:22px;fill:#fff}
   window.addEventListener('pagehide', () => { for (const s of [...byId.values()]) closePlayer(s); });
   // Debug/test hook: per-player counters (ms are cumulative: native copy of the frame, WebGL upload).
   window.__luxiumMediaStats = () => [...active].map((s) => ({ id: s.id, src: s.cur, frames: s.frames, last: s.lastSeq, t: LXM.time(s.id),
-    copyMs: s.msCopy || 0, uploadMs: s.msUpload || 0, drawMs: s.msDraw || 0, size: s.vw + 'x' + s.vh }));
+    copyMs: s.msCopy || 0, uploadMs: s.msUpload || 0, drawMs: s.msDraw || 0, size: s.vw + 'x' + s.vh,
+    engine: JSON.parse(LXM.stats(s.id)) }));
 })();

@@ -23,6 +23,9 @@ namespace luxium::media {
 // mime may carry a codecs="..." parameter.  Returns "", "maybe" or "probably".
 std::string can_play(const std::string& mime_with_params);
 bool        built();    // false in the stub (no FFmpeg headers at build time)
+// What the engine really decodes/demuxes, as JSON for pages (navigator.luxiumMedia):
+// {"video":[ffprobe codec names],"audio":[...],"subtitle":[...],"containers":[demuxer names]}.
+std::string capabilities_json();
 
 // One decoded picture, NV12 8-bit: the Y plane (w*h bytes) followed by the
 // interleaved UV plane (((w+1)/2*2) * ((h+1)/2) bytes), both tightly packed.
@@ -37,6 +40,18 @@ struct Frame {
 };
 
 struct Range { double start, end; };
+
+// One audio or subtitle stream of the file.  `index` is the container's stream
+// index, the handle for select_audio()/sub_cues().
+struct TrackInfo {
+    int index = -1;
+    std::string codec, lang, title;
+    int channels = 0;
+    bool is_default = false;
+    bool usable = false;          // audio: a decoder exists; subtitle: text format we decode
+    bool selected = false;        // audio: the one playing
+};
+struct SubCue { double start = 0, end = 0; std::string text; };   // text: WebVTT cue markup (<i>, <b>, <u>)
 
 struct Event {
     std::string type;             // "loadedmetadata", "timeupdate", "error"...
@@ -92,7 +107,25 @@ public:
     // `after_seq` (null otherwise).  The returned frame is immutable.
     std::shared_ptr<const Frame> frame(uint64_t after_seq = 0);
 
-    struct Stats { uint64_t decoded = 0, presented = 0, dropped = 0; bool hw = false; std::string codec; };
+    // Streams inside the file.  Filled before "loadedmetadata".
+    std::vector<TrackInfo> audio_tracks() const;
+    std::vector<TrackInfo> subtitle_tracks() const;
+    // Switches the audio stream without reopening the file: the demuxer re-seeks
+    // to the current time (a short "seeking"/"seeked", the picture is kept).
+    bool select_audio(int stream_index);
+    // Text cues decoded so far for a subtitle stream, from cue number `from` on
+    // (append-only, in arrival order); `total` gets the new count.
+    std::vector<SubCue> sub_cues(int stream_index, size_t from, size_t& total) const;
+
+    struct Stats {
+        uint64_t decoded = 0, presented = 0, dropped = 0; bool hw = false; std::string codec;
+        uint64_t audio_frames = 0;    // samples handed to the audio device
+        float    audio_peak = 0;      // loudest sample seen (0 = silence)
+        std::string audio_codec;
+        int      audio_channels = 0;  // of the source, before the stereo downmix
+        bool     deinterlace = false; // interlaced pictures were seen
+        std::string pix_fmt;          // decoder output format
+    };
     Stats stats() const;
 
 private:
