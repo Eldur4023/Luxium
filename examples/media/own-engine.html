@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Own engine: video and audio</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; background: #fff; color: #222; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 4px 0 12px; font-size: 13px; }
+  .row { display: flex; gap: 16px; align-items: flex-start; }
+  video { background: #000; }
+  #big { width: 480px; }
+  #small { width: 200px; height: 200px; object-fit: cover; border-radius: 12px; }
+</style>
+</head>
+<body>
+<h1>HTML video in Luxium's own engine</h1>
+<p>No JavaScript on this page: the engine plays it with its own media player. Click a video to play/pause; the bar seeks.</p>
+<div class="row">
+  <div>
+    <video id="big" src="fixtures/h264_aac.mp4" controls autoplay muted loop></video>
+    <p>controls autoplay muted loop, width 480px, height from the video's aspect</p>
+  </div>
+  <div>
+    <video id="small" src="fixtures/vp9_opus.webm" muted autoplay loop></video>
+    <p>no controls, object-fit: cover, rounded</p>
+    <audio id="snd" src="fixtures/h264_aac.mp4" controls></audio>
+    <p>audio with controls</p>
+  </div>
+</div>
+</body>
+</html>
