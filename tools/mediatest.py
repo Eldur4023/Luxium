@@ -7,7 +7,7 @@ Needs: tools/media_fixtures.sh run once, an X display (DISPLAY, Xvfb is fine),
 build/luxium.  Starts its own file server and its own Luxium (SDL's dummy audio
 driver, so nothing is played out loud) and closes them at the end.
 """
-import os, signal, subprocess, sys, time, json
+import tempfile, os, signal, subprocess, sys, time, json
 sys.path.insert(0, os.path.dirname(__file__))
 from cdp import Page
 
@@ -20,10 +20,11 @@ PIXELS = """(() => { const c = document.querySelector('canvas[data-luxium-surfac
   for (let i = 1; i < 8; i++) for (let j = 1; j < 5; j++) { gl.readPixels((c.width * i / 8) | 0, (c.height * j / 5) | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const l = px[0] + px[1] + px[2]; sum += l; n++; if (l > 60) lit++; }
   return { w: c.width, h: c.height, mean: sum / n / 3, lit, of: n }; })()"""
+PROFILE = os.path.join(tempfile.gettempdir(), "luxium-media-profile")   # own profile: never share the default one with other Luxiums
 
 
 def launch(url):
-    env = dict(os.environ, SDL_AUDIODRIVER="dummy", LUXIUM_CDP_PORT=str(CDP))
+    env = dict(os.environ, SDL_AUDIODRIVER="dummy", LUXIUM_CDP_PORT=str(CDP), LUXIUM_PROFILE=PROFILE)
     log = open(os.environ["MEDIATEST_LOG"], "ab") if os.environ.get("MEDIATEST_LOG") else subprocess.DEVNULL
     return subprocess.Popen([os.path.join(ROOT, "build/luxium"), url], env=env, cwd=os.path.join(ROOT, "build"),
                             stdout=log, stderr=log, start_new_session=True)

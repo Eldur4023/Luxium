@@ -204,6 +204,9 @@
     if (!s) return;
     const el = s.el;
     refresh(s);
+    // play() on an element that is already playing gets no 'playing' event after a seek; settle it once it can run
+    if (s.plays.length && type !== 'pause' && type !== 'error' && !s.paused && s.ready >= 3 && !s.seeking && !s.waitingPlay)
+      for (const p of s.plays.splice(0)) p.resolve();
     switch (type) {
       case 'volumechange': case 'ratechange': return;         // we fire those from the setters
       case 'resize':

@@ -8,7 +8,7 @@ Episode ids are picked from the server's own API: the first series whose first e
 (= remux path) and the first H.264 one that has 2+ audio tracks (= direct path, audio switch via the remux).
 Needs an X display and build/luxium; the profile picker is used to log in.
 """
-import json, os, signal, subprocess, sys, time, urllib.request
+import json, os, signal, subprocess, sys, tempfile, time, urllib.request
 sys.path.insert(0, os.path.dirname(__file__))
 from cdp import Page
 
@@ -17,6 +17,7 @@ BASE = os.environ.get("HOMEFLIX_URL", "http://192.168.1.20:5001").rstrip("/")
 USER = os.environ.get("HOMEFLIX_USER", "1")
 CDP = int(os.environ.get("LUXIUM_CDP_PORT", 9223))
 
+PROFILE = os.path.join(tempfile.gettempdir(), "luxium-homeflix-profile")
 PIXELS = """(() => { const c = document.querySelector('canvas[data-luxium-surface]'); if (!c) return null;
   const gl = c.getContext('webgl2'); const px = new Uint8Array(4); let n = 0, lit = 0;
   for (let i = 1; i < 8; i++) for (let j = 1; j < 5; j++) { gl.readPixels((c.width * i / 8) | 0, (c.height * j / 5) | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -60,8 +61,8 @@ def key(p, k, code):
 
 
 def play_checks(res, p, label, src_part):
-    p.wait_for("document.getElementById('player') && document.getElementById('player').readyState >= 3", 40)
     v = "document.getElementById('player')"
+    p.wait_for(f"!!{v} && ({v}.currentSrc || {v}.src).includes({json.dumps(src_part)}) && {v}.readyState >= 3", 60)
     check(res, f"{label}: source", src_part in p.eval(f"{v}.currentSrc || {v}.src"), p.eval(f"{v}.currentSrc || {v}.src"))
     if p.eval(f"{v}.paused"):
         p.eval(f"{v}.play()")
@@ -79,15 +80,19 @@ def main():
     remux, direct = pick()
     print("remux episode:", remux, " direct episode:", direct)
     res = []
-    env = dict(os.environ, SDL_AUDIODRIVER="dummy", LUXIUM_CDP_PORT=str(CDP))
+    env = dict(os.environ, SDL_AUDIODRIVER="dummy", LUXIUM_CDP_PORT=str(CDP), LUXIUM_PROFILE=PROFILE)
     proc = subprocess.Popen([os.path.join(ROOT, "build/luxium"), BASE + "/"], env=env, cwd=os.path.join(ROOT, "build"),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
         p = Page(CDP, wait=40)
         p.wait_for("document.readyState === 'complete'", 30)
-        # profile picker
-        p.wait_for(f"document.querySelector('.user-card[data-user-id=\"{USER}\"]')", 20)
-        p.eval(f"document.querySelector('.user-card[data-user-id=\"{USER}\"]').click()")
+        # profile picker: the profile is persistent, so it is only there on the first run
+        p.wait_for("typeof getCurrentUser === 'function' && document.getElementById('app') && document.getElementById('app').children.length", 30)
+        if not p.eval("getCurrentUser()"):
+            go(p, "/usuarios")      # the picker route; clicking a card is what a person does
+            p.wait_for(f"!!document.querySelector('.user-card[data-user-id=\"{USER}\"]')", 20)
+            p.eval(f"document.querySelector('.user-card[data-user-id=\"{USER}\"]').click()")
+        p.eval("Object.keys(localStorage).filter(k => k.startsWith('homeflix:track:')).forEach(k => localStorage.removeItem(k))")   # remembered selects would change the path under test
         p.eval("window.__beats = []; const f = window.fetch; window.fetch = (u, o) => { if (String(u).includes('heartbeat')) window.__beats.push(String(u)); return f(u, o); }")
         # catalog
         p.wait_for("document.querySelectorAll('.poster-grid a').length > 3", 30)
@@ -107,12 +112,12 @@ def main():
         # direct path
         sid, eid = direct
         go(p, f"/serie/{sid}/ver/{eid}")
-        play_checks(res, p, "direct", "/api/stream/")
+        play_checks(res, p, "direct", "/api/stream/" + eid)
         p.eval("document.getElementById('player').currentTime = 20")
         p.wait_for("!document.getElementById('player').seeking", 15)
         # subtitles: pick the first track, find a cue in the first minutes, check the overlay
         p.eval("(() => { const s = document.getElementById('subs-select'); s.value = '0'; s.dispatchEvent(new Event('change')); })()")
-        p.wait_for("document.querySelector('track') && document.getElementById('player').textTracks.length && document.getElementById('player').textTracks[0].cues && document.getElementById('player').textTracks[0].cues.length > 0", 20)
+        p.wait_for("!!document.querySelector('track') && document.getElementById('player').textTracks.length && document.getElementById('player').textTracks[0].cues && document.getElementById('player').textTracks[0].cues.length > 0", 20)
         cue = p.eval("(() => { const c = document.getElementById('player').textTracks[0].cues[0]; return [c.startTime, c.endTime, c.text]; })()")
         check(res, "direct: subtitle cues loaded", cue is not None, json.dumps(cue))
         p.eval(f"document.getElementById('player').currentTime = {cue[0] + 0.3}")
@@ -132,7 +137,7 @@ def main():
         p.eval("document.activeElement.blur && document.activeElement.blur()")
         key(p, "f", "KeyF")
         try:
-            p.wait_for("document.fullscreenElement && document.fullscreenElement.id === 'video-wrap'", 5)
+            p.wait_for("!!document.fullscreenElement && document.fullscreenElement.id === 'video-wrap'", 5)
             check(res, "fullscreen: f enters on #video-wrap", True)
             key(p, "f", "KeyF")
             p.wait_for("!document.fullscreenElement", 5)
@@ -148,7 +153,7 @@ def main():
         # HEVC remux path
         sid, eid = remux
         go(p, f"/serie/{sid}/ver/{eid}")
-        play_checks(res, p, "remux", "/api/rm/")
+        play_checks(res, p, "remux", f"/api/rm/{eid}/0/")
         check(res, "remux: hint shown", p.eval("(document.querySelector('.track-hint')||{}).textContent") is not None)
         p.eval("document.getElementById('player').currentTime = 60")
         p.wait_for("!document.getElementById('player').seeking", 30)
