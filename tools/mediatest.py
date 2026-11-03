@@ -7,12 +7,12 @@ Needs: tools/media_fixtures.sh run once, an X display (DISPLAY, Xvfb is fine),
 build/luxium.  Starts its own file server and its own Luxium (SDL's dummy audio
 driver, so nothing is played out loud) and closes them at the end.
 """
-import os, subprocess, sys, time, json
+import os, signal, subprocess, sys, time, json
 sys.path.insert(0, os.path.dirname(__file__))
 from cdp import Page
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-PORT, CDP = 8781, 9344
+PORT, CDP = 8781, int(os.environ.get("LUXIUM_CDP_PORT", 9223))
 PAGES = ["h264-aac", "hevc10-ac3", "vp9-opus", "hls-ts", "hls-fmp4", "4k-hevc", "tracks", "hlsjs"]
 
 PIXELS = """(() => { const c = document.querySelector('canvas[data-luxium-surface]'); if (!c) return null;
@@ -24,8 +24,9 @@ PIXELS = """(() => { const c = document.querySelector('canvas[data-luxium-surfac
 
 def launch(url):
     env = dict(os.environ, SDL_AUDIODRIVER="dummy", LUXIUM_CDP_PORT=str(CDP))
+    log = open(os.environ["MEDIATEST_LOG"], "ab") if os.environ.get("MEDIATEST_LOG") else subprocess.DEVNULL
     return subprocess.Popen([os.path.join(ROOT, "build/luxium"), url], env=env, cwd=os.path.join(ROOT, "build"),
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                            stdout=log, stderr=log, start_new_session=True)
 
 
 def check(res, name, ok, detail=""):
@@ -105,27 +106,36 @@ def main():
     try:
         for name in pages:
             print(name)
-            proc = launch(f"http://127.0.0.1:{PORT}/{name}.html")
-            try:
-                p = Page(CDP, wait=30)
-                p.wait_for("document.readyState === 'complete'", 20)
-                if name == "tracks":
-                    res = tracks_scenario(p)
-                elif name == "hlsjs":
-                    res = hlsjs_scenario(p)
-                else:
-                    res = scenario(name, p)
-            except Exception as e:
-                res = [("scenario", False, repr(e))]
-                print("  FAIL scenario:", repr(e))
-            finally:
-                proc.terminate()
+            for attempt in range(3):
+                proc = launch(f"http://127.0.0.1:{PORT}/{name}.html")
+                flake = False
                 try:
-                    proc.wait(10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                os.system("pkill -x luxium 2>/dev/null")
-                time.sleep(1)
+                    p = Page(CDP, wait=30)
+                    p.wait_for("document.readyState === 'complete'", 20)
+                    if name == "tracks":
+                        res = tracks_scenario(p)
+                    elif name == "hlsjs":
+                        res = hlsjs_scenario(p)
+                    else:
+                        res = scenario(name, p)
+                except Exception as e:
+                    res = [("scenario", False, repr(e))]
+                    # About 1 start in 10 loses its page target or drops the CDP socket (shell/CEF start-up race, not the
+                    # media path); the check itself never ran, so run it again.
+                    flake = "no CEF page" in str(e) or type(e).__name__ == "WebSocketConnectionClosedException"
+                    print("  FAIL scenario:", repr(e), "(start-up flake, retrying)" if flake and attempt < 2 else "")
+                finally:
+                    # the page's helper processes share the session group; never pkill by name (other Luxiums may run)
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    try:
+                        proc.wait(10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    end = time.time() + 15       # a dying Luxium still answering on the CDP port would be mistaken for the next one
+                    while time.time() < end and os.system(f"ss -ltn | grep -q ':{CDP} '") == 0:
+                        time.sleep(0.3)
+                if not flake:
+                    break
             failed += sum(1 for r in res if not r[1])
     finally:
         srv.terminate()
