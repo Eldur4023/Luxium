@@ -152,6 +152,23 @@ try:
     else:
         print("  skip  needs build/luxium and Xvfb :99")
 
+    print("== media, root-relative src over http (examples/spa/media-root.html)")
+    if os.path.exists(win) and os.path.exists("/tmp/.X11-unix/X99"):
+        hp = subprocess.Popen([sys.executable, os.path.join(ROOT, "tools", "rangeserver.py"), "8793", os.path.join(ROOT, "examples")],
+                              cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              start_new_session=True)
+        try:
+            time.sleep(1)
+            p = subprocess.run([win, "http://127.0.0.1:8793/spa/media-root.html", "--wait", "8000", "--shot", os.path.join(PROFILE, "r.ppm")],
+                               cwd=ROOT, capture_output=True, text=True, env=e, timeout=60, start_new_session=True)
+            check("<video src=\"/media/...\"> resolves against the page origin", p.stdout + p.stderr,
+                  "root dur>0: true", "root paused1=false t>0.3: true", "root seek ok: true")
+        finally:
+            os.killpg(hp.pid, signal.SIGTERM)
+            hp.wait()
+    else:
+        print("  skip  needs build/luxium and Xvfb :99")
+
     print("== compat: M4 demo pages")
     o = run("examples/counter.html", ["mas", "mas"])
     check("counter.html still works (click(fn) + page.clicked)", o, "contador: 2")

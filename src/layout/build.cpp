@@ -140,9 +140,10 @@ struct Builder {
         if (src.empty())
             for (const auto& c : el.children)
                 if (c->is_element() && c->name == "source" && !c->attr_or("src").empty()) { src = c->attr_or("src"); break; }
-        e.local = !(src.starts_with("http://") || src.starts_with("https://"));
         if (src.starts_with("file://")) src = src.substr(7);
-        if (e.local && !src.empty() && !src.starts_with('/')) src = base_dir + src;
+        // Same resolution as images: "/api/x" and "//host/x" on an http page are relative to the page's origin.
+        if (!src.empty()) src = render::resolve_image(base_dir, src);
+        e.local = !(src.starts_with("http://") || src.starts_with("https://"));
         e.src = src;
         e.autoplay = el.has_attr("autoplay");
         e.loop = el.has_attr("loop");

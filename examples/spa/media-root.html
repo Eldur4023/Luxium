@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><title>SPA media (root fixture)</title></head>
+<body>
+<video id="v" src="/media/fixtures/h264_aac.mp4" muted></video>
+<script>
+fn Element video():
+    return document.get("v")
+
+fn void run():
+    await sleep(2000)
+    log.info("root dur>0: " + str(video().duration() > 1.0))
+    log.info("root paused0=" + str(video().paused()))
+    video().play()
+    await sleep(1200)
+    log.info("root paused1=" + str(video().paused()) + " t>0.3: " + str(video().current_time() > 0.3))
+    video().pause()
+    await sleep(200)
+    log.info("root paused2=" + str(video().paused()))
+    video().seek(3.0)
+    await sleep(1000)
+    log.info("root seek ok: " + str(video().current_time() >= 2.9 and video().current_time() < 4.5))
+    log.info("root done")
+
+run()
+</script>
+</body></html>
