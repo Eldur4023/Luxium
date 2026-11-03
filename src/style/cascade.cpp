@@ -54,7 +54,38 @@ static const std::vector<Rule>& ua_rules() {
     return rules;
 }
 
-Resolver::Resolver() : ua_(ua_rules()) {}
+static const RuleIndex& ua_index() {
+    static const RuleIndex idx = [] { RuleIndex i; i.build(ua_rules()); return i; }();
+    return idx;
+}
+
+Resolver::Resolver() : ua_(ua_rules()), ua_idx_(ua_index()) {}
+
+void RuleIndex::build(const std::vector<Rule>& rules) {
+    by_id.clear(); by_class.clear(); by_tag.clear(); universal.clear();
+    for (size_t i = 0; i < rules.size(); ++i) {
+        bool uni = false;
+        std::vector<std::pair<int, std::string>> keys;   // 0 id, 1 class, 2 tag
+        for (const auto& sel : rules[i].selectors) {
+            if (sel.parts.empty()) continue;
+            const Compound& c = sel.parts.back();
+            const SimpleSel* id = nullptr; const SimpleSel* cls = nullptr;
+            for (const auto& ss : c.simples) {
+                if (ss.kind == SimpleSel::Kind::Id && !id) id = &ss;
+                else if (ss.kind == SimpleSel::Kind::Class && !cls) cls = &ss;
+            }
+            if (id) keys.push_back({0, id->name});
+            else if (cls) keys.push_back({1, cls->name});
+            else if (!c.tag.empty() && c.tag != "*") keys.push_back({2, c.tag});
+            else uni = true;
+        }
+        if (uni) { universal.push_back(int(i)); continue; }
+        for (auto& [k, name] : keys) {
+            auto& v = (k == 0 ? by_id : k == 1 ? by_class : by_tag)[name];
+            if (v.empty() || v.back() != int(i)) v.push_back(int(i));
+        }
+    }
+}
 
 namespace {
 
@@ -208,8 +239,34 @@ struct Entry {
 ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent, Pseudo pseudo) const {
     // ── 1. matching declarations ───────────────────────────────────────────
     std::vector<Entry> entries;
-    auto collect = [&](const std::vector<Rule>& rules, int rank) {
-        for (const auto& r : rules) {
+    thread_local std::vector<uint32_t> stamp;
+    thread_local uint32_t gen = 0;
+    auto collect = [&](const std::vector<Rule>& rules, const RuleIndex& idx, int rank) {
+        if (stamp.size() < rules.size()) stamp.resize(rules.size(), 0);
+        ++gen;
+        std::vector<int> cand = idx.universal;
+        auto add = [&](const std::unordered_map<std::string, std::vector<int>>& m, const std::string& k) {
+            auto it = m.find(k);
+            if (it != m.end()) cand.insert(cand.end(), it->second.begin(), it->second.end());
+        };
+        add(idx.by_tag, el.name);
+        const std::string id = el.attr_or("id");
+        if (!id.empty()) add(idx.by_id, id);
+        {
+            const std::string cl = el.attr_or("class");
+            size_t i = 0;
+            while (i < cl.size()) {
+                while (i < cl.size() && std::isspace(static_cast<unsigned char>(cl[i]))) ++i;
+                size_t j = i;
+                while (j < cl.size() && !std::isspace(static_cast<unsigned char>(cl[j]))) ++j;
+                if (j > i) add(idx.by_class, cl.substr(i, j - i));
+                i = j;
+            }
+        }
+        for (int ri : cand) {
+            if (stamp[size_t(ri)] == gen) continue;
+            stamp[size_t(ri)] = gen;
+            const Rule& r = rules[size_t(ri)];
             if (!r.media.empty() && !media_matches(r.media, vw_, vh_)) continue;
             int best = -1;
             for (const auto& sel : r.selectors) {
@@ -220,8 +277,8 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
             for (const auto& d : r.decls) entries.push_back({&d, rank, best, r.order, d.important});
         }
     };
-    collect(ua_, 0);
-    collect(*author_, 1);
+    collect(ua_, ua_idx_, 0);
+    collect(*author_, author_idx_, 1);
     std::vector<Decl> hint_decls;
     if (pseudo == Pseudo::None) {
         hint_decls = presentational_hints(el);
@@ -245,6 +302,29 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
         if (a.spec != b.spec) return a.spec < b.spec;
         return a.order < b.order;
     });
+
+    // Same matched declarations + same parent style + same tag = same result.  Presentational attributes and
+    // inline `style` are per element, so those elements are computed for real.
+    const bool cacheable = hint_decls.empty() && inline_decls.empty();
+    std::string ckey;
+    if (cacheable) {
+        ckey.reserve(16 + entries.size() * sizeof(void*));
+        const uint32_t pid = parent ? parent->cache_id : 0;
+        ckey.append(reinterpret_cast<const char*>(&pid), sizeof pid);
+        ckey.push_back(char(pseudo));
+        ckey += el.name;
+        ckey.push_back('\0');
+        for (const Entry& e : entries) { const Decl* d = e.decl; ckey.append(reinterpret_cast<const char*>(&d), sizeof d); }
+        if (parent && pid == 0) ckey.clear();   // an unidentified parent (hand-built style): no sharing
+        if (!ckey.empty()) {
+            auto hit = cache_.find(ckey);
+            if (hit != cache_.end()) {
+                ComputedStyle r = hit->second;
+                if (pseudo == Pseudo::None && post_hook && post_hook(el, r)) r.cache_id = ++next_id_;
+                return r;
+            }
+        }
+    }
 
     // ── 2. starting point: inherited properties from the parent ────────────
     ComputedStyle s;
@@ -359,7 +439,9 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
         default: break;
         }
     }
-    if (pseudo == Pseudo::None && post_hook) post_hook(el, s);
+    s.cache_id = ++next_id_;
+    if (cacheable && !ckey.empty()) cache_.emplace(ckey, s);
+    if (pseudo == Pseudo::None && post_hook && post_hook(el, s)) s.cache_id = ++next_id_;
     return s;
 }
 

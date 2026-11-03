@@ -87,14 +87,14 @@ void apply(style::ComputedStyle& s, const AnimVals& v, unsigned groups) {
 
 } // namespace
 
-void Shell::style_hook(const dom::Node& el, style::ComputedStyle& s) {
+bool Shell::style_hook(const dom::Node& el, style::ComputedStyle& s) {
     auto found = anims_.find(&el);
-    if (found == anims_.end() && s.transitions.empty()) return;
+    if (found == anims_.end() && s.transitions.empty()) return false;
     NodeAnim& a = found != anims_.end() ? found->second : anims_[&el];
     a.seen = anim_frame_;
     const AnimVals cur = vals_of(s);
     const float now = float(SDL_GetTicks());
-    if (!a.has_target) { a.target = cur; a.has_target = true; return; }   // first sight: nothing to animate from
+    if (!a.has_target) { a.target = cur; a.has_target = true; return false; }   // first sight: nothing to animate from
     // border colours that follow currentcolor are not tracked separately: they change with `color`
     if (const unsigned changed = diff(a.target, cur)) {
         unsigned covered = 0;
@@ -118,10 +118,11 @@ void Shell::style_hook(const dom::Node& el, style::ComputedStyle& s) {
         } else a.active = false;
         a.target = cur;
     }
-    if (!a.active) return;
+    if (!a.active) return false;
     const float k = a.dur > 0 ? (now - a.t0 - a.delay) / a.dur : 1.f;
-    if (k >= 1.f) { a.active = false; return; }
+    if (k >= 1.f) { a.active = false; return false; }
     apply(s, blend(a.from, a.target, bezier(a.bez, std::clamp(k, 0.f, 1.f)), a.groups), a.groups);
+    return true;
 }
 
 } // namespace luxium::shell

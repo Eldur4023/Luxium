@@ -123,6 +123,7 @@ struct TransitionSpec {
 };
 
 struct ComputedStyle {
+    uint32_t cache_id = 0;              // identity of this exact style within one layout (see Resolver::compute)
     // ── display / positioning ───────────────────────────────────────────────
     Display  display = Display::Inline;
     Position position = Position::Static;

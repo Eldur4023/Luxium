@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 
 namespace luxium::paint {
@@ -77,6 +79,12 @@ inline float cov_from_sdf(float d) { return std::clamp(0.5f - d, 0.f, 1.f); }
 inline float clip_cov(const State& s, float bx, float by) {
     float c = 1.f;
     for (const auto& rc : s.rc()) {
+        // away from the corners (and a pixel from the straight edges) the coverage is exactly 1: skip the SDF
+        const float px = bx - s.ox, py = by - s.oy;
+        const float rm = std::max(std::max(rc.r.tl, rc.r.tr), std::max(rc.r.br, rc.r.bl)) + 1.f;
+        if (px >= rc.x + 1.f && px <= rc.x + rc.w - 1.f && py >= rc.y + 1.f && py <= rc.y + rc.h - 1.f &&
+            ((px >= rc.x + rm && px <= rc.x + rc.w - rm) || (py >= rc.y + rm && py <= rc.y + rc.h - rm)))
+            continue;
         const float d = sdf_rrect(bx - s.ox, by - s.oy, rc.x, rc.y, rc.w, rc.h, rc.r);
         c *= cov_from_sdf(d);
         if (c <= 0) return 0;
@@ -133,8 +141,19 @@ void fill_border(State& s, const Item& it) {
     ir.bl = std::max(0.f, it.radii.bl - std::max(it.bw[3], it.bw[2]));
     const bool rounded = it.radii.any();
     const bool rcl = !s.rc().empty();
-    for (int y = b.y0; y < b.y1; ++y)
-        for (int x = b.x0; x < b.x1; ++x) {
+    // Rows well inside the inner rectangle (clear of its rounded corners) only have ink in the left and right
+    // bands: visit those columns instead of the whole row.
+    const float rin = std::max(std::max(ir.tl, ir.tr), std::max(ir.br, ir.bl)) + 2.f;
+    for (int y = b.y0; y < b.y1; ++y) {
+        const float pyc = y + 0.5f - s.oy;
+        const bool mid = ix1 > ix0 && iy1 > iy0 && pyc >= iy0 + rin && pyc <= iy1 - rin;
+        int xa = b.x0, xb = b.x1, xc = b.x1, xd = b.x1;   // visit [xa,xb) and [xc,xd)
+        if (mid) {
+            xb = std::min(b.x1, std::max(b.x0, int(std::ceil(ix0 + s.ox)) + 1));
+            xc = std::max(xb, std::min(b.x1, int(std::floor(ix1 + s.ox)) - 1)); xd = b.x1;
+        } else { xb = b.x1; xc = xd = b.x1; }
+        for (int seg = 0; seg < 2; ++seg)
+        for (int x = seg ? xc : xa; x < (seg ? xd : xb); ++x) {
             const float px = x + 0.5f - s.ox, py = y + 0.5f - s.oy;
             float outer = rounded ? cov_from_sdf(sdf_rrect(px, py, it.x, it.y, it.w, it.h, it.radii))
                                   : ((px >= it.x && px < it.x + it.w && py >= it.y && py < it.y + it.h) ? 1.f : 0.f);
@@ -189,6 +208,7 @@ void fill_border(State& s, const Item& it) {
             if (rcl) cov *= clip_cov(s, x + 0.5f, y + 0.5f);
             if (cov > 0) blend(t.px[static_cast<size_t>(y) * t.w + x], col, cov);
         }
+    }
 }
 
 uint32_t grad_color(const std::vector<Stop>& st, float t) {
@@ -244,33 +264,49 @@ void draw_image(State& s, const Item& it) {
     const render::ImageBitmap* bm = it.img.get();
     if (!bm || it.w <= 0 || it.h <= 0 || it.sw <= 0 || it.sh <= 0) return;
     const IRect b = bounds_of(s, it.x, it.y, it.w, it.h, 0);
+    if (b.x1 <= b.x0 || b.y1 <= b.y0) return;
     Target& t = s.tgt();
     const bool rcl = !s.rc().empty();
     const bool rounded = it.radii.any();
-    for (int y = b.y0; y < b.y1; ++y)
+    // Per-column source coordinates are the same for every row: compute them once (bilinear, 8-bit fixed point).
+    struct Col { int ix, ix1, tx; bool in; };
+    std::vector<Col> cols(size_t(b.x1 - b.x0));
+    for (int x = b.x0; x < b.x1; ++x) {
+        const float px = x + 0.5f - s.ox;
+        const float u = (px - it.x) / it.w;
+        Col& c = cols[size_t(x - b.x0)];
+        c.in = u >= 0 && u < 1;
+        const float fx = std::clamp(it.sx + u * it.sw - 0.5f, 0.f, float(bm->w) - 1.f);
+        c.ix = int(fx); c.ix1 = std::min(c.ix + 1, bm->w - 1); c.tx = int((fx - float(c.ix)) * 256.f);
+    }
+    const uint8_t* src = bm->rgb.data();
+    for (int y = b.y0; y < b.y1; ++y) {
+        const float py = y + 0.5f - s.oy;
+        const float v = (py - it.y) / it.h;
+        if (v < 0 || v >= 1) continue;
+        const float fy = std::clamp(it.sy + v * it.sh - 0.5f, 0.f, float(bm->h) - 1.f);
+        const int iy = int(fy), iy1 = std::min(iy + 1, bm->h - 1), ty = int((fy - float(iy)) * 256.f);
+        const uint8_t* r0 = src + size_t(iy) * bm->w * 3;
+        const uint8_t* r1 = src + size_t(iy1) * bm->w * 3;
+        uint32_t* dst = t.px + static_cast<size_t>(y) * t.w;
         for (int x = b.x0; x < b.x1; ++x) {
-            const float px = x + 0.5f - s.ox, py = y + 0.5f - s.oy;
-            const float u = (px - it.x) / it.w, v = (py - it.y) / it.h;
-            if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
-            float cov = rounded ? cov_from_sdf(sdf_rrect(px, py, it.x, it.y, it.w, it.h, it.radii)) : 1.f;
+            const Col& c = cols[size_t(x - b.x0)];
+            if (!c.in) continue;
+            float cov = 1.f;
+            if (rounded) cov = cov_from_sdf(sdf_rrect(x + 0.5f - s.ox, py, it.x, it.y, it.w, it.h, it.radii));
             if (rcl) cov *= clip_cov(s, x + 0.5f, y + 0.5f);
             if (cov <= 0) continue;
-            const float fx = std::clamp(it.sx + u * it.sw - 0.5f, 0.f, float(bm->w) - 1.f);
-            const float fy = std::clamp(it.sy + v * it.sh - 0.5f, 0.f, float(bm->h) - 1.f);
-            const int ix = int(fx), iy = int(fy);
-            const int ix1 = std::min(ix + 1, bm->w - 1), iy1 = std::min(iy + 1, bm->h - 1);
-            const float tx = fx - ix, ty = fy - iy;
             uint32_t rgb = 0;
             for (int chn = 0; chn < 3; ++chn) {
-                const float p00 = bm->rgb[(size_t(iy) * bm->w + ix) * 3 + chn];
-                const float p10 = bm->rgb[(size_t(iy) * bm->w + ix1) * 3 + chn];
-                const float p01 = bm->rgb[(size_t(iy1) * bm->w + ix) * 3 + chn];
-                const float p11 = bm->rgb[(size_t(iy1) * bm->w + ix1) * 3 + chn];
-                const float top = p00 + (p10 - p00) * tx, bot = p01 + (p11 - p01) * tx;
-                rgb |= uint32_t(top + (bot - top) * ty + 0.5f) << (16 - chn * 8);
+                const int p00 = r0[c.ix * 3 + chn], p10 = r0[c.ix1 * 3 + chn], p01 = r1[c.ix * 3 + chn], p11 = r1[c.ix1 * 3 + chn];
+                const int top = p00 * 256 + (p10 - p00) * c.tx, bot = p01 * 256 + (p11 - p01) * c.tx;
+                const int v8 = (top * 256 + (bot - top) * ty + (1 << 15)) >> 16;
+                rgb |= uint32_t(v8) << (16 - chn * 8);
             }
-            blend(t.px[static_cast<size_t>(y) * t.w + x], 0xFF000000u | rgb, cov);
+            if (cov >= 1.f) dst[x] = 0xFF000000u | rgb;
+            else blend(dst[x], 0xFF000000u | rgb, cov);
         }
+    }
 }
 
 void draw_shadow(State& s, const Item& it) {
@@ -367,7 +403,13 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
     s.rects.push_back(canvas.clip);
     s.rounds.emplace_back();
 
+    double acc[16] = {0}; int cnt[16] = {0};
+    struct Report { double* a; int* c; bool on; ~Report() { if (!on) return; for (int i = 0; i < 16; ++i) if (c[i]) std::fprintf(stderr, "   kind %d: %d items %.2f ms\n", i, c[i], a[i]); } };
+    const bool prof = std::getenv("LUXIUM_RASTER_PROF") != nullptr;
+    Report report{acc, cnt, prof};
     for (const Item& it : dl) {
+        const auto t0 = prof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        struct Acc { bool on; std::chrono::steady_clock::time_point t0; double* a; int* c; ~Acc() { if (on) { *a += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); ++*c; } } } acct{prof, t0, &acc[int(it.kind)], &cnt[int(it.kind)]};
         switch (it.kind) {
         case Item::Kind::Rect: case Item::Kind::Line: fill_rect(s, it); break;
         case Item::Kind::Border: fill_border(s, it); break;

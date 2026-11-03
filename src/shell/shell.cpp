@@ -1576,13 +1576,15 @@ void Shell::relayout() {
         }
     }
 
+    const Uint64 t_layout0 = SDL_GetPerformanceCounter();
     page_.clear_dirty();
     layout_ = render::layout(*page_.page_root(), *font_,
                              static_cast<float>(win_w_), page_.rules(),
                              page_.base_dir(),
                              static_cast<float>(url_h()),
                              static_cast<float>(win_h_ - bottom_h()),
-                             [this](const dom::Node& el, style::ComputedStyle& st) { style_hook(el, st); });
+                             [this](const dom::Node& el, style::ComputedStyle& st) { return style_hook(el, st); },
+                             layout_.gutter);
     // forget animation state of elements that are gone; keep the frame loop alive while a tween runs
     ++anim_frame_;
     anim_active_ = false;
@@ -1590,6 +1592,9 @@ void Shell::relayout() {
         if (it->second.seen + 1 < anim_frame_) it = anims_.erase(it);
         else { anim_active_ = anim_active_ || it->second.active; ++it; }
     }
+    if (std::getenv("LUXIUM_TIMING"))
+        std::fprintf(stderr, "relayout %.2f ms (%zu boxes hit, %zu items)\n",
+                     double(SDL_GetPerformanceCounter() - t_layout0) * 1000.0 / double(SDL_GetPerformanceFrequency()), layout_.areas.size(), layout_.list.size());
     content_h_ = layout_.content_height;
     page_.free_removed();   // the new layout no longer points into removed nodes
     scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_h_ - page_h()));
@@ -1795,6 +1800,8 @@ void Shell::draw_console() {
 }
 
 void Shell::repaint() {
+    const Uint64 t_paint0 = SDL_GetPerformanceCounter();
+    struct PaintTimer { Uint64 t0; ~PaintTimer() { if (std::getenv("LUXIUM_TIMING")) std::fprintf(stderr, "repaint %.2f ms\n", double(SDL_GetPerformanceCounter() - t0) * 1000.0 / double(SDL_GetPerformanceFrequency())); } } paint_timer{t_paint0};
     if (win_w_ == 0 || engine_cef_) {   // CEF pinta la pagina; nosotros el chrome
 #ifdef LUXIUM_CEF
         if (engine_cef_ && !fb_.empty()) {
@@ -1851,7 +1858,9 @@ void Shell::repaint() {
         cv.clip = {0, page_top, win_w_, page_bottom};
         cv.ox = 0; cv.oy = static_cast<float>(page_top) - scroll_;
         render::media_patch(layout_);
+        const Uint64 tr0 = SDL_GetPerformanceCounter();
         paint::rasterize(layout_.list, cv, *font_);
+        if (std::getenv("LUXIUM_TIMING")) std::fprintf(stderr, "  raster list %.2f ms\n", double(SDL_GetPerformanceCounter() - tr0) * 1000.0 / double(SDL_GetPerformanceFrequency()));
         paint::rasterize(render::media_overlay(layout_, false, *font_), cv, *font_);
         apply_sticky();
         for (size_t i = 0; i < layout_.sticky.size(); ++i) {

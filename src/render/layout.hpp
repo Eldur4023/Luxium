@@ -83,6 +83,7 @@ struct LayoutResult {
     std::vector<BoxRect> boxes;
     std::vector<TextWord> words;
     std::vector<MediaBox> media;
+    bool gutter = false;               // laid out beside a classic page scrollbar (15px narrower)
     std::vector<StickyGroup> sticky;   // painted after `list`, before `fixed`, shifted by the shell
 };
 
@@ -90,7 +91,8 @@ LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::vector<style::Rule>& author_rules,
                     const std::string& base_dir = "",
                     float vp_y = 38.f, float vp_h = 762.f,
-                    std::function<void(const dom::Node&, style::ComputedStyle&)> style_hook = nullptr);
+                    std::function<bool(const dom::Node&, style::ComputedStyle&)> style_hook = nullptr,
+                    bool assume_gutter = false);
 
 // Own-engine media (layout/media_ui.cpp): swap the current pictures into the
 // list; the controls as an overlay list to draw on top (main or fixed); a click
