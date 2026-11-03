@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <SDL_events.h>
 #include <string>
 #include <vector>
@@ -58,6 +59,13 @@ struct ShellConfig {
 };
 
 class OwnMediaApi;
+
+// The style values a transition can animate.
+struct AnimVals {
+    float opacity = 1;
+    style::Len tx, ty;
+    uint32_t bg = 0, color = 0, border[4] = {0, 0, 0, 0};
+};
 
 class Shell {
 public:
@@ -257,6 +265,20 @@ private:
     void    fire_scroll(dom::Node* n);
     void    apply_sticky();                            // shift sticky groups (and their hit boxes) for the current scroll
     std::vector<float> sticky_dy_;
+    // transitions (shell_anim.cpp): the style hook compares each element's target style with the previous layout's
+    // and, when `transition` covers the change, feeds interpolated values back until the tween ends.
+    using Vals = AnimVals;
+    struct NodeAnim {
+        bool has_target = false, active = false;
+        Vals target, from;
+        float t0 = 0, dur = 0, delay = 0, bez[4] = {0.25f, 0.1f, 0.25f, 1.f};
+        unsigned groups = 0;
+        uint64_t seen = 0;
+    };
+    std::unordered_map<const dom::Node*, NodeAnim> anims_;
+    uint64_t anim_frame_ = 0;
+    bool    anim_active_ = false;
+    void    style_hook(const dom::Node& el, style::ComputedStyle& s);
     void    wire_form_hooks();                         // ShellHooks: rect, scroll, focus, live values, files
     const render::HitBox* box_of(const dom::Node* n) const;
     bool    key_dispatched_ = false;                   // page_key_down already delivered this keydown to scripts

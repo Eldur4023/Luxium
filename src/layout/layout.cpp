@@ -15,11 +15,13 @@ namespace luxium::render {
 namespace {
 
 LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
-                         const std::vector<style::Rule>& rules, const std::string& base_dir) {
+                         const std::vector<style::Rule>& rules, const std::string& base_dir,
+                         const std::function<void(const dom::Node&, style::ComputedStyle&)>& hook) {
     using namespace luxium::layout;
     style::Resolver res;
     res.set_viewport(vw, vh);
     res.set_author_rules(&rules);
+    res.post_hook = hook;
     auto tree = build_tree(doc, res, base_dir);
     Env env{font, res};
     env.vw = vw; env.vh = vh; env.base_dir = base_dir;
@@ -83,11 +85,12 @@ constexpr float kScrollbarW = 15.f;   // Chromium's classic scrollbar
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::vector<style::Rule>& page_css,
-                    const std::string& base_dir, float vp_y, float vp_h) {
+                    const std::string& base_dir, float vp_y, float vp_h,
+                    std::function<void(const dom::Node&, style::ComputedStyle&)> style_hook) {
     const float vh = vp_h - vp_y;
-    LayoutResult out = layout_once(root, font, viewport_w, vh, page_css, base_dir);
+    LayoutResult out = layout_once(root, font, viewport_w, vh, page_css, base_dir, style_hook);
     if (out.content_height > vh)   // the vertical scrollbar takes its gutter from the layout width
-        out = layout_once(root, font, viewport_w - kScrollbarW, vh, page_css, base_dir);
+        out = layout_once(root, font, viewport_w - kScrollbarW, vh, page_css, base_dir, style_hook);
     return out;
 }
 

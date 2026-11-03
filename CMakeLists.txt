@@ -127,6 +127,7 @@ add_executable(luxium
     src/paint/raster.cpp
     src/shell/shell.cpp
     src/shell/shell_forms.cpp
+    src/shell/shell_anim.cpp
     src/shell/media_glue.cpp
     src/page/page.cpp
     src/page/forms.cpp

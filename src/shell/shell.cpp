@@ -1242,6 +1242,7 @@ void Shell::frame() {
 #endif
         page_.tick();          // timers (page.after) fire here, frame-driven
         form_frame();          // text input on/off, caret, file chooser result
+        if (anim_active_) page_.page_mutated();   // a transition is running: re-lay out with the next sample
         tick_media();
         if (page_.dirty()) {
             relayout();
@@ -1351,6 +1352,7 @@ int Shell::screenshot(const std::string& ppm_path) {
             run_shot_event(shot_events_[next_ev++]);
         page_.tick();
         form_frame();
+        if (anim_active_) page_.page_mutated();
         if (page_.dirty()) relayout();
         tick_media();
         repaint();   // overlays read the clock when drawn
@@ -1579,7 +1581,15 @@ void Shell::relayout() {
                              static_cast<float>(win_w_), page_.rules(),
                              page_.base_dir(),
                              static_cast<float>(url_h()),
-                             static_cast<float>(win_h_ - bottom_h()));
+                             static_cast<float>(win_h_ - bottom_h()),
+                             [this](const dom::Node& el, style::ComputedStyle& st) { style_hook(el, st); });
+    // forget animation state of elements that are gone; keep the frame loop alive while a tween runs
+    ++anim_frame_;
+    anim_active_ = false;
+    for (auto it = anims_.begin(); it != anims_.end();) {
+        if (it->second.seen + 1 < anim_frame_) it = anims_.erase(it);
+        else { anim_active_ = anim_active_ || it->second.active; ++it; }
+    }
     content_h_ = layout_.content_height;
     page_.free_removed();   // the new layout no longer points into removed nodes
     scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_h_ - page_h()));

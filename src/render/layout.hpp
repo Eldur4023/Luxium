@@ -13,6 +13,7 @@
 #include <render/text.hpp>
 #include <style/stylesheet.hpp>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -88,7 +89,8 @@ struct LayoutResult {
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,
                     const std::vector<style::Rule>& author_rules,
                     const std::string& base_dir = "",
-                    float vp_y = 38.f, float vp_h = 762.f);
+                    float vp_y = 38.f, float vp_h = 762.f,
+                    std::function<void(const dom::Node&, style::ComputedStyle&)> style_hook = nullptr);
 
 // Own-engine media (layout/media_ui.cpp): swap the current pictures into the
 // list; the controls as an overlay list to draw on top (main or fixed); a click
