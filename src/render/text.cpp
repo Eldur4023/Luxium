@@ -145,21 +145,49 @@ FaceMetrics Font::metrics(FaceKey key, float px) const {
 
 ShapedRun Font::shape_face(Face* f, std::string_view utf8, float px) const {
     use_size(f, px);
-    hb_buffer_reset(f->buf);
-    hb_buffer_add_utf8(f->buf, utf8.data(), static_cast<int>(utf8.size()), 0, -1);
-    hb_buffer_set_direction(f->buf, HB_DIRECTION_LTR);
-    hb_buffer_guess_segment_properties(f->buf);
-    hb_shape(f->hb, f->buf, nullptr, 0);
-    unsigned count = 0;
-    hb_glyph_info_t* info = hb_buffer_get_glyph_infos(f->buf, &count);
-    hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(f->buf, &count);
+    // Right-to-left scripts (Hebrew, Arabic, Syriac, Thaana, N'Ko...) are shaped RTL, one run per maximal stretch of such
+    // letters, so a word comes out in visual order (and Arabic joins); everything else stays one left-to-right run.
+    // Placing the words of a line in visual order is the line builder's job (UAX #9 at word level).
+    struct Run { size_t b0, b1; bool rtl; };
+    std::vector<Run> runs;
+    {
+        bool any = false;
+        for (unsigned char c : utf8) if (c >= 0xD6) { any = true; break; }   // U+0590 and up
+        if (!any) runs.push_back({0, utf8.size(), false});
+        else {
+            auto rtl_cp = [](uint32_t c) {
+                return (c >= 0x590 && c <= 0x8FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF) || (c >= 0x10800 && c <= 0x10FFF) || (c >= 0x1E800 && c <= 0x1EFFF);
+            };
+            for (size_t i = 0; i < utf8.size();) {
+                const size_t at = i;
+                const unsigned char c = static_cast<unsigned char>(utf8[i]);
+                uint32_t cp = c; int n = 0;
+                if (c >= 0xF0) { n = 3; cp = c & 7; } else if (c >= 0xE0) { n = 2; cp = c & 15; } else if (c >= 0xC0) { n = 1; cp = c & 31; }
+                ++i;
+                while (n-- > 0 && i < utf8.size() && (static_cast<unsigned char>(utf8[i]) & 0xC0) == 0x80) cp = (cp << 6) | (utf8[i++] & 0x3F);
+                const bool r = rtl_cp(cp);
+                if (!runs.empty() && runs.back().rtl == r) runs.back().b1 = i;
+                else runs.push_back({at, i, r});
+            }
+        }
+    }
     ShapedRun run;
-    run.positions.reserve(count);
     float x = 0, y = 0;
-    for (unsigned i = 0; i < count; ++i) {
-        run.positions.push_back({info[i].codepoint, x + pos[i].x_offset / 64.f, y + pos[i].y_offset / 64.f, info[i].cluster,
-                                 pos[i].x_advance / 64.f, x});
-        x += pos[i].x_advance / 64.f;
+    for (const Run& r : runs) {
+        hb_buffer_reset(f->buf);
+        hb_buffer_add_utf8(f->buf, utf8.data(), static_cast<int>(utf8.size()), static_cast<unsigned>(r.b0), static_cast<int>(r.b1 - r.b0));
+        hb_buffer_set_direction(f->buf, r.rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+        hb_buffer_guess_segment_properties(f->buf);
+        hb_shape(f->hb, f->buf, nullptr, 0);
+        unsigned count = 0;
+        hb_glyph_info_t* info = hb_buffer_get_glyph_infos(f->buf, &count);
+        hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(f->buf, &count);
+        run.positions.reserve(run.positions.size() + count);
+        for (unsigned i = 0; i < count; ++i) {
+            run.positions.push_back({info[i].codepoint, x + pos[i].x_offset / 64.f, y + pos[i].y_offset / 64.f, info[i].cluster,
+                                     pos[i].x_advance / 64.f, x});
+            x += pos[i].x_advance / 64.f;
+        }
     }
     run.width = x;
     return run;

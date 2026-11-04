@@ -480,6 +480,8 @@ float last_baseline(const Box& b) {
     return -1;
 }
 
+static bool spec_h_or_max(float spec_h, float max_h) { return spec_h >= 0 || max_h >= 0; }
+
 void layout_box(Env& env, Box& b, const Constraint& c) {
     if (b.kind == Box::Kind::Replaced) { layout_replaced(env, b, c); return; }
     const ComputedStyle& s = *b.st;
@@ -536,6 +538,9 @@ void layout_box(Env& env, Box& b, const Constraint& c) {
         }
         content_w = std::max(0.f, minmax_w(content_w));
     }
+    // overflow: scroll reserves the classic scrollbar's gutter up front; overflow: auto does once the content overflows (below)
+    if (s.overflow_y == Overflow::Scroll && !s.scrollbar_none && b.sb_gutter == 0 && b.node) b.sb_gutter = s.scrollbar_thin ? 11.f : 15.f;
+    content_w = std::max(0.f, content_w - b.sb_gutter);
 
     // ── height specification ────────────────────────────────────────────────
     float spec_h = -1;   // content-box height when definite
@@ -603,7 +608,15 @@ void layout_box(Env& env, Box& b, const Constraint& c) {
     b.scroll_h = std::max(content_h, 0.f);
     final_h = std::max(0.f, clamp_h(final_h));
 
-    b.w = content_w + bp_h;
+    // overflow: auto whose content does not fit gets its scrollbar: lay it out again with the gutter taken off
+    if (s.overflow_y == Overflow::Auto && !s.scrollbar_none && b.sb_gutter == 0 && b.node && b.kind == Box::Kind::Block &&
+        s.display != Display::Table && b.scroll_h > final_h + 0.5f && spec_h_or_max(spec_h, max_h_c)) {
+        b.sb_gutter = s.scrollbar_thin ? 11.f : 15.f;
+        env.abs_pending.resize(abs_mark);
+        layout_box(env, b, c);
+        return;
+    }
+    b.w = content_w + bp_h + b.sb_gutter;
     b.h = final_h + bp_v;
 
     // margin sticking out below

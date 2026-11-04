@@ -73,6 +73,7 @@ const std::vector<std::pair<std::string, Getter>>& table() {
         add("font-style", [](const ComputedStyle& s, bool&) { return std::string(s.italic ? "italic" : "normal"); });
         add("line-height", [](const ComputedStyle& s, bool&) {
             return s.lh_mode == 0 ? std::string("normal") : px(s.line_px()); });
+        add("direction", [](const ComputedStyle& s, bool&) { return std::string(s.rtl ? "rtl" : "ltr"); });
         add("text-align", [](const ComputedStyle& s, bool&) {
             static const char* n[] = {"start", "end", "left", "right", "center", "justify"};
             return std::string(n[static_cast<int>(s.text_align)]); });

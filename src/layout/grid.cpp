@@ -75,6 +75,7 @@ Model build_model(Env& env, Box& b, float content_w) {
     if (s.grid_rows_sub && !b.sub_rows.empty()) adopt_tracks(m.rows, b.sub_rows);
 
     // repeat(auto-fill / auto-fit): as many repetitions as fit
+    size_t ar_pos = 0, ar_len = 0;
     if (s.grid_col_autorepeat && !s.grid_col_auto_pattern.empty()) {
         const float gap = s.column_gap.resolve(content_w);
         float fixed = 0;
@@ -90,7 +91,8 @@ Model build_model(Env& env, Box& b, float content_w) {
         reps = std::max(1, reps);
         std::vector<Track> exp;
         for (int r = 0; r < reps; ++r) exp.insert(exp.end(), s.grid_col_auto_pattern.begin(), s.grid_col_auto_pattern.end());
-        m.cols.insert(m.cols.begin() + std::min(s.grid_col_auto_pos, m.cols.size()), exp.begin(), exp.end());
+        ar_pos = std::min(s.grid_col_auto_pos, m.cols.size()); ar_len = exp.size();
+        m.cols.insert(m.cols.begin() + long(ar_pos), exp.begin(), exp.end());
     }
 
     // named areas
@@ -199,6 +201,16 @@ Model build_model(Env& env, Box& b, float content_w) {
     for (GItem& it : m.items) {
         m.n_cols = std::max(m.n_cols, it.col + it.col_span);
         m.n_rows = std::max(m.n_rows, it.row + it.row_span);
+    }
+    // auto-fit: the repeated tracks that no item reaches collapse (they and their gaps disappear)
+    if (s.grid_col_autorepeat == 2 && ar_len > 0 && !m.cols.empty()) {
+        int used = 0;
+        for (const GItem& it : m.items) used = std::max(used, it.col + it.col_span);
+        const size_t keep = std::max(size_t(used), ar_pos), end = ar_pos + ar_len;
+        if (keep < end && end <= m.cols.size()) {
+            m.cols.erase(m.cols.begin() + long(keep), m.cols.begin() + long(end));
+            m.n_cols = std::max(used, int(m.cols.size()));
+        }
     }
     // implicit tracks
     auto fill = [&](std::vector<Track>& v, const std::vector<Track>& autos, int n) {

@@ -724,7 +724,7 @@ struct Painter {
     // Vertical scrollbar track of a scroll container (overlay: it takes no layout space).
     static void sb_track(const Box& b, float& x, float& y, float& w, float& h) {
         const bool thin = b.st->scrollbar_thin;
-        w = thin ? 8.f : 12.f;
+        w = b.sb_gutter > 0 ? b.sb_gutter : thin ? 8.f : 12.f;
         x = sn(b.ax + b.w - b.border.r - w); y = sn(b.ay + b.border.t);
         h = sn(b.ay + b.h - b.border.b) - y;
     }

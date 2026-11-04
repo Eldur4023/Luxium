@@ -245,6 +245,7 @@ struct ComputedStyle {
     bool     underline = false, line_through = false, overline = false;
     uint32_t decoration_color = 0;     // 0 = currentcolor
     TextTransform text_transform = TextTransform::None;
+    bool          rtl = false;   // direction: rtl (inherited)
     float    letter_spacing = 0, word_spacing = 0;
     float    text_indent = 0;
     WhiteSpace white_space = WhiteSpace::Normal;

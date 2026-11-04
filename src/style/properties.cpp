@@ -698,6 +698,12 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         else return false;
         return true;
     }
+    if (name == "direction") {
+        if (v != "ltr" && v != "rtl") return false;
+        s.rtl = v == "rtl";
+        return true;
+    }
+    if (name == "unicode-bidi") return v == "normal" || v == "embed" || v == "isolate" || v == "bidi-override" || v == "isolate-override" || v == "plaintext";
     if (name == "mix-blend-mode" || name == "background-blend-mode") {
         static const char* const names[] = {"normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn",
                                             "hard-light", "soft-light", "difference", "exclusion"};
@@ -1959,7 +1965,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("text-align", text_align)
     if (n == "text-decoration-line") { d.underline = src.underline; d.line_through = src.line_through; d.overline = src.overline; return true; }
     CP("text-decoration-color", decoration_color)
-    CP("text-transform", text_transform) CP("letter-spacing", letter_spacing) CP("word-spacing", word_spacing)
+    CP("direction", rtl) CP("text-transform", text_transform) CP("letter-spacing", letter_spacing) CP("word-spacing", word_spacing)
     CP("text-indent", text_indent) CP("white-space", white_space) CP("text-overflow", text_overflow_ellipsis)
     CP("overflow-wrap", overflow_wrap) CP("word-wrap", overflow_wrap) CP("word-break", word_break)
     if (n == "vertical-align") { d.vertical_align = src.vertical_align; d.vertical_align_len = src.vertical_align_len; return true; }

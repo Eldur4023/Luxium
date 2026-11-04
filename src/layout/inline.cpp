@@ -607,6 +607,60 @@ struct LineBuilder {
         line.push_back(ifc.toks.size() - 1);
     }
 
+    // Visual order of the tokens of a line (a word-level version of UAX #9 rules W/N/L2): every word is strongly L or R by its
+    // first letter, neutrals (spaces, punctuation, boxes) take the direction around them when both sides agree and the
+    // paragraph's otherwise, then runs of the odd levels are reversed.  A word's own glyphs come out of the shaper in order.
+    static bool is_rtl_cp(uint32_t c) {
+        return (c >= 0x590 && c <= 0x8FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF) || (c >= 0x10800 && c <= 0x10FFF) || (c >= 0x1E800 && c <= 0x1EFFF);
+    }
+    int strong_of(const Tok& t) const {   // 1 = R, 0 = L, -1 = neutral
+        if (t.k != K::Word) return -1;
+        for (size_t i = 0; i < t.text.size();) {
+            const unsigned char c = (unsigned char)t.text[i];
+            uint32_t cp = c; size_t n = 1;
+            if (c >= 0xF0) { n = 4; cp = c & 7; } else if (c >= 0xE0) { n = 3; cp = c & 15; } else if (c >= 0xC0) { n = 2; cp = c & 31; }
+            for (size_t k = 1; k < n && i + k < t.text.size(); ++k) cp = (cp << 6) | ((unsigned char)t.text[i + k] & 0x3F);
+            i += n;
+            if (is_rtl_cp(cp)) return 1;
+            if ((cp < 0x80 && std::isalnum((int)cp)) || (cp >= 0xC0 && cp < 0x590) || cp >= 0x900) return 0;
+        }
+        return -1;
+    }
+    void bidi_reorder(std::vector<size_t>& ln) const {
+        const bool base_r = bs.rtl;
+        std::vector<int> dir(ln.size());
+        bool any_r = false;
+        for (size_t i = 0; i < ln.size(); ++i) { dir[i] = strong_of(ifc.toks[ln[i]]); any_r |= dir[i] == 1; }
+        if (!any_r && !base_r) return;
+        for (size_t i = 0; i < ln.size(); ++i) {   // neutrals: the same on both sides, else the paragraph direction
+            if (dir[i] >= 0) continue;
+            size_t j = i;
+            while (j < ln.size() && dir[j] < 0) ++j;
+            const int before = i == 0 ? (base_r ? 1 : 0) : dir[i - 1], after = j == ln.size() ? (base_r ? 1 : 0) : dir[j];
+            const int d = before == after ? before : (base_r ? 1 : 0);
+            for (size_t k = i; k < j; ++k) dir[k] = -2 - d;   // marked so the next neutral run does not read it as strong
+            i = j - 1;
+        }
+        std::vector<int> lvl(ln.size());
+        int hi = 0, lo = 1 << 20;
+        for (size_t i = 0; i < ln.size(); ++i) {
+            const int d = dir[i] <= -2 ? -2 - dir[i] : dir[i];
+            lvl[i] = d == 1 ? 1 : (base_r ? 2 : 0);
+            hi = std::max(hi, lvl[i]);
+            if (lvl[i] & 1) lo = std::min(lo, lvl[i]);
+        }
+        if (base_r) lo = std::min(lo, 1);
+        for (int L = hi; L >= lo && L >= 1; --L)
+            for (size_t i = 0; i < ln.size();) {
+                if (lvl[i] < L) { ++i; continue; }
+                size_t j = i;
+                while (j < ln.size() && lvl[j] >= L) ++j;
+                std::reverse(ln.begin() + long(i), ln.begin() + long(j));
+                std::reverse(lvl.begin() + long(i), lvl.begin() + long(j));
+                i = j;
+            }
+    }
+
     void finish_line(bool forced, bool last) {
         // -webkit-line-clamp: lines past the clamp are not laid out; the last kept one ends in an ellipsis
         const int clamp = bs.webkit_box && bs.box_orient_v ? bs.line_clamp : 0;
@@ -617,6 +671,7 @@ struct LineBuilder {
         ellipsize(clamp > 0 && int(b.lines.size()) + 1 == clamp && !last);
         if (first_line) for (size_t i : line) fl_end = std::max(fl_end, i + 1);
         LineBox lb;
+        bidi_reorder(line);
         // 1. positions along the line
         std::vector<float> xs(line.size());
         float width = first_line ? bs.text_indent : 0.f;
@@ -624,8 +679,8 @@ struct LineBuilder {
         const float room = std::max(0.f, avail - width);
         float off = 0, justify_each = 0;
         TextAlign ta = bs.text_align;
-        if (ta == TextAlign::Start) ta = TextAlign::Left;
-        if (ta == TextAlign::End) ta = TextAlign::Right;
+        if (ta == TextAlign::Start) ta = bs.rtl ? TextAlign::Right : TextAlign::Left;
+        if (ta == TextAlign::End) ta = bs.rtl ? TextAlign::Left : TextAlign::Right;
         if (ta == TextAlign::Right) off = room;
         else if (ta == TextAlign::Center) off = room / 2;
         else if (ta == TextAlign::Justify && !forced && !last) {
