@@ -162,14 +162,26 @@ def _same_value(a: str, b: str) -> bool:
             return abs(float(a[:-2]) - float(b[:-2])) <= 0.51
         except ValueError:
             return False
-    if a.startswith("rgba(") and b.startswith("rgba("):   # alpha is stored in 8 bits: 0.3 vs 0.302
-        try:
-            pa = [float(x) for x in a[5:-1].split(",")]
-            pb = [float(x) for x in b[5:-1].split(",")]
-            return pa[:3] == pb[:3] and abs(pa[3] - pb[3]) <= 0.005
-        except ValueError:
-            return False
+    pa, pb = _rgba(a), _rgba(b)
+    if pa and pb:   # alpha is stored in 8 bits: 0.3 vs 0.302
+        return all(abs(x - y) <= 0.5 for x, y in zip(pa[:3], pb[:3])) and abs(pa[3] - pb[3]) <= 0.005
     return False
+
+
+def _rgba(v: str):
+    """rgb()/rgba()/color(srgb r g b / a) -> [r, g, b, a] (0-255, alpha 0-1); None otherwise.
+    Chromium serialises color-mix() results as color(srgb ...)."""
+    try:
+        if v.startswith("rgba(") or v.startswith("rgb("):
+            p = [float(x) for x in v[v.index("(") + 1:-1].split(",")]
+            return p + [1.0] if len(p) == 3 else p
+        if v.startswith("color(srgb "):
+            body = v[len("color(srgb "):-1]
+            rgb, _, a = body.partition("/")
+            return [float(x) * 255 for x in rgb.split()] + [float(a) if a.strip() else 1.0]
+    except ValueError:
+        pass
+    return None
 
 
 def style_diff(html: Path, golden_json: Path, size: str = DEFAULT_SIZE):

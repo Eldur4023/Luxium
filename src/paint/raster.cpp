@@ -329,6 +329,30 @@ void draw_image(State& s, const Item& it) {
     }
 }
 
+// Gaussian-blurred rounded box, integrated analytically along x and with 4 samples along y (Evan Wallace,
+// "Fast rounded rectangle shadows"). The 1-D erfc of the edge distance it replaces assumes a half-plane, so a
+// thin caster (a 3 px bar with a 10 px glow) came out as bright as a big one.
+static float blurred_rrect(float px, float py, float x, float y, float w, float h, const Radii& r, float sigma) {
+    const float hx = w * 0.5f, hy = h * 0.5f;
+    if (hx <= 0 || hy <= 0) return 0.f;
+    px -= x + hx; py -= y + hy;
+    float corner = px < 0 ? (py < 0 ? r.tl : r.bl) : (py < 0 ? r.tr : r.br);
+    corner = std::min({corner, hx, hy});
+    const float k = 0.70710678f / sigma;
+    auto along_x = [&](float yy) {
+        const float delta = std::min(hy - corner - std::fabs(yy), 0.f);
+        const float curved = hx - corner + std::sqrt(std::max(0.f, corner * corner - delta * delta));
+        return 0.5f * (std::erf((px + curved) * k) - std::erf((px - curved) * k));
+    };
+    const float lo = py - hy, hi = py + hy;
+    const float a = std::clamp(-3.f * sigma, lo, hi), b = std::clamp(3.f * sigma, lo, hi);
+    const float step = (b - a) / 4.f;
+    float v = 0, t = a + step * 0.5f;
+    const float g = 1.f / (2.5066283f * sigma);
+    for (int i = 0; i < 4; ++i, t += step) v += along_x(py - t) * g * std::exp(-t * t / (2.f * sigma * sigma)) * step;
+    return v;
+}
+
 void draw_shadow(State& s, const Item& it) {
     // it.x..: the (offset, spread-grown) shadow shape; it.c*: the casting box
     const float sigma = std::max(0.5f, it.blur * 0.5f);
@@ -346,8 +370,8 @@ void draw_shadow(State& s, const Item& it) {
             if (!it.inset) {
                 // never under the casting box itself
                 if (sdf_rrect(px, py, it.cx, it.cy, it.cw, it.ch, box_r) < -0.5f) continue;
-                const float d = sdf_rrect(px, py, it.x, it.y, it.w, it.h, it.radii);
-                cov = std::clamp(0.5f * std::erfc(d * k), 0.f, 1.f);
+                cov = it.blur > 0 ? std::clamp(blurred_rrect(px, py, it.x, it.y, it.w, it.h, it.radii, sigma), 0.f, 1.f)
+                                  : cov_from_sdf(sdf_rrect(px, py, it.x, it.y, it.w, it.h, it.radii));
             } else {
                 const float inside = cov_from_sdf(sdf_rrect(px, py, it.cx, it.cy, it.cw, it.ch, box_r));
                 if (inside <= 0) continue;

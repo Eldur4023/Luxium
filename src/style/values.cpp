@@ -308,7 +308,268 @@ static float hue_to_rgb(float p, float q, float t) {
     return p;
 }
 
+// ── CSS Color 4/5: color spaces, hwb/lab/lch/oklab/oklch/color(), color-mix() ──
+namespace {
+
+enum class Space { SRGB, SRGB_LIN, P3, XYZ65, XYZ50, LAB, LCH, OKLAB, OKLCH, HSL, HWB };
+using V3 = std::array<float, 3>;
+
+bool space_by_name(const std::string& n, Space& sp) {
+    static const std::pair<std::string_view, Space> k[] = {
+        {"srgb", Space::SRGB}, {"srgb-linear", Space::SRGB_LIN}, {"display-p3", Space::P3}, {"xyz", Space::XYZ65},
+        {"xyz-d65", Space::XYZ65}, {"xyz-d50", Space::XYZ50}, {"lab", Space::LAB}, {"lch", Space::LCH},
+        {"oklab", Space::OKLAB}, {"oklch", Space::OKLCH}, {"hsl", Space::HSL}, {"hwb", Space::HWB}};
+    for (const auto& [name, s] : k) if (n == name) { sp = s; return true; }
+    return false;
+}
+bool is_polar(Space s) { return s == Space::LCH || s == Space::OKLCH || s == Space::HSL || s == Space::HWB; }
+int hue_index(Space s) { return s == Space::HSL || s == Space::HWB ? 0 : 2; }
+
+float to_lin(float c) { const float a = std::fabs(c); return a <= 0.04045f ? c / 12.92f : std::copysign(std::pow((a + 0.055f) / 1.055f, 2.4f), c); }
+float to_gam(float c) { const float a = std::fabs(c); return a <= 0.0031308f ? c * 12.92f : std::copysign(1.055f * std::pow(a, 1.f / 2.4f) - 0.055f, c); }
+V3 mul(const float m[9], const V3& v) {
+    return {m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]};
+}
+constexpr float kLinToXyz[9] = {0.4123908f, 0.3575843f, 0.1804808f, 0.2126390f, 0.7151687f, 0.0721923f, 0.0193308f, 0.1191948f, 0.9505322f};
+constexpr float kXyzToLin[9] = {3.2409699f, -1.5373832f, -0.4986108f, -0.9692436f, 1.8759675f, 0.0415551f, 0.0556301f, -0.2039770f, 1.0569715f};
+constexpr float kP3ToXyz[9] = {0.4865709f, 0.2656677f, 0.1982173f, 0.2289746f, 0.6917385f, 0.0792869f, 0.0f, 0.0451134f, 1.0439444f};
+constexpr float kXyzToP3[9] = {2.4934969f, -0.9313836f, -0.4027108f, -0.8294890f, 1.7626641f, 0.0236247f, 0.0358458f, -0.0761724f, 0.9568845f};
+constexpr float kD65ToD50[9] = {1.0479298f, 0.0229468f, -0.0501922f, 0.0296278f, 0.9904345f, -0.0170738f, -0.0092431f, 0.0150551f, 0.7518743f};
+constexpr float kD50ToD65[9] = {0.9554735f, -0.0230985f, 0.0632593f, -0.0283697f, 1.0099955f, 0.0210414f, 0.0123140f, -0.0205077f, 1.3303659f};
+constexpr V3 kD50White = {0.3457f / 0.3585f, 1.f, (1.f - 0.3457f - 0.3585f) / 0.3585f};
+
+V3 xyz50_to_lab(const V3& x) {
+    constexpr float e = 216.f / 24389.f, k = 24389.f / 27.f;
+    float f[3];
+    for (int i = 0; i < 3; ++i) { const float t = x[i] / kD50White[i]; f[i] = t > e ? std::cbrt(t) : (k * t + 16.f) / 116.f; }
+    return {116.f * f[1] - 16.f, 500.f * (f[0] - f[1]), 200.f * (f[1] - f[2])};
+}
+V3 lab_to_xyz50(const V3& l) {
+    constexpr float e = 216.f / 24389.f, k = 24389.f / 27.f;
+    const float fy = (l[0] + 16.f) / 116.f, fx = fy + l[1] / 500.f, fz = fy - l[2] / 200.f;
+    const float x = fx * fx * fx > e ? fx * fx * fx : (116.f * fx - 16.f) / k;
+    const float y = l[0] > k * e ? fy * fy * fy : l[0] / k;
+    const float z = fz * fz * fz > e ? fz * fz * fz : (116.f * fz - 16.f) / k;
+    return {x * kD50White[0], y * kD50White[1], z * kD50White[2]};
+}
+V3 lin_to_oklab(const V3& c) {
+    const float l = std::cbrt(0.4122214708f * c[0] + 0.5363325363f * c[1] + 0.0514459929f * c[2]);
+    const float m = std::cbrt(0.2119034982f * c[0] + 0.6806995451f * c[1] + 0.1073969566f * c[2]);
+    const float s = std::cbrt(0.0883024619f * c[0] + 0.2817188376f * c[1] + 0.6299787005f * c[2]);
+    return {0.2104542553f * l + 0.7936177850f * m - 0.0040720468f * s, 1.9779984951f * l - 2.4285922050f * m + 0.4505937099f * s,
+            0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s};
+}
+V3 oklab_to_lin(const V3& o) {
+    float l = o[0] + 0.3963377774f * o[1] + 0.2158037573f * o[2];
+    float m = o[0] - 0.1055613458f * o[1] - 0.0638541728f * o[2];
+    float s = o[0] - 0.0894841775f * o[1] - 1.2914855480f * o[2];
+    l = l * l * l; m = m * m * m; s = s * s * s;
+    return {4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s, -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s,
+            -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s};
+}
+V3 to_polar(const V3& v) {   // (L, a, b) -> (L, C, h)
+    float h = std::atan2(v[2], v[1]) * 180.f / float(M_PI);
+    if (h < 0) h += 360.f;
+    return {v[0], std::hypot(v[1], v[2]), h};
+}
+V3 from_polar(const V3& v) {
+    const float r = v[2] * float(M_PI) / 180.f;
+    return {v[0], v[1] * std::cos(r), v[1] * std::sin(r)};
+}
+V3 srgb_to_hsl(const V3& c) {
+    const float mx = std::max({c[0], c[1], c[2]}), mn = std::min({c[0], c[1], c[2]}), d = mx - mn, l = (mx + mn) / 2;
+    float h = 0, s = 0;
+    if (d > 1e-6f) {
+        s = l > 0 && l < 1 ? (mx - l) / std::min(l, 1 - l) : 0;
+        if (mx == c[0]) h = (c[1] - c[2]) / d + (c[1] < c[2] ? 6 : 0);
+        else if (mx == c[1]) h = (c[2] - c[0]) / d + 2;
+        else h = (c[0] - c[1]) / d + 4;
+        h *= 60.f;
+    }
+    return {h, s * 100.f, l * 100.f};
+}
+V3 hsl_to_srgb(const V3& v) {
+    const float h = std::fmod(std::fmod(v[0], 360.f) + 360.f, 360.f) / 360.f;
+    const float s = std::clamp(v[1] / 100.f, 0.f, 1.f), l = std::clamp(v[2] / 100.f, 0.f, 1.f);
+    const float q = l < 0.5f ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    return {hue_to_rgb(p, q, h + 1.f / 3), hue_to_rgb(p, q, h), hue_to_rgb(p, q, h - 1.f / 3)};
+}
+V3 hwb_to_srgb(const V3& v) {
+    float w = v[1] / 100.f, b = v[2] / 100.f;
+    if (w + b >= 1) { const float g = w / (w + b); return {g, g, g}; }
+    V3 c = hsl_to_srgb({v[0], 100.f, 50.f});
+    for (float& x : c) x = x * (1 - w - b) + w;
+    return c;
+}
+V3 srgb_to_hwb(const V3& c) {
+    const V3 hsl = srgb_to_hsl(c);
+    return {hsl[0], std::min({c[0], c[1], c[2]}) * 100.f, (1 - std::max({c[0], c[1], c[2]})) * 100.f};
+}
+
+// gamma-encoded sRGB (0..1) <-> any space
+V3 from_srgb(const V3& c, Space sp) {
+    const V3 lin = {to_lin(c[0]), to_lin(c[1]), to_lin(c[2])};
+    switch (sp) {
+    case Space::SRGB: return c;
+    case Space::SRGB_LIN: return lin;
+    case Space::P3: { V3 p = mul(kXyzToP3, mul(kLinToXyz, lin)); for (float& x : p) x = to_gam(x); return p; }
+    case Space::XYZ65: return mul(kLinToXyz, lin);
+    case Space::XYZ50: return mul(kD65ToD50, mul(kLinToXyz, lin));
+    case Space::LAB: return xyz50_to_lab(mul(kD65ToD50, mul(kLinToXyz, lin)));
+    case Space::LCH: return to_polar(xyz50_to_lab(mul(kD65ToD50, mul(kLinToXyz, lin))));
+    case Space::OKLAB: return lin_to_oklab(lin);
+    case Space::OKLCH: return to_polar(lin_to_oklab(lin));
+    case Space::HSL: return srgb_to_hsl(c);
+    case Space::HWB: return srgb_to_hwb(c);
+    }
+    return c;
+}
+V3 to_srgb(const V3& v, Space sp) {
+    V3 lin{};
+    switch (sp) {
+    case Space::SRGB: return v;
+    case Space::HSL: return hsl_to_srgb(v);
+    case Space::HWB: return hwb_to_srgb(v);
+    case Space::SRGB_LIN: lin = v; break;
+    case Space::P3: lin = mul(kXyzToLin, mul(kP3ToXyz, {to_lin(v[0]), to_lin(v[1]), to_lin(v[2])})); break;
+    case Space::XYZ65: lin = mul(kXyzToLin, v); break;
+    case Space::XYZ50: lin = mul(kXyzToLin, mul(kD50ToD65, v)); break;
+    case Space::LAB: lin = mul(kXyzToLin, mul(kD50ToD65, lab_to_xyz50(v))); break;
+    case Space::LCH: lin = mul(kXyzToLin, mul(kD50ToD65, lab_to_xyz50(from_polar(v)))); break;
+    case Space::OKLAB: lin = oklab_to_lin(v); break;
+    case Space::OKLCH: lin = oklab_to_lin(from_polar(v)); break;
+    }
+    return {to_gam(lin[0]), to_gam(lin[1]), to_gam(lin[2])};
+}
+
+uint32_t pack(const V3& c, float a) {
+    auto q = [](float x) { return uint32_t(std::lround(std::clamp(x, 0.f, 1.f) * 255.f)); };
+    return (q(a) << 24) | (q(c[0]) << 16) | (q(c[1]) << 8) | q(c[2]);
+}
+V3 unpack(uint32_t c, float& a) {
+    a = float(c >> 24) / 255.f;
+    return {float((c >> 16) & 255) / 255.f, float((c >> 8) & 255) / 255.f, float(c & 255) / 255.f};
+}
+
+// One numeric component: number, percentage (scaled by pct_ref), angle (hue), or `none` (0).
+bool component(const std::string& t, float pct_ref, bool hue, float& out) {
+    const std::string s = lower_ascii(t);
+    if (s == "none") { out = 0; return true; }
+    if (s.ends_with('%')) { float n; if (!parse_number(s.substr(0, s.size() - 1), n)) return false; out = n / 100.f * pct_ref; return true; }
+    if (hue) { if (parse_number(s, out)) return true; return parse_angle(s, out); }
+    return parse_number(s, out);
+}
+
+// hwb() lab() lch() oklab() oklch() color(): space-separated, optional "/ alpha".
+bool parse_modern_fn(const std::string& fn, const std::string& inner, uint32_t& out) {
+    std::vector<std::string> t;
+    for (auto& x : tokens(inner)) if (x != ",") t.push_back(x);
+    Space sp;
+    if (fn == "color") {
+        if (t.empty() || !space_by_name(lower_ascii(t[0]), sp) || is_polar(sp) || sp == Space::LAB || sp == Space::OKLAB) return false;
+        t.erase(t.begin());
+    } else if (!space_by_name(fn, sp) || sp == Space::SRGB || sp == Space::HSL) return false;
+    float alpha = 1.f;
+    if (t.size() == 5 && t[3] == "/") { if (!component(t[4], 1.f, false, alpha)) return false; t.resize(3); }
+    if (t.size() != 3) return false;
+    float ref[3] = {1.f, 1.f, 1.f};
+    bool hue[3] = {false, false, false};
+    switch (sp) {
+    case Space::HWB: ref[1] = ref[2] = 100.f; hue[0] = true; break;
+    case Space::LAB: ref[0] = 100.f; ref[1] = ref[2] = 125.f; break;
+    case Space::LCH: ref[0] = 100.f; ref[1] = 150.f; hue[2] = true; break;
+    case Space::OKLAB: ref[1] = ref[2] = 0.4f; break;
+    case Space::OKLCH: ref[1] = 0.4f; hue[2] = true; break;
+    default: break;
+    }
+    V3 v;
+    for (int i = 0; i < 3; ++i) if (!component(t[i], ref[i], hue[i], v[i])) return false;
+    if (sp == Space::HWB && t[1].back() != '%' && lower_ascii(t[1]) != "none") return false;
+    out = pack(to_srgb(v, sp), std::clamp(alpha, 0.f, 1.f));
+    return true;
+}
+
+// color-mix(in <space> [<hue> hue], <color> [<p>%], <color> [<p>%])
+bool parse_color_mix(const std::string& inner, uint32_t& out) {
+    const auto args = split_commas(inner);
+    if (args.size() != 3) return false;
+    const auto how = tokens(args[0]);
+    if (how.size() < 2 || lower_ascii(how[0]) != "in") return false;
+    Space sp;
+    if (!space_by_name(lower_ascii(how[1]), sp)) return false;
+    std::string hue_method = "shorter";
+    if (how.size() == 4 && lower_ascii(how[3]) == "hue" && is_polar(sp)) hue_method = lower_ascii(how[2]);
+    else if (how.size() != 2) return false;
+
+    uint32_t col[2];
+    float pct[2] = {-1.f, -1.f};
+    for (int i = 0; i < 2; ++i) {
+        auto t = tokens(args[size_t(i) + 1]);
+        if (t.empty() || t.size() > 2) return false;
+        size_t ci = 0;
+        if (t.size() == 2) {
+            const size_t pi = t[0].ends_with('%') ? 0 : 1;
+            ci = 1 - pi;
+            if (!t[pi].ends_with('%') || !parse_number(t[pi].substr(0, t[pi].size() - 1), pct[i])) return false;
+            if (pct[i] < 0 || pct[i] > 100) return false;
+        }
+        bool cur = false;
+        if (!parse_color(t[ci], col[i], &cur) || cur) return false;   // currentColor would need the element: unsupported
+    }
+    if (pct[0] < 0 && pct[1] < 0) pct[0] = pct[1] = 50.f;
+    else if (pct[0] < 0) pct[0] = 100.f - pct[1];
+    else if (pct[1] < 0) pct[1] = 100.f - pct[0];
+    const float sum = pct[0] + pct[1];
+    if (sum <= 0) return false;
+    const float mult = std::min(sum, 100.f) / 100.f, w1 = pct[1] / sum, w0 = 1.f - w1;
+
+    float a[2];
+    V3 v[2];
+    for (int i = 0; i < 2; ++i) v[i] = from_srgb(unpack(col[i], a[i]), sp);
+    const int hi = is_polar(sp) ? hue_index(sp) : -1;
+    if (hi >= 0) {
+        // powerless hue (achromatic or transparent) takes the other colour's
+        auto achromatic = [&](int i) {
+            if (a[i] == 0) return true;
+            if (sp == Space::HWB) return v[i][1] + v[i][2] >= 99.99f;
+            return std::fabs(v[i][1]) < (sp == Space::OKLCH ? 1e-4f : 1e-2f);   // saturation / chroma
+        };
+        if (achromatic(0) && !achromatic(1)) v[0][hi] = v[1][hi];
+        else if (achromatic(1) && !achromatic(0)) v[1][hi] = v[0][hi];
+        float h0 = v[0][hi], h1 = v[1][hi], d = h1 - h0;
+        if (hue_method == "shorter") { if (d > 180) h0 += 360; else if (d < -180) h1 += 360; }
+        else if (hue_method == "longer") { if (d > 0 && d < 180) h0 += 360; else if (d > -180 && d <= 0) h1 += 360; }
+        else if (hue_method == "increasing") { if (d < 0) h1 += 360; }
+        else if (hue_method == "decreasing") { if (d > 0) h0 += 360; }
+        else return false;
+        v[0][hi] = h0; v[1][hi] = h1;
+    }
+    const float am = a[0] * w0 + a[1] * w1;
+    V3 m{};
+    for (int k = 0; k < 3; ++k) {
+        if (k == hi) { m[k] = v[0][k] * w0 + v[1][k] * w1; continue; }   // hue is not premultiplied
+        const float p = v[0][k] * a[0] * w0 + v[1][k] * a[1] * w1;
+        m[k] = am > 0 ? p / am : 0.f;
+    }
+    out = pack(to_srgb(m, sp), am * mult);
+    return true;
+}
+
+} // namespace
+
 bool parse_color(const std::string& raw, uint32_t& out, bool* is_current) {
+    {
+        const std::string t = trim_ws(raw);
+        const size_t open = t.find('(');
+        if (open != std::string::npos && open > 0 && t.back() == ')') {
+            const std::string fn = lower_ascii(t.substr(0, open));
+            const std::string inner = t.substr(open + 1, t.size() - open - 2);
+            if (fn == "color-mix" || fn == "hwb" || fn == "lab" || fn == "lch" || fn == "oklab" || fn == "oklch" || fn == "color") {
+                if (is_current) *is_current = false;
+                return fn == "color-mix" ? parse_color_mix(inner, out) : parse_modern_fn(fn, inner, out);
+            }
+        }
+    }
     std::string s;
     for (char ch : raw)
         if (!std::isspace(static_cast<unsigned char>(ch))) s += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
