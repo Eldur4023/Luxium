@@ -123,7 +123,7 @@ ImageBitmap* decode_jpeg(const std::vector<uint8_t>& data) {
     return bm;
 }
 
-// WebP (lossy/lossless, still frame): composed over white like PNG alpha; `rgba` keeps straight alpha.
+// WebP (lossy/lossless, still frame): `rgb` composed over white, `rgba` (straight alpha) when the image has alpha.
 ImageBitmap* decode_webp(const std::vector<uint8_t>& data, bool want_rgba) {
     int w = 0, h = 0;
     uint8_t* px = WebPDecodeRGBA(data.data(), data.size(), &w, &h);
@@ -374,7 +374,7 @@ const ImageBitmap* load_image(const std::string& path) {
     auto it = g_cache.find(path);
     if (it != g_cache.end()) return it->second;
     bool pending = false;
-    const ImageBitmap* bm = decode(path, false, &pending);
+    const ImageBitmap* bm = decode(path, true, &pending);   // straight alpha kept: the rasterizer blends it (was composed over white)
     if (!pending) g_cache[path] = bm;   // tambien los fallos: no reintentar cada frame (pero no lo que aun viaja)
     return bm;
 }

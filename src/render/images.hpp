@@ -14,7 +14,7 @@ namespace svg { struct Doc; }
 struct ImageBitmap {
     int w = 0, h = 0;
     std::vector<uint8_t> rgb;   // 3 bytes por pixel (RGB), fila a fila
-    std::vector<uint8_t> rgba;  // 4 bytes por pixel, alfa recta: solo en load_image_rgba(), y solo si trae alfa
+    std::vector<uint8_t> rgba;  // 4 bytes por pixel, alfa recta: solo si la imagen trae alfa (PNG/WebP/SVG)
     // SVG: the bitmap is the rasterisation at the intrinsic size (rgba always set); `svg` re-rasterises at any size
     std::shared_ptr<const svg::Doc> svg;
 };
