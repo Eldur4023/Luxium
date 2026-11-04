@@ -195,6 +195,8 @@ struct FloatRec {
     float x0, x1, y0, y1;                // BFC coordinates (margin box)
     bool left;
     Box* box;
+    std::vector<float> poly;             // shape-outside: the shape as a polygon (x, y pairs, BFC coordinates); empty = the margin box
+    float shape_margin = 0;
 };
 
 // Floats live per block formatting context.

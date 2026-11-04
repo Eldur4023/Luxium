@@ -30,6 +30,25 @@ void Bfc::avail(float y, float h, float x0, float x1, float& l, float& r) const 
     const float yb = y + std::max(h, 0.01f);
     for (const auto& f : floats) {
         if (f.y1 <= y + 0.001f || f.y0 >= yb - 0.001f) continue;
+        if (!f.poly.empty()) {   // shape-outside: how far the shape reaches into this band of lines
+            float mx = -1e30f, mn = 1e30f;
+            bool hit = false;
+            const size_t n = f.poly.size() / 2;
+            for (size_t i = 0; i < n; ++i) {
+                float ax = f.poly[2 * i], ay = f.poly[2 * i + 1];
+                float bx = f.poly[2 * ((i + 1) % n)], by = f.poly[2 * ((i + 1) % n) + 1];
+                if (ay > by) { std::swap(ax, bx); std::swap(ay, by); }
+                if (by < y || ay > yb) continue;
+                const float t0 = by > ay ? std::max(0.f, (y - ay) / (by - ay)) : 0.f, t1 = by > ay ? std::min(1.f, (yb - ay) / (by - ay)) : 1.f;
+                const float x_a = ax + (bx - ax) * t0, x_b = ax + (bx - ax) * t1;
+                mx = std::max(mx, std::max(x_a, x_b)); mn = std::min(mn, std::min(x_a, x_b));
+                hit = true;
+            }
+            if (!hit) continue;
+            if (f.left) l = std::max(l, std::min(f.x1, mx + f.shape_margin));
+            else r = std::min(r, std::max(f.x0, mn - f.shape_margin));
+            continue;
+        }
         if (f.left) l = std::max(l, f.x1);
         else r = std::min(r, f.x0);
     }
@@ -186,6 +205,41 @@ void place_float(Env& env, Box& f, Bfc& bfc, float content_w, float ox, float oy
         y = next;
     }
     bfc.floats.push_back({x, x + mw, y, y + mh, left, &f});
+    if (f.st->shape_outside.kind != style::ClipPath::Kind::None) {
+        const style::ClipPath& cp = f.st->shape_outside;
+        // reference box in BFC coordinates
+        float bx = x, by = y, bw = mw, bh = mh;
+        auto shrink = [&](const Edges& e, float k) { bx += k * e.l; by += k * e.t; bw -= k * e.h(); bh -= k * e.v(); };
+        if (cp.box == 0) shrink(f.margin, 1);
+        else if (cp.box == 1) { shrink(f.margin, 1); shrink(f.border, 1); }
+        else if (cp.box == 2) { shrink(f.margin, 1); shrink(f.border, 1); shrink(f.padding, 1); }
+        bw = std::max(bw, 0.f); bh = std::max(bh, 0.f);
+        std::vector<float>& P = bfc.floats.back().poly;
+        using K = style::ClipPath::Kind;
+        if (cp.kind == K::Inset) {
+            const float t = cp.edge[0].resolve(bh), r = cp.edge[1].resolve(bw), b = cp.edge[2].resolve(bh), l = cp.edge[3].resolve(bw);
+            P = {bx + l, by + t, bx + bw - r, by + t, bx + bw - r, by + bh - b, bx + l, by + bh - b};
+        } else if (cp.kind == K::Circle || cp.kind == K::Ellipse) {
+            const float cx = bx + cp.cx.resolve(bw), cy = by + cp.cy.resolve(bh);
+            const float dl_ = std::fabs(cx - bx), dr = std::fabs(bx + bw - cx), dt = std::fabs(cy - by), db = std::fabs(by + bh - cy);
+            auto side = [&](int kw, const Len& len, bool horiz, bool circle) {
+                if (kw == 1 || kw == 2) {
+                    const float a = horiz ? dl_ : dt, c2 = horiz ? dr : db;
+                    if (circle) return kw == 1 ? std::min({dl_, dr, dt, db}) : std::max({dl_, dr, dt, db});
+                    return kw == 1 ? std::min(a, c2) : std::max(a, c2);
+                }
+                return len.resolve(circle ? std::sqrt((bw * bw + bh * bh) / 2) : horiz ? bw : bh);
+            };
+            const bool circ = cp.kind == K::Circle;
+            const float sm = f.st->shape_margin.resolve(mw);   // an expanded circle / ellipse stays one: the margin grows the radii
+            const float rx = std::max(0.f, side(cp.rkw[0], cp.r[0], true, circ)) + sm, ry = (circ ? rx - sm : std::max(0.f, side(cp.rkw[1], cp.r[1], false, false))) + sm;
+            for (int i = 0; i < 64; ++i) { const float a = float(i) * 2.f * 3.14159265f / 64.f; P.push_back(cx + rx * std::cos(a)); P.push_back(cy + ry * std::sin(a)); }
+        } else if (cp.kind == K::Polygon) {
+            for (const auto& pt : cp.pts) { P.push_back(bx + pt.first.resolve(bw)); P.push_back(by + pt.second.resolve(bh)); }
+        }
+        if (P.size() < 6) P.clear();
+        if (cp.kind != style::ClipPath::Kind::Circle && cp.kind != style::ClipPath::Kind::Ellipse) bfc.floats.back().shape_margin = f.st->shape_margin.resolve(mw);
+    }
     f.x = x + f.margin.l - ox;
     f.y = y + f.margin.t - oy;
 }

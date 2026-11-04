@@ -1016,6 +1016,22 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         s.text_shadow = out;
         return true;
     }
+    if (name == "shape-margin") { Len l; if (!parse_length(v, env, l)) return false; s.shape_margin = l; return true; }
+    if (name == "shape-outside") {
+        if (v == "none") { s.shape_outside = ClipPath{}; return true; }
+        ClipPath cp;
+        if (v == "margin-box" || v == "border-box" || v == "padding-box" || v == "content-box") {   // the box itself (its rounded corners are not followed)
+            cp.kind = ClipPath::Kind::Inset;
+            cp.box = v == "border-box" ? 0 : v == "padding-box" ? 1 : v == "content-box" ? 2 : 3;
+            s.shape_outside = cp;
+            return true;
+        }
+        if (v.starts_with("url(") || v.find("gradient(") != std::string::npos) return true;   // image shapes: accepted, the float stays a box
+        if (!parse_clip_path(raw, env, cp)) return false;
+        if (v.find("-box") == std::string::npos) cp.box = 3;   // the reference box of shape-outside is the margin box
+        s.shape_outside = cp;
+        return true;
+    }
     if (name == "clip-path") {
         if (v == "none") { s.clip_path = ClipPath{}; return true; }
         ClipPath cp;

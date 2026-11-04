@@ -317,6 +317,8 @@ struct ComputedStyle {
     float    tf[4] = {1, 0, 0, 1};
     std::vector<TfFn> tfn;              // the function list tf/translate_* were built from (animations interpolate it)
     void     rebuild_transform();       // tfn -> tf + translate_x/y (the 2D part: 3D functions are left to the painter)
+    ClipPath shape_outside;             // shape-outside (a basic shape; box = the reference box, margin-box by default)
+    Len      shape_margin = Len::Px(0);
     bool     tf_3d() const { for (const TfFn& f : tfn) if (f.kind == 'X' || f.kind == 'Y' || f.kind == 'Z' || f.kind == 'P' || f.kind == '3' || (f.kind == 'T' && f.a != 0)) return true; return false; }
     float    persp = 0;                 // perspective: distance in px for the children (0 = none)
     Len      persp_x = Len::Pct(50), persp_y = Len::Pct(50);
