@@ -207,7 +207,8 @@ def host_wedged_render_loop_replaced(e):
     s = socket.socket(socket.AF_UNIX); s.connect(e.sock); s.sendall(b'{"cmd":"_wedge"}\n')
     time.sleep(11)                                              # heartbeat older than the client's 10 s limit
     e.start_app("b")
-    e.wait(lambda: (h := e.hello()) and h["pid"] != h1["pid"] and h["windows"] == 1, 30, "wedged host replaced")
+    # app a lost its host without a `closed`: it reopens its window in the fresh host, so both apps hold one
+    e.wait(lambda: (h := e.hello()) and h["pid"] != h1["pid"] and h["windows"] == 2, 30, "wedged host replaced, both windows back")
     assert e.log_has("render loop stalled")
 
 @test
