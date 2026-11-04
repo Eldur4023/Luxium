@@ -1634,6 +1634,7 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
                 if (fn == "translate" || fn == "translate3d") {
                     if (!parse_length(trim_ws(a[0]), env, f.x, false)) return false;
                     if (a.size() > 1 && !parse_length(trim_ws(a[1]), env, f.y, false)) return false;
+                    if (a.size() > 2) { Len z; if (!parse_length(trim_ws(a[2]), env, z, false)) return false; f.a = z.px; }
                 } else if (fn == "translatex") { if (!parse_length(trim_ws(a[0]), env, f.x, false)) return false; }
                 else if (fn == "translatey") { if (!parse_length(trim_ws(a[0]), env, f.y, false)) return false; }
                 else if (fn == "scale" || fn == "scale3d") {
@@ -1652,8 +1653,20 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
                     float m[6];
                     for (int k = 0; k < 6; ++k) if (!num(size_t(k), m[k])) return false;
                     f.kind = 'M'; f.a = m[0]; f.b = m[1]; f.c = m[2]; f.d = m[3]; f.e = m[4]; f.f = m[5];
-                } else if (fn == "translatez" || fn == "scalez" || fn == "perspective" || fn == "rotatex" || fn == "rotatey" || fn == "rotate3d") {
-                    i = close + 1; continue;   // 3D: ignored
+                } else if (fn == "translatez" || fn == "perspective") {
+                    Len l; if (!parse_length(trim_ws(a[0]), env, l, false)) return false;
+                    f.kind = fn == "perspective" ? 'P' : 'Z'; f.a = l.px;
+                } else if (fn == "rotatex" || fn == "rotatey") { f.kind = fn == "rotatex" ? 'X' : 'Y'; if (!ang(0, f.a)) return false; }
+                else if (fn == "rotate3d") {
+                    if (a.size() != 4 || !num(0, f.b) || !num(1, f.c) || !num(2, f.d) || !ang(3, f.a)) return false;
+                    f.kind = '3';
+                } else if (fn == "scalez") { i = close + 1; continue; }   // no effect on a flat element
+                else if (fn == "matrix3d") {
+                    // the 2D part only: a b c d e f = m[0] m[1] m[4] m[5] m[12] m[13]
+                    if (a.size() != 16) return false;
+                    float m[16];
+                    for (int k = 0; k < 16; ++k) if (!num(size_t(k), m[k])) return false;
+                    f.kind = 'M'; f.a = m[0]; f.b = m[1]; f.c = m[4]; f.d = m[5]; f.e = m[12]; f.f = m[13];
                 } else return false;
                 fns.push_back(f);
                 i = close + 1;
@@ -1663,6 +1676,20 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         s.rebuild_transform();
         return true;
     }
+    if (name == "perspective") {
+        if (v == "none") { s.persp = 0; return true; }
+        Len l; if (!parse_length(v, env, l, false) || l.px < 0) return false;
+        s.persp = l.px;
+        return true;
+    }
+    if (name == "perspective-origin") {
+        Len x, y;
+        if (!parse_position_pair(t, env, x, y)) return false;
+        s.persp_x = x; s.persp_y = y;
+        return true;
+    }
+    if (name == "transform-style") return v == "flat" || v == "preserve-3d";
+    if (name == "backface-visibility") { if (v != "visible" && v != "hidden") return false; s.backface_hidden = v == "hidden"; return true; }
     if (name == "transform-origin") {
         Len x, y;
         Tokens tk = t;
@@ -2004,6 +2031,7 @@ void ComputedStyle::rebuild_transform() {
         case 'R': N[0] = N[3] = std::cos(f.a * rad); N[1] = std::sin(f.a * rad); N[2] = -N[1]; break;
         case 'K': N[2] = std::tan(f.a * rad); N[1] = std::tan(f.b * rad); break;
         case 'M': N[0] = f.a; N[1] = f.b; N[2] = f.c; N[3] = f.d; x = Len::Px(f.e); y = Len::Px(f.f); break;
+        default: break;   // 3D functions: the painter builds the projective matrix from `tfn`
         }
         // total = total * this: the new translation goes through the linear part so far
         tx.px += L[0] * x.px + L[2] * y.px; tx.pct += L[0] * x.pct + L[2] * y.pct;

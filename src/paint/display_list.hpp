@@ -94,6 +94,7 @@ struct Item {
 
     // TransformPush: x' = m0 x + m2 y + m4, y' = m1 x + m3 y + m5
     float m[6] = {1, 0, 0, 1, 0, 0};
+    float pj[2] = {0, 0};   // perspective row: w = 1 + pj0 x + pj1 y (x', y' above are divided by it)
 
     // Poly
     std::vector<float> pts;

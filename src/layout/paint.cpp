@@ -148,6 +148,7 @@ struct Painter {
     }
     Affine tcur;                                 // accumulated transform of the boxes being painted
     std::unordered_map<const Box*, Affine> tf_of;   // own transform of every transformed box
+    std::unordered_map<const Box*, std::array<float, 2>> pj_of;   // ...and its perspective row when the transform is 3D
     // Maps a hit rectangle through `a` (axis-aligned bounding box of the image when it rotates or skews).
     static void map_hit(HitRect& h, const Affine& a) {
         const float* m = a.m;
@@ -193,7 +194,7 @@ struct Painter {
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
         if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None || s.bg_clip_text) return true;
-        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear()) return true;
+        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear() || s.tf_3d()) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
     }
@@ -1173,7 +1174,64 @@ struct Painter {
         // draws it into a layer that the rasterizer resamples through the matrix
         Affine own;
         bool moved = false, general = false;
-        if (s.tf_linear()) {
+        float pj[2] = {0, 0};
+        if (s.tf_3d()) {
+            // a flat element under a 3D transform: the 4x4 matrix restricted to the z = 0 plane is a homography
+            using M4 = std::array<float, 16>;   // column-major
+            auto ident = [] { M4 m{}; m[0] = m[5] = m[10] = m[15] = 1; return m; };
+            auto mul = [](const M4& a, const M4& b) { M4 r{}; for (int c = 0; c < 4; ++c) for (int rr = 0; rr < 4; ++rr) { float v = 0; for (int k = 0; k < 4; ++k) v += a[size_t(k * 4 + rr)] * b[size_t(c * 4 + k)]; r[size_t(c * 4 + rr)] = v; } return r; };
+            auto trans = [&](float x, float y, float z) { M4 m = ident(); m[12] = x; m[13] = y; m[14] = z; return m; };
+            const float rad = 3.14159265358979f / 180.f;
+            M4 F = ident();
+            for (const style::TfFn& f : s.tfn) {
+                M4 N = ident();
+                const float c = std::cos(f.a * rad), sn_ = std::sin(f.a * rad);
+                switch (f.kind) {
+                case 'T': N = trans(f.x.resolve(sc.w), f.y.resolve(sc.h), f.a); break;
+                case 'Z': N = trans(0, 0, f.a); break;
+                case 'S': N[0] = f.a; N[5] = f.b; break;
+                case 'R': N[0] = N[5] = c; N[1] = sn_; N[4] = -sn_; break;
+                case 'K': N[4] = std::tan(f.a * rad); N[1] = std::tan(f.b * rad); break;
+                case 'M': N[0] = f.a; N[1] = f.b; N[4] = f.c; N[5] = f.d; N[12] = f.e; N[13] = f.f; break;
+                case 'X': N[5] = c; N[6] = sn_; N[9] = -sn_; N[10] = c; break;
+                case 'Y': N[0] = c; N[2] = -sn_; N[8] = sn_; N[10] = c; break;
+                case 'P': if (f.a > 0) N[11] = -1.f / f.a; break;
+                case '3': {
+                    float x = f.b, y = f.c, z = f.d;
+                    const float len = std::sqrt(x * x + y * y + z * z);
+                    if (len > 0) { x /= len; y /= len; z /= len; const float t = 1 - c;
+                        N[0] = t * x * x + c; N[1] = t * x * y + z * sn_; N[2] = t * x * z - y * sn_;
+                        N[4] = t * x * y - z * sn_; N[5] = t * y * y + c; N[6] = t * y * z + x * sn_;
+                        N[8] = t * x * z + y * sn_; N[9] = t * y * z - x * sn_; N[10] = t * z * z + c; }
+                    break;
+                }
+                default: break;
+                }
+                F = mul(F, N);
+            }
+            const float ox = sc.ax + s.origin_x.resolve(sc.w), oy = sc.ay + s.origin_y.resolve(sc.h);
+            M4 T = mul(mul(trans(ox, oy, 0), F), trans(-ox, -oy, 0));
+            // the parent's `perspective` looks at its children from the perspective-origin of the parent's box
+            const Box* par = sc.parent;
+            while (par && !par->st) par = par->parent;
+            if (par && par->st->persp > 0) {
+                const float px = par->ax + par->st->persp_x.resolve(par->w), py = par->ay + par->st->persp_y.resolve(par->h);
+                M4 P = ident(); P[11] = -1.f / par->st->persp;
+                T = mul(mul(mul(trans(px, py, 0), P), trans(-px, -py, 0)), T);
+            }
+            const float w0 = T[15];
+            if (std::fabs(w0) > 1e-6f) {
+                own.m[0] = T[0] / w0; own.m[1] = T[1] / w0; own.m[2] = T[4] / w0; own.m[3] = T[5] / w0; own.m[4] = T[12] / w0; own.m[5] = T[13] / w0;
+                pj[0] = T[3] / w0; pj[1] = T[7] / w0;
+                moved = general = true;
+                if (s.backface_hidden) {   // facing away: the mapped square has the opposite orientation
+                    auto at = [&](float x, float y, float& X, float& Y) { const float w = 1 + pj[0] * x + pj[1] * y; X = (own.m[0] * x + own.m[2] * y + own.m[4]) / w; Y = (own.m[1] * x + own.m[3] * y + own.m[5]) / w; };
+                    float ax_, ay_, bx_, by_, cx_, cy_;
+                    at(sc.ax, sc.ay, ax_, ay_); at(sc.ax + sc.w, sc.ay, bx_, by_); at(sc.ax, sc.ay + sc.h, cx_, cy_);
+                    if ((bx_ - ax_) * (cy_ - ay_) - (by_ - ay_) * (cx_ - ax_) < 0) return;
+                }
+            }
+        } else if (s.tf_linear()) {
             const float ox = sc.ax + s.origin_x.resolve(sc.w), oy = sc.ay + s.origin_y.resolve(sc.h);
             const float tx = s.translate_x.resolve(sc.w), ty = s.translate_y.resolve(sc.h);
             own.m[0] = s.tf[0]; own.m[1] = s.tf[1]; own.m[2] = s.tf[2]; own.m[3] = s.tf[3];
@@ -1187,12 +1245,13 @@ struct Painter {
         const Affine saved_cur = tcur;
         if (moved) {
             Item it;
-            if (general) { it.kind = Item::Kind::TransformPush; std::copy(own.m, own.m + 6, it.m); }
+            if (general) { it.kind = Item::Kind::TransformPush; std::copy(own.m, own.m + 6, it.m); it.pj[0] = pj[0]; it.pj[1] = pj[1]; }
             else { it.kind = Item::Kind::ShiftPush; it.x = own.m[4]; it.y = own.m[5]; }
             dl->push_back(std::move(it));
             tf_at = dl->size() - 1;
             tcur = then(own, tcur);
             tf_of[&sc] = own;
+            if (pj[0] != 0 || pj[1] != 0) pj_of[&sc] = {pj[0], pj[1]};
         }
         struct Unshift {
             Painter* p; bool on, general; size_t at; Affine saved;
@@ -1336,7 +1395,19 @@ void paint_tree(Env& env, Tree& tree, float canvas_w, float canvas_h, PaintOutpu
         if (k->node && !k->anonymous && k->node->has_attr("data-t") && (k->kind == Box::Kind::Block || k->kind == Box::Kind::Replaced))
             {   // getBoundingClientRect: the bounding box after the element's and its ancestors' transforms
                 HitRect r{k->node, k->ax, k->ay, k->w, k->h, false};
-                Painter::map_hit(r, p.chain_of(k));
+                auto pj = p.pj_of.find(k);
+                if (pj != p.pj_of.end()) {   // own 3D transform: the projected quad's bounding box, then the ancestors' (affine) chain
+                    const Painter::Affine& o = p.tf_of.at(k);
+                    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+                    for (int i = 0; i < 4; ++i) {
+                        const float px = k->ax + ((i & 1) ? k->w : 0), py = k->ay + ((i & 2) ? k->h : 0);
+                        const float w = 1 + pj->second[0] * px + pj->second[1] * py;
+                        const float qx = (o.m[0] * px + o.m[2] * py + o.m[4]) / w, qy = (o.m[1] * px + o.m[3] * py + o.m[5]) / w;
+                        x0 = std::min(x0, qx); x1 = std::max(x1, qx); y0 = std::min(y0, qy); y1 = std::max(y1, qy);
+                    }
+                    r.x = x0; r.y = y0; r.w = x1 - x0; r.h = y1 - y0; r.tx = x0; r.ty = y0;
+                    Painter::map_hit(r, p.chain_of(k->parent));
+                } else Painter::map_hit(r, p.chain_of(k));
                 out.boxes.push_back({k->node->attr_or("data-t"), r.x, r.y, r.w, r.h});
             }
 }

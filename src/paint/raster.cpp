@@ -32,7 +32,7 @@ struct State {
     struct LayerInfo { IRect bounds; float alpha; const Item* push = nullptr; };
     std::vector<LayerInfo> layers;
     // transform layers: content is drawn untransformed into a buffer, then resampled through `m` on pop
-    struct TfLayer { IRect src; float m[6]; float ox, oy; };
+    struct TfLayer { IRect src; float m[6]; float ox, oy; float pj[2] = {0, 0}; };
     std::vector<TfLayer> tf_layers;
 
     explicit State(const render::Font& f, float x, float y) : font(f), ox(x), oy(y) {}
@@ -831,6 +831,7 @@ void rasterize(const DisplayList& dl0, Canvas& canvas, const render::Font& font)
             b.x0 = std::max(s.rects.front().x0, int(std::floor(it.x + s.ox)) - 1); b.y0 = std::max(s.rects.front().y0, int(std::floor(it.y + s.oy)) - 1);
             b.x1 = std::min(s.rects.front().x1, int(std::ceil(it.x + it.w + s.ox)) + 1); b.y1 = std::min(s.rects.front().y1, int(std::ceil(it.y + it.h + s.oy)) + 1);
             State::TfLayer tl{b, {}, s.ox, s.oy};
+            tl.pj[0] = it.pj[0]; tl.pj[1] = it.pj[1];
             std::copy(it.m, it.m + 6, tl.m);
             s.tf_layers.push_back(tl);
             s.rects.push_back(s.rects.front());
@@ -846,14 +847,24 @@ void rasterize(const DisplayList& dl0, Canvas& canvas, const render::Font& font)
             s.targets.pop_back();
             Target& dst = s.tgt();
             const float* m = tl.m;
-            const float det = m[0] * m[3] - m[1] * m[2];
-            if (std::fabs(det) > 1e-9f && tl.src.x1 > tl.src.x0 && tl.src.y1 > tl.src.y0) {
-                const float i0 = m[3] / det, i1 = -m[1] / det, i2 = -m[2] / det, i3 = m[0] / det;
+            // H = [[m0 m2 m4] [m1 m3 m5] [pj0 pj1 1]] maps source doc coordinates to destination ones (w divides)
+            const float H[9] = {m[0], m[2], m[4], m[1], m[3], m[5], tl.pj[0], tl.pj[1], 1.f};
+            const float det = H[0] * (H[4] * H[8] - H[5] * H[7]) - H[1] * (H[3] * H[8] - H[5] * H[6]) + H[2] * (H[3] * H[7] - H[4] * H[6]);
+            bool behind = false;
+            for (int c = 0; c < 4 && !behind; ++c) {
+                const float px = float((c & 1) ? tl.src.x1 : tl.src.x0) - tl.ox, py = float((c & 2) ? tl.src.y1 : tl.src.y0) - tl.oy;
+                behind = 1.f + tl.pj[0] * px + tl.pj[1] * py <= 0.02f;   // a corner at or behind the viewer: not drawn
+            }
+            if (std::fabs(det) > 1e-9f && !behind && tl.src.x1 > tl.src.x0 && tl.src.y1 > tl.src.y0) {
+                const float Hi[9] = {(H[4] * H[8] - H[5] * H[7]) / det, (H[2] * H[7] - H[1] * H[8]) / det, (H[1] * H[5] - H[2] * H[4]) / det,
+                                     (H[5] * H[6] - H[3] * H[8]) / det, (H[0] * H[8] - H[2] * H[6]) / det, (H[2] * H[3] - H[0] * H[5]) / det,
+                                     (H[3] * H[7] - H[4] * H[6]) / det, (H[1] * H[6] - H[0] * H[7]) / det, (H[0] * H[4] - H[1] * H[3]) / det};
                 // dest bbox: the source corners through the matrix (doc space = buffer space minus the origin)
                 float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
                 for (int c = 0; c < 4; ++c) {
                     const float px = float((c & 1) ? tl.src.x1 : tl.src.x0) - tl.ox, py = float((c & 2) ? tl.src.y1 : tl.src.y0) - tl.oy;
-                    const float qx = m[0] * px + m[2] * py + m[4] + tl.ox, qy = m[1] * px + m[3] * py + m[5] + tl.oy;
+                    const float w = 1.f + tl.pj[0] * px + tl.pj[1] * py;
+                    const float qx = (m[0] * px + m[2] * py + m[4]) / w + tl.ox, qy = (m[1] * px + m[3] * py + m[5]) / w + tl.oy;
                     bx0 = std::min(bx0, qx); bx1 = std::max(bx1, qx); by0 = std::min(by0, qy); by1 = std::max(by1, qy);
                 }
                 const IRect clip = s.clip();
@@ -868,8 +879,10 @@ void rasterize(const DisplayList& dl0, Canvas& canvas, const render::Font& font)
                 };
                 for (int y = Y0; y < Y1; ++y)
                     for (int x = X0; x < X1; ++x) {
-                        const float qx = float(x) + 0.5f - tl.ox - m[4], qy = float(y) + 0.5f - tl.oy - m[5];
-                        const float sx = i0 * qx + i2 * qy + tl.ox - 0.5f, sy = i1 * qx + i3 * qy + tl.oy - 0.5f;
+                        const float qx = float(x) + 0.5f - tl.ox, qy = float(y) + 0.5f - tl.oy;
+                        const float w = Hi[6] * qx + Hi[7] * qy + Hi[8];
+                        if (w <= 1e-6f) continue;
+                        const float sx = (Hi[0] * qx + Hi[1] * qy + Hi[2]) / w + tl.ox - 0.5f, sy = (Hi[3] * qx + Hi[4] * qy + Hi[5]) / w + tl.oy - 0.5f;
                         const int ix = int(std::floor(sx)), iy = int(std::floor(sy));
                         const float fx = sx - float(ix), fy = sy - float(iy);
                         float A = 0, R = 0, G = 0, B = 0;

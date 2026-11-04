@@ -166,7 +166,8 @@ struct TransitionSpec {
     float bez[4] = {0.25f, 0.1f, 0.25f, 1.f};   // cubic-bezier control points (ease)
 };
 
-// One transform function: T translate(x, y), S scale(a, b), R rotate(a deg), K skew(a, b deg), M matrix(a..f).
+// One transform function: T translate(x, y [, z in a]), S scale(a, b), R rotate(a deg), K skew(a, b deg), M matrix(a..f);
+// 3D: X rotateX(a), Y rotateY(a), Z translateZ(a px), P perspective(a px), 3 rotate3d(axis b c d, angle a).
 struct TfFn {
     char kind = 'T';
     Len  x = Len::Px(0), y = Len::Px(0);
@@ -315,7 +316,11 @@ struct ComputedStyle {
     Len      translate_x = Len::Px(0), translate_y = Len::Px(0);
     float    tf[4] = {1, 0, 0, 1};
     std::vector<TfFn> tfn;              // the function list tf/translate_* were built from (animations interpolate it)
-    void     rebuild_transform();       // tfn -> tf + translate_x/y
+    void     rebuild_transform();       // tfn -> tf + translate_x/y (the 2D part: 3D functions are left to the painter)
+    bool     tf_3d() const { for (const TfFn& f : tfn) if (f.kind == 'X' || f.kind == 'Y' || f.kind == 'Z' || f.kind == 'P' || f.kind == '3' || (f.kind == 'T' && f.a != 0)) return true; return false; }
+    float    persp = 0;                 // perspective: distance in px for the children (0 = none)
+    Len      persp_x = Len::Pct(50), persp_y = Len::Pct(50);
+    bool     backface_hidden = false;
     Len      origin_x = Len::Pct(50), origin_y = Len::Pct(50);
     bool     tf_linear() const { return tf[0] != 1 || tf[1] != 0 || tf[2] != 0 || tf[3] != 1; }
     std::vector<TransitionSpec> transitions;

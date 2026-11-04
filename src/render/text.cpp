@@ -578,13 +578,13 @@ int Font::match_family(const std::string& name, bool accept_any, int weight, boo
 }
 
 FaceKey Font::resolve(const std::string& family_list, int weight, bool italic) const {
-    const std::string key = family_list + "|" + std::to_string(!web_.empty() ? weight : weight >= 600 ? 700 : weight >= 500 ? 500 : 400) +
+    const std::string key = family_list + "|" + std::to_string(std::clamp(weight, 100, 900) / 100) +
                             (italic ? "i" : "n");
     auto it = resolve_cache_.find(key);
     if (it != resolve_cache_.end()) return {it->second};
     if (!ft_lib) FT_Init_FreeType(&ft_lib);
     int found = -1;
-    const int w = weight >= 600 ? 700 : 400;
+    const int w = std::clamp((weight + 50) / 100 * 100, 100, 900);   // fontconfig picks the nearest installed weight, as the CSS matching does
     size_t i = 0;
     std::vector<int> chain;   // the other families of the list that exist: tried per character before the system fallback
     while (i <= family_list.size()) {
