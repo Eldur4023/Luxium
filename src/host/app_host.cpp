@@ -438,6 +438,7 @@ cef::Events Host::make_events(AppWin* w) {
 void Host::resize_surface(AppWin* w) {
     int nw = 0, nh = 0;
     SDL_GetWindowSize(w->win, &nw, &nh);
+    if (w->own) { const float sc = w->own->shell->scale(); nw = int(nw / sc); nh = int(nh / sc); }   // logical px
     if (nw <= 0 || nh <= 0) return;
     const int bar = bar_h(w);
     if (nw == w->w && nh == w->h && (w->own || w->tex) && bar == w->view_bar) return;
@@ -548,8 +549,35 @@ void Host::start_own(AppWin* w, bool auto_engine) {
     own->page.set_profile_dir(w->profile_root + "/" + w->app_id);   // storage.* per app
     own->shell = std::make_unique<shell::Shell>(own->page, cfg);
     own->shell->attach(w->win);
-    own->shell->set_overlay([this, w](uint32_t* fb, int ww, int hh) {
-        if (w->menu && bar_h(w)) w->menu->draw(fb, ww, hh);
+    own->shell->set_overlay([this, w, sh = own->shell.get()](uint32_t* fb, int ww, int hh) {
+        if (!w->menu || !bar_h(w)) return;
+        const float k = sh->scale();
+        if (k == 1.f) { w->menu->draw(fb, ww, hh); return; }
+        // HiDPI: the menu draws at logical size into a transparent buffer, then goes over the frame with a
+        // coverage-aware bilinear stretch (fringes keep the menu colours instead of mixing with black).
+        const int lw = int(ww / k), lh = int(hh / k);
+        if (lw <= 0 || lh <= 0) return;
+        std::vector<uint32_t> m((size_t)lw * lh, 0u);
+        w->menu->draw(m.data(), lw, lh);
+        for (int y = 0; y < hh; ++y) {
+            const float fy = std::max(0.f, (y + 0.5f) / k - 0.5f);
+            const int y0 = std::min((int)fy, lh - 1), y1 = std::min(y0 + 1, lh - 1);
+            const float wy = fy - (float)y0;
+            for (int x = 0; x < ww; ++x) {
+                const float fx = std::max(0.f, (x + 0.5f) / k - 0.5f);
+                const int x0 = std::min((int)fx, lw - 1), x1 = std::min(x0 + 1, lw - 1);
+                const float wx = fx - (float)x0;
+                const uint32_t px[4] = {m[(size_t)y0 * lw + x0], m[(size_t)y0 * lw + x1], m[(size_t)y1 * lw + x0], m[(size_t)y1 * lw + x1]};
+                const float wt[4] = {(1 - wx) * (1 - wy), wx * (1 - wy), (1 - wx) * wy, wx * wy};
+                float cov = 0, r = 0, g = 0, b = 0;
+                for (int i = 0; i < 4; ++i) {
+                    if (!(px[i] >> 24)) continue;
+                    cov += wt[i]; r += wt[i] * ((px[i] >> 16) & 255); g += wt[i] * ((px[i] >> 8) & 255); b += wt[i] * (px[i] & 255);
+                }
+                if (cov < 0.5f) continue;
+                fb[(size_t)y * ww + x] = 0xFF000000u | ((uint32_t)(r / cov + 0.5f) << 16) | ((uint32_t)(g / cov + 0.5f) << 8) | (uint32_t)(b / cov + 0.5f);
+            }
+        }
     });
     if (auto_engine) own->shell->set_web_handler([own](const std::string&) { own->wants_web = true; });
     own->shell->navigate_to(w->open_url, true);
@@ -733,8 +761,9 @@ AppWin* Host::event_win(const SDL_Event& e) {
 }
 
 // Input for an own-engine window: the menu bar sees it first, then the Shell.
-void Host::handle_own(AppWin* w, const SDL_Event& e) {
+void Host::handle_own(AppWin* w, const SDL_Event& raw) {
     shell::Shell& sh = *w->own->shell;
+    const SDL_Event e = sh.scaled(raw);
     switch (e.type) {
     case SDL_WINDOWEVENT:
         switch (e.window.event) {
@@ -750,6 +779,7 @@ void Host::handle_own(AppWin* w, const SDL_Event& e) {
     case SDL_MOUSEWHEEL: {
         int mx = 0, my = 0;
         SDL_GetMouseState(&mx, &my);
+        my = int(my / sh.scale());
         if (w->menu && (w->menu->open() || my < bar_h(w))) return;
         break;
     }

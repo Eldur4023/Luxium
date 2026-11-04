@@ -81,6 +81,10 @@ public:
     void frame();                            // fetches, timers, layout, paint, present
     void set_top_inset(int px);              // rows above the page the host paints (menu bar)
     void invalidate() { need_paint_ = true; }
+    // HiDPI for the own engine: the page lays out at window/scale px and the frame is stretched to the window.
+    static float detect_scale();   // LUXIUM_SCALE, else 1.5
+    float scale() const { return app_ && !engine_cef_ ? scale_ : 1.f; }
+    SDL_Event scaled(const SDL_Event& e) const;   // mouse coordinates window px -> logical px
     // Painted after the page, before the frame is presented (the menu bar and its drop-downs).
     void set_overlay(std::function<void(uint32_t* argb, int w, int h)> f) { overlay_ = std::move(f); }
     // The page asked for JavaScript (a document only Chromium can run): called with the URL.
@@ -170,7 +174,9 @@ private:
     render::LayoutResult layout_;
     float  scroll_  = 0;
     float  content_h_ = 0;
-    int    win_w_ = 0, win_h_ = 0;
+    int    win_w_ = 0, win_h_ = 0;   // logical px: the window size divided by scale()
+    int    pw_ = 0, ph_ = 0;         // framebuffer px (== window size)
+    float  scale_ = detect_scale();
     int    console_h_ = 180;
     bool   fullscreen_ = false;        // the page (CEF) asked for element fullscreen
     bool   console_visible_ = false;   // F12 shows/hides the console pane
@@ -265,6 +271,9 @@ private:
     bool    wheel_scroll(float dx, float dy);          // scroll the innermost scrollable box under the mouse; false: the page scrolls
     bool    scrollbar_press(float doc_x, float doc_y); // thumb drag / track page-jump of an overflow box
     struct SbDrag { dom::Node* node = nullptr; float mouse0 = 0, scroll0 = 0, track = 0, thumb = 0, max = 0; } sb_drag_;
+    // Drag-to-scroll: a press inside an overflow box waits for the release; moving past 6 px scrolls the box instead.
+    struct PanDrag { bool armed = false, active = false; int x0 = 0, y0 = 0, lx = 0, ly = 0, clicks = 1; } pan_;
+    void    pan_move(int x, int y);
     void    fire_scroll(dom::Node* n);
     void    apply_sticky();                            // shift sticky groups (and their hit boxes) for the current scroll
     std::vector<float> sticky_dy_;

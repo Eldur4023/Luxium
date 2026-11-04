@@ -116,12 +116,34 @@ Shell::~Shell() {
     if (owns_window_) SDL_Quit();
 }
 
+float Shell::detect_scale() {
+    if (const char* e = std::getenv("LUXIUM_SCALE")) { const float f = static_cast<float>(std::atof(e)); if (f >= 0.5f && f <= 8) return f; }
+    return 1.5f;
+}
+
+SDL_Event Shell::scaled(const SDL_Event& e) const {
+    SDL_Event c = e;
+    const float sc = scale();
+    if (sc == 1.f) return c;
+    if (e.type == SDL_MOUSEMOTION) {
+        c.motion.x = int(e.motion.x / sc); c.motion.y = int(e.motion.y / sc);
+        c.motion.xrel = int(e.motion.xrel / sc); c.motion.yrel = int(e.motion.yrel / sc);
+    } else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
+        c.button.x = int(e.button.x / sc); c.button.y = int(e.button.y / sc);
+    }
+    return c;
+}
+
 void Shell::ensure_surface() {
     int w = 0, h = 0;
     SDL_GetWindowSize(window_, &w, &h);
+    const int phys_w = w, phys_h = h;   // framebuffer px; win_w_/win_h_ are logical px (window / scale())
+    w = int(w / scale()); h = int(h / scale());
     if (w <= 0 || h <= 0) return;
     const int ch = console_visible_ ? std::max(140, h * 26 / 100) : 0;
-    if (w == win_w_ && h == win_h_ && ch == console_h_) return;
+    if (w == win_w_ && h == win_h_ && phys_w == pw_ && phys_h == ph_ && ch == console_h_) return;
+    pw_ = phys_w;
+    ph_ = phys_h;
     win_w_ = w;
     win_h_ = h;
     console_h_ = ch;
@@ -130,10 +152,10 @@ void Shell::ensure_surface() {
         cef::set_view(win_w_, win_h_ - bottom_h() - url_h());
 #endif
     need_paint_ = true;
-    fb_.assign(static_cast<size_t>(win_w_) * win_h_, 0xFFFAFAF7u);
+    fb_.assign(static_cast<size_t>(pw_) * ph_, 0xFFFAFAF7u);
     if (texture_) SDL_DestroyTexture(texture_);
     texture_ = renderer_ ? SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
-                                             SDL_TEXTUREACCESS_STREAMING, win_w_, win_h_)
+                                             SDL_TEXTUREACCESS_STREAMING, pw_, ph_)
                          : nullptr;
     relayout();
 }
@@ -712,21 +734,21 @@ void Shell::draw_url_bar() {
     const uint32_t bg      = url_focus_ ? 0xFFFFFFFFu : 0xFFF1F2F4;
     const uint32_t ring    = url_focus_ ? 0xFF2F6FEDu : 0xFFD9DCDF;
     for (int y = 0; y < H; ++y) {
-        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * pw_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFFE8EAED;
     }
     const int fx = 8, fy = 6, fw = win_w_ - 16, fh = H - 12;
     for (int y = fy; y < fy + fh; ++y) {
-        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * pw_;
         for (int x = fx; x < fx + fw; ++x) row[x] = bg;
     }
     for (int x = fx; x < fx + fw; ++x) {
-        fb_[static_cast<size_t>(fy) * win_w_ + x] = ring;
-        fb_[static_cast<size_t>(fy + fh - 1) * win_w_ + x] = ring;
+        fb_[static_cast<size_t>(fy) * pw_ + x] = ring;
+        fb_[static_cast<size_t>(fy + fh - 1) * pw_ + x] = ring;
     }
     for (int y = fy; y < fy + fh; ++y) {
-        fb_[static_cast<size_t>(y) * win_w_ + fx] = ring;
-        fb_[static_cast<size_t>(y) * win_w_ + fx + fw - 1] = ring;
+        fb_[static_cast<size_t>(y) * pw_ + fx] = ring;
+        fb_[static_cast<size_t>(y) * pw_ + fx + fw - 1] = ring;
     }
 
     // label -- only when it adds information (a luxium: address already
@@ -736,7 +758,7 @@ void Shell::draw_url_bar() {
     if (shown_addr.rfind("luxium:", 0) != 0) {
         float lx = fx + 10;
         for (const auto& w : render::shape_words(*font_, "luxium:", true, false)) {
-            render::draw_word(fb_, win_w_, win_h_, *font_, w, lx,
+            render::draw_word(fb_, pw_, ph_, *font_, w, lx,
                               fy + (fh - font_->line_height()) / 2.f, 0xFF8A919B);
             lx += w.width + 12.5f * 0.3f;
         }
@@ -803,7 +825,7 @@ void Shell::draw_url_bar() {
             for (int yy = fy + 3; yy < fy + fh - 3; ++yy)
                 for (int xx = px_a; xx < px_b; ++xx)
                     if (xx >= 0 && xx < win_w_)
-                        blend_px(fb_[static_cast<size_t>(yy) * win_w_ + xx],
+                        blend_px(fb_[static_cast<size_t>(yy) * pw_ + xx],
                                  0x662F6FEDu);
         }
 
@@ -814,7 +836,7 @@ void Shell::draw_url_bar() {
             w.width  = w.shaped.width;
             w.size   = 14;
             w.ascent = font_->ascent();
-            render::draw_word(fb_, win_w_, win_h_, *font_, w, sub_x, ty,
+            render::draw_word(fb_, pw_, ph_, *font_, w, sub_x, ty,
                               0xFF232936);
         }
 
@@ -824,7 +846,7 @@ void Shell::draw_url_bar() {
             for (int yy = fy + 5; yy < fy + fh - 5; ++yy)
                 for (int xx = static_cast<int>(cx); xx < static_cast<int>(cx) + 2; ++xx)
                     if (xx >= 0 && xx < win_w_)
-                        fb_[static_cast<size_t>(yy) * win_w_ + xx] = 0xFF2F6FED;
+                        fb_[static_cast<size_t>(yy) * pw_ + xx] = 0xFF2F6FED;
     } else {
         std::string visible = engine_cef_ ? cef::url() : page_.location();
         if (visible.empty()) visible = "escribe una uri...";
@@ -841,7 +863,7 @@ void Shell::draw_url_bar() {
         shown_word.width  = shown_word.shaped.width;
         shown_word.size   = 14;
         shown_word.ascent = font_->ascent();
-        render::draw_word(fb_, win_w_, win_h_, *font_, shown_word, tx, ty,
+        render::draw_word(fb_, pw_, ph_, *font_, shown_word, tx, ty,
                           0xFF5A6270);
     }
 }
@@ -913,7 +935,7 @@ int Shell::run() {
         if (g_term) quit = true;
         SDL_Event e;
         while (SDL_PollEvent(&e))
-            if (handle_event(e)) quit = true;
+            if (handle_event(scaled(e))) quit = true;
         frame();
         SDL_Delay(8);   // ~120fps cap; the CPU is idle at this size anyway
     }
@@ -1031,8 +1053,19 @@ bool Shell::handle_event(const SDL_Event& e) {
                     break;
                 }
 #endif
-                if (e.button.button == SDL_BUTTON_LEFT)
-                    handle_click(e.button.x, e.button.y, e.button.clicks);
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    pan_ = {};
+                    if (!engine_cef_ && e.button.y >= url_h() && e.button.y < win_h_ - bottom_h() &&
+                        !(page_.focused() && (page::Page::is_text_control(page_.focused()) || page_.focused()->name == "select"))) {
+                        const float px = float(e.button.x), py = float(e.button.y - url_h()) + scroll_;
+                        for (const auto& a : layout_.areas)
+                            if ((a.max_sx > 0 || a.max_sy > 0) && px >= a.x && px < a.x + a.w && py >= a.y && py < a.y + a.h && a.in_clip(px, py)) {
+                                pan_ = {true, false, e.button.x, e.button.y, e.button.x, e.button.y, e.button.clicks};
+                                break;
+                            }
+                    }
+                    if (!pan_.armed) handle_click(e.button.x, e.button.y, e.button.clicks);   // else: decided on release
+                }
                 else if (e.button.button == 3 && !engine_cef_ && page_.history_go(-1)) {}   // X1 = back inside the page
                 else if (e.button.button == 4 && !engine_cef_ && page_.history_go(1)) {}    // X2 = forward inside the page
                 else if (e.button.button == 3) navigate_to(hist_[hist_idx_], false);      // X1 = back
@@ -1042,7 +1075,12 @@ bool Shell::handle_event(const SDL_Event& e) {
                 }
                 break;
             case SDL_MOUSEBUTTONUP:
-                if (e.button.button == SDL_BUTTON_LEFT) url_drag_ = false;
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    url_drag_ = false;
+                    const PanDrag p = pan_;
+                    pan_ = {};
+                    if (p.armed && !p.active) handle_click(p.x0, p.y0, p.clicks);   // it was a click, not a drag
+                }
 #ifdef LUXIUM_CEF
                 if (engine_cef_ && e.button.y >= url_h() &&
                     e.button.y < win_h_ - bottom_h()) {
@@ -1264,21 +1302,21 @@ void Shell::frame() {
         if (app_ && !need_paint_ && layout_.media.empty() && !std::getenv("LUXIUM_DUMP_FRAME")) return;
         need_paint_ = false;
         repaint();
-        if (overlay_ && !fb_.empty()) overlay_(fb_.data(), win_w_, win_h_);
+        if (overlay_ && !fb_.empty()) overlay_(fb_.data(), pw_, ph_);
 
         if (!renderer_) {   // app window: blit into the window surface
             SDL_Surface* sf = fb_.empty() ? nullptr : SDL_GetWindowSurface(window_);
-            if (sf && sf->w == win_w_ && sf->h == win_h_ && sf->format->BytesPerPixel == 4) {
+            if (sf && sf->w == pw_ && sf->h == ph_ && sf->format->BytesPerPixel == 4) {
                 SDL_LockSurface(sf);
-                for (int y = 0; y < win_h_; ++y)
+                for (int y = 0; y < ph_; ++y)
                     std::memcpy(static_cast<uint8_t*>(sf->pixels) + static_cast<size_t>(y) * sf->pitch,
-                                fb_.data() + static_cast<size_t>(y) * win_w_, static_cast<size_t>(win_w_) * 4);
+                                fb_.data() + static_cast<size_t>(y) * pw_, static_cast<size_t>(pw_) * 4);
                 SDL_UnlockSurface(sf);
                 SDL_UpdateWindowSurface(window_);
             }
         } else {
             if (texture_ && !fb_.empty()) {
-                SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
+                SDL_UpdateTexture(texture_, nullptr, fb_.data(), pw_ * 4);
                 SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
             }
             SDL_RenderPresent(renderer_);
@@ -1302,7 +1340,7 @@ void Shell::frame() {
             if (want) {
                 FILE* f = std::fopen(dump, "wb");
                 if (f) {
-                    std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
+                    std::fprintf(f, "P6\n%d %d\n255\n", pw_, ph_);
                     for (size_t i = 0; i < fb_.size(); ++i) {
                         uint8_t rgb[3] = {uint8_t(fb_[i] >> 16), uint8_t(fb_[i] >> 8), uint8_t(fb_[i])};
                         std::fwrite(rgb, 1, 3, f);
@@ -1380,7 +1418,7 @@ int Shell::screenshot(const std::string& ppm_path) {
 
     FILE* f = std::fopen(ppm_path.c_str(), "wb");
     if (!f) return 1;
-    std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
+    std::fprintf(f, "P6\n%d %d\n255\n", pw_, ph_);
     for (size_t i = 0; i < fb_.size(); ++i) {
         uint8_t rgb[3] = {uint8_t(fb_[i] >> 16), uint8_t(fb_[i] >> 8), uint8_t(fb_[i])};
         std::fwrite(rgb, 1, 3, f);
@@ -1497,7 +1535,7 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
         page_.tick();
         repaint();
         if (texture_ && !fb_.empty()) {
-            SDL_UpdateTexture(texture_, nullptr, fb_.data(), win_w_ * 4);
+            SDL_UpdateTexture(texture_, nullptr, fb_.data(), pw_ * 4);
             SDL_RenderCopy(renderer_, texture_, nullptr, nullptr);
         }
         SDL_RenderPresent(renderer_);
@@ -1548,7 +1586,7 @@ int Shell::cef_shot(const std::string& target, const std::string& ppm_path) {
 
     FILE* f = std::fopen(ppm_path.c_str(), "wb");
     if (!f) { cef::shutdown(); return 1; }
-    std::fprintf(f, "P6\n%d %d\n255\n", win_w_, win_h_);
+    std::fprintf(f, "P6\n%d %d\n255\n", pw_, ph_);
     for (size_t i = 0; i < fb_.size(); ++i) {
         uint8_t rgb[3] = {uint8_t(fb_[i] >> 16), uint8_t(fb_[i] >> 8), uint8_t(fb_[i])};
         std::fwrite(rgb, 1, 3, f);
@@ -1713,21 +1751,20 @@ void Shell::draw_scrollbar() {
     if (content_h_ <= page || page <= 0) return;
     const int x0 = win_w_ - 15, top = url_h(), h = static_cast<int>(page);
     const bool dark = page_.dark_scheme();
-    auto put = [&](int x, int y, uint32_t c) {
-        if (x < 0 || x >= win_w_ || y < top || y >= top + h) return;
-        fb_[static_cast<size_t>(y) * win_w_ + x] = c;
+    paint::DisplayList dl;
+    auto rect = [&](float x, float y, float w, float h_, uint32_t c) {
+        paint::Item r; r.kind = paint::Item::Kind::Rect; r.x = x; r.y = y; r.w = w; r.h = h_; r.color = c;
+        dl.push_back(r);
     };
-    for (int y = top; y < top + h; ++y)
-        for (int x = x0; x < win_w_; ++x) put(x, y, dark ? 0xFF2C2C2C : 0xFFFCFCFC);
+    rect(static_cast<float>(x0), 0, 15, static_cast<float>(h), dark ? 0xFF2C2C2C : 0xFFFCFCFC);
     const uint32_t k = dark ? 0xFF9F9F9F : 0xFF8B8B8B;
     for (int i = 0; i < 5; ++i) {   // up arrow: apex at row 6, base at row 10
-        for (int dx = -i; dx <= i; ++dx) put(x0 + 7 + dx, top + 6 + i, k);
-        for (int dx = -(4 - i); dx <= 4 - i; ++dx) put(x0 + 7 + dx, top + h - 12 + i, k);   // down arrow
+        rect(static_cast<float>(x0 + 7 - i), static_cast<float>(6 + i), static_cast<float>(2 * i + 1), 1, k);
+        rect(static_cast<float>(x0 + 7 - (4 - i)), static_cast<float>(h - 12 + i), static_cast<float>(2 * (4 - i) + 1), 1, k);   // down arrow
     }
     const float track = page - 30.f;
     const float thumb = std::max(24.f, track * page / content_h_);
     const float off = scroll_ / (content_h_ - page) * (track - thumb);
-    paint::DisplayList dl;
     paint::Item it; it.kind = paint::Item::Kind::Rect;
     it.x = static_cast<float>(x0 + 3); it.w = 9;
     it.y = std::round(15.f + 3.f + off); it.h = std::round(thumb - 6.f);
@@ -1735,9 +1772,9 @@ void Shell::draw_scrollbar() {
     dl.push_back(it);
     paint::Canvas cv;
     cv.px = std::span<uint32_t>(fb_.data(), fb_.size());
-    cv.w = win_w_; cv.h = win_h_;
-    cv.clip = {x0, top, win_w_, top + h};
-    cv.ox = 0; cv.oy = static_cast<float>(top);
+    cv.w = pw_; cv.h = ph_; cv.scale = scale();
+    cv.clip = {int(x0 * scale()), int(top * scale()), pw_, int((top + h) * scale())};
+    cv.ox = 0; cv.oy = static_cast<float>(top) * scale();
     paint::rasterize(dl, cv, *font_);
 }
 
@@ -1747,15 +1784,15 @@ void Shell::draw_console() {
     const int y_end = win_h_ - status_h();   // la tira de estado sigue debajo
     // pane background + its top border
     for (int y = y0 + 1; y < y_end; ++y) {
-        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * pw_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFF171B21;
     }
-    for (int x = 0; x < win_w_; ++x) fb_[static_cast<size_t>(y0) * win_w_ + x] = 0xFF2E3540;
+    for (int x = 0; x < pw_; ++x) fb_[static_cast<size_t>(y0) * pw_ + x] = 0xFF2E3540;
 
     // header strip: "Consola" + the error count
     const int header_h = 26;
     for (int y = y0 + 1; y < y0 + 1 + header_h && y < y_end; ++y) {
-        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * pw_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFF1E232B;
     }
     font_->set_size(11.5f);
@@ -1770,7 +1807,7 @@ void Shell::draw_console() {
     {
         float x = 12;
         for (const auto& w : render::shape_words(*font_, header, true, false)) {
-            render::draw_word(fb_, win_w_, win_h_, *font_, w, x,
+            render::draw_word(fb_, pw_, ph_, *font_, w, x,
                               static_cast<float>(y0) + 7, errors ? 0xFFFF8A7A : 0xFF8B94A3);
             x += w.width + 4;
         }
@@ -1802,11 +1839,11 @@ void Shell::draw_console() {
                 if (dx * dx + dy * dy <= 5) {
                     const int px = 14 + dx, py = static_cast<int>(cy) + dy;
                     if (py > y0 && py < y_end && px >= 0 && px < win_w_)
-                        fb_[static_cast<size_t>(py) * win_w_ + px] = dot;
+                        fb_[static_cast<size_t>(py) * pw_ + px] = dot;
                 }
         float x = 24;
         for (const auto& w : render::shape_words(*font_, l.text, false, true)) {
-            render::draw_word(fb_, win_w_, win_h_, *font_, w, x, y, color);
+            render::draw_word(fb_, pw_, ph_, *font_, w, x, y, color);
             x += w.width + 12.5f * 0.30f;
         }
     }
@@ -1844,10 +1881,13 @@ void Shell::repaint() {
     const int page_top    = url_h();
     const int page_bottom = win_h_ - bottom_h();
 
+    const float k = scale();   // logical px -> framebuffer px
+    const int pt = int(std::lround(page_top * k)), pb = int(std::lround(page_bottom * k));
+
     // paper
-    for (int y = page_top; y < page_bottom; ++y) {
-        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
-        for (int x = 0; x < win_w_; ++x) row[x] = layout_.canvas_bg;
+    for (int y = pt; y < pb; ++y) {
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * pw_;
+        for (int x = 0; x < pw_; ++x) row[x] = layout_.canvas_bg;
     }
 
     // hover state: which button is under the cursor (document coords)
@@ -1867,9 +1907,9 @@ void Shell::repaint() {
     {
         paint::Canvas cv;
         cv.px = std::span<uint32_t>(fb_.data(), fb_.size());
-        cv.w = win_w_; cv.h = win_h_;
-        cv.clip = {0, page_top, win_w_, page_bottom};
-        cv.ox = 0; cv.oy = static_cast<float>(page_top) - scroll_;
+        cv.w = pw_; cv.h = ph_; cv.scale = k;
+        cv.clip = {0, pt, pw_, pb};
+        cv.ox = 0; cv.oy = (static_cast<float>(page_top) - scroll_) * k;
         render::media_patch(layout_);
         const Uint64 tr0 = SDL_GetPerformanceCounter();
         paint::rasterize(layout_.list, cv, *font_);
@@ -1878,7 +1918,7 @@ void Shell::repaint() {
         apply_sticky();
         for (size_t i = 0; i < layout_.sticky.size(); ++i) {
             const float saved_oy = cv.oy;
-            cv.oy += sticky_dy_[i];
+            cv.oy += sticky_dy_[i] * k;
             paint::rasterize(layout_.sticky[i].list, cv, *font_);
             cv.oy = saved_oy;
         }
@@ -1890,7 +1930,7 @@ void Shell::repaint() {
             ov.push_back(std::move(it));
             paint::rasterize(ov, cv, *font_);
         }
-        cv.oy = static_cast<float>(page_top);
+        cv.oy = static_cast<float>(page_top) * k;
         paint::rasterize(layout_.fixed, cv, *font_);
         paint::rasterize(render::media_overlay(layout_, true, *font_), cv, *font_);
     }
@@ -1909,10 +1949,10 @@ void Shell::draw_status() {
     const int y0 = win_h_ - 20;   // tira fina pegada al borde inferior
     if (y0 < 0) return;
     for (int y = y0; y < y0 + 20; ++y) {
-        uint32_t* row = fb_.data() + static_cast<size_t>(y) * win_w_;
+        uint32_t* row = fb_.data() + static_cast<size_t>(y) * pw_;
         for (int x = 0; x < win_w_; ++x) row[x] = 0xFFEEF0F2;
     }
-    for (int x = 0; x < win_w_; ++x) fb_[static_cast<size_t>(y0) * win_w_ + x] = 0xFFD8DBDF;
+    for (int x = 0; x < pw_; ++x) fb_[static_cast<size_t>(y0) * pw_ + x] = 0xFFD8DBDF;
 
     font_->set_size(11.5f);
     float x = 8;
@@ -1935,7 +1975,7 @@ void Shell::draw_status() {
     if (text.empty()) text = engine_cef_ ? cef::url() : page_.location();
     for (const auto& w : render::shape_words(*font_, text, false, false)) {
         if (x > win_w_ - 80) break;
-        render::draw_word(fb_, win_w_, win_h_, *font_, w, x,
+        render::draw_word(fb_, pw_, ph_, *font_, w, x,
                           static_cast<float>(y0) + 4, color);
         x += w.width + 11.5f * 0.30f;
     }

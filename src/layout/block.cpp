@@ -197,13 +197,13 @@ static void layout_replaced(Env& env, Box& b, const Constraint& c) {
     resolve_edges(b, c.cb_w);
     const float bp_h = b.border.h() + b.padding.h(), bp_v = b.border.v() + b.padding.v();
     auto adj = [&](float v, float bp) { return s.box_sizing == style::BoxSizing::Border ? std::max(0.f, v - bp) : v; };
-    const float ratio = (b.nat_w > 0 && b.nat_h > 0 && !b.ctl && !b.no_ratio) ? b.nat_w / b.nat_h : 0;
+    const float ratio = s.aspect_ratio > 0 ? s.aspect_ratio : (b.nat_w > 0 && b.nat_h > 0 && !b.ctl && !b.no_ratio) ? b.nat_w / b.nat_h : 0;
     const bool wa = s.width.is_auto || (s.width.has_pct() && c.cb_w < 0);
     const bool ha = s.height.is_auto || (s.height.has_pct() && c.cb_h < 0);
     float w = 0, h = 0;
     if (!wa) w = adj(resolve_len(s.width, c.cb_w), bp_h);
     if (!ha) h = adj(resolve_len(s.height, c.cb_h), bp_v);
-    if (wa && ha) { w = b.nat_w; h = b.nat_h; }
+    if (wa && ha) { w = b.nat_w; h = s.aspect_ratio > 0 ? w / ratio : b.nat_h; }
     else if (wa) w = ratio > 0 ? h * ratio : b.nat_w;
     else if (ha) h = ratio > 0 ? w / ratio : b.nat_h;
     // min/max keep the ratio when only one dimension is constrained
@@ -448,6 +448,9 @@ void layout_box(Env& env, Box& b, const Constraint& c) {
         const float v = resolve_len(s.height, c.cb_h);
         spec_h = bb ? std::max(0.f, v - bp_v) : v;
     }
+    // aspect-ratio: an auto height follows the used width (the ratio is of the box that box-sizing names)
+    if (spec_h < 0 && s.aspect_ratio > 0 && (s.height.is_auto || (s.height.has_pct() && c.cb_h < 0)))
+        spec_h = bb ? std::max(0.f, (content_w + bp_h) / s.aspect_ratio - bp_v) : content_w / s.aspect_ratio;
     auto clamp_h = [&](float h) {
         if (!s.max_height.is_auto && !(s.max_height.has_pct() && c.cb_h < 0)) {
             const float v = resolve_len(s.max_height, c.cb_h);

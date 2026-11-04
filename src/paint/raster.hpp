@@ -19,6 +19,7 @@ struct Canvas {
     int w = 0, h = 0;          // buffer size
     float ox = 0, oy = 0;      // doc -> buffer translation
     IRect clip;                // buffer-space clip (page area)
+    float scale = 1.f;         // HiDPI: the list is in logical px; it is drawn k times larger (ox/oy/clip are already buffer px)
 };
 
 // Paints `dl` over what is already in the canvas.

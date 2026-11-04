@@ -169,8 +169,8 @@ void Shell::draw_select_popup() {
     }
     paint::Canvas cv;
     cv.px = std::span<uint32_t>(fb_.data(), fb_.size());
-    cv.w = win_w_; cv.h = win_h_;
-    cv.clip = {0, url_h(), win_w_, win_h_ - bottom_h()};
+    cv.w = pw_; cv.h = ph_; cv.scale = scale();
+    cv.clip = {0, int(url_h() * scale()), pw_, int((win_h_ - bottom_h()) * scale())};
     cv.ox = 0; cv.oy = 0;
     paint::rasterize(dl, cv, *font_);
 }
@@ -265,6 +265,28 @@ bool Shell::wheel_scroll(float dx, float dy) {
     return false;
 }
 
+void Shell::pan_move(int x, int y) {
+    if (!pan_.armed) return;
+    if (!pan_.active) {
+        if (std::abs(x - pan_.x0) < 6 && std::abs(y - pan_.y0) < 6) return;
+        pan_.active = true;
+    }
+    const float mx = float(pan_.lx - x), my = float(pan_.ly - y);   // the content follows the pointer
+    pan_.lx = x; pan_.ly = y;
+    const float px = float(pan_.x0), py = float(pan_.y0 - url_h()) + scroll_;
+    bool done_x = mx == 0, done_y = my == 0;
+    for (auto it = layout_.areas.rbegin(); it != layout_.areas.rend() && !(done_x && done_y); ++it) {
+        const render::HitBox& a = *it;
+        if ((a.max_sx <= 0 && a.max_sy <= 0) || px < a.x || px >= a.x + a.w || py < a.y || py >= a.y + a.h || !a.in_clip(px, py)) continue;
+        dom::Node* n = const_cast<dom::Node*>(a.node);
+        bool moved = false;
+        if (!done_x && a.max_sx > 0) { n->scroll_x = std::clamp(n->scroll_x + mx, 0.f, a.max_sx); done_x = moved = true; }
+        if (!done_y && a.max_sy > 0) { n->scroll_y = std::clamp(n->scroll_y + my, 0.f, a.max_sy); done_y = moved = true; }
+        if (moved) fire_scroll(n);
+    }
+    need_paint_ = true;
+}
+
 bool Shell::scrollbar_press(float dx, float dy) {
     for (auto it = layout_.areas.rbegin(); it != layout_.areas.rend(); ++it) {
         const render::HitBox& a = *it;
@@ -306,6 +328,7 @@ bool Shell::page_mouse_down(const SDL_MouseButtonEvent& b) {
     for (auto it = layout_.hits.rbegin(); it != layout_.hits.rend(); ++it)   // a control wins over what is behind it
         if ((it->ctl >= 0 || it->node->name == "label") && it->in_clip(dx, dy) && dx >= it->x && dx < it->x + it->w && dy >= it->y && dy < it->y + it->h) { under = it->node; break; }
     if (!under) { page_.blur(); return false; }
+    if (page_.wants_event("mousedown")) { EventData d; d.x = dx; d.y = dy; page_.dispatch("mousedown", under, d); }
     page_.activate(const_cast<dom::Node*>(under));
     dom::Node* f = page_.focused();
     if (f && Page::is_text_control(f)) {
@@ -334,6 +357,7 @@ void Shell::page_mouse_move(int x, int y, bool left_down) {
             if (idx != popup_.hover) { popup_.hover = idx; need_paint_ = true; }
         }
     }
+    if (left_down) pan_move(x, y);
     if (sb_drag_.node && left_down) {
         const float span = sb_drag_.track - sb_drag_.thumb;
         if (span > 0) {
@@ -427,7 +451,13 @@ bool Shell::page_input(const SDL_Event& e) {
     case SDL_KEYDOWN: return page_key_down(e.key);
     case SDL_KEYUP: return false;   // forward_key_to_page (shell.cpp) delivers keyup
     case SDL_MOUSEBUTTONDOWN: return page_mouse_down(e.button);
-    case SDL_MOUSEBUTTONUP: form_drag_ = false; sb_drag_ = {}; return false;
+    case SDL_MOUSEBUTTONUP:
+        form_drag_ = false; sb_drag_ = {};
+        if (e.button.button == SDL_BUTTON_LEFT && page_.page_root() && page_.wants_event("mouseup")) {
+            EventData d; d.x = float(e.button.x); d.y = float(e.button.y - url_h()) + scroll_;
+            page_.dispatch("mouseup", page_.page_root(), d);   // also when released outside the element pressed
+        }
+        return false;
     case SDL_MOUSEMOTION: page_mouse_move(e.motion.x, e.motion.y, (e.motion.state & SDL_BUTTON_LMASK) != 0); return false;
     default: return false;
     }

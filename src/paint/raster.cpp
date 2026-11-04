@@ -3,6 +3,8 @@
 #include <render/images.hpp>
 
 #include <algorithm>
+#include <map>
+#include <tuple>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
@@ -306,9 +308,45 @@ void fill_gradient(State& s, const Item& it) {
         }
 }
 
-void draw_image(State& s, const Item& it) {
+// Box-filtered 1/n copy (a poster drawn far smaller than its file would otherwise alias: bilinear only reads 2x2 texels).
+static std::shared_ptr<const render::ImageBitmap> reduced(const render::ImageBitmap& bm, int n) {
+    static std::map<std::tuple<const render::ImageBitmap*, int, int, int>, std::shared_ptr<const render::ImageBitmap>> cache;
+    const auto key = std::make_tuple(&bm, bm.w, bm.h, n);
+    if (auto f = cache.find(key); f != cache.end()) return f->second;
+    if (cache.size() > 48) cache.clear();
+    auto out = std::make_shared<render::ImageBitmap>();
+    out->w = (bm.w + n - 1) / n; out->h = (bm.h + n - 1) / n;
+    const bool alpha = !bm.rgba.empty();
+    const int bpp = alpha ? 4 : 3;
+    const uint8_t* src = alpha ? bm.rgba.data() : bm.rgb.data();
+    std::vector<uint8_t>& dst = alpha ? out->rgba : out->rgb;
+    dst.resize(size_t(out->w) * out->h * bpp);
+    for (int y = 0; y < out->h; ++y)
+        for (int x = 0; x < out->w; ++x) {
+            uint32_t sum[4] = {0, 0, 0, 0}, cnt = 0;
+            for (int yy = y * n; yy < std::min(bm.h, y * n + n); ++yy)
+                for (int xx = x * n; xx < std::min(bm.w, x * n + n); ++xx) {
+                    const uint8_t* q = src + (size_t(yy) * bm.w + xx) * bpp;
+                    const uint32_t a = alpha ? q[3] : 255;
+                    for (int c = 0; c < 3; ++c) sum[c] += q[c] * a;   // weight by alpha: transparent texels add no colour
+                    sum[3] += a; ++cnt;
+                }
+            uint8_t* d = &dst[(size_t(y) * out->w + x) * bpp];
+            for (int c = 0; c < 3; ++c) d[c] = sum[3] ? uint8_t((sum[c] + sum[3] / 2) / sum[3]) : 0;
+            if (alpha) d[3] = uint8_t((sum[3] + cnt / 2) / cnt);
+        }
+    return cache[key] = out;
+}
+
+void draw_image(State& s, const Item& it0) {
+    Item it = it0;   // a copy: the source rect is rewritten when the bitmap is reduced
     const render::ImageBitmap* bm = it.img.get();
     if (!bm || it.w <= 0 || it.h <= 0 || it.sw <= 0 || it.sh <= 0) return;
+    if (const int n = int(std::min(it.sw / it.w, it.sh / it.h)); n >= 2 && bm->w > 1 && bm->h > 1) {
+        it.img = reduced(*bm, n);
+        bm = it.img.get();
+        it.sx /= n; it.sy /= n; it.sw /= n; it.sh /= n;
+    }
     const IRect b = bounds_of(s, it.x, it.y, it.w, it.h, 0);
     if (b.x1 <= b.x0 || b.y1 <= b.y0) return;
     Target& t = s.tgt();
@@ -494,6 +532,35 @@ IRect intersect(const IRect& a, const IRect& b) {
 
 } // namespace
 
+// HiDPI: the same list at k times the size, so glyphs and edges are rasterized at device resolution.
+static DisplayList scale_list(const DisplayList& dl, float k) {
+    DisplayList out = dl;
+    for (Item& it : out) {
+        it.x *= k; it.y *= k; it.w *= k; it.h *= k;
+        it.radii.tl *= k; it.radii.tr *= k; it.radii.br *= k; it.radii.bl *= k;
+        for (float& b : it.bw) b *= k;
+        it.glen *= k; it.gcx *= k; it.gcy *= k; it.grx *= k; it.gry *= k;
+        it.blur *= k; it.spread *= k; it.cx *= k; it.cy *= k; it.cw *= k; it.ch *= k;
+        it.px *= k; it.baseline *= k;
+        it.m[4] *= k; it.m[5] *= k;
+        for (auto* fl : {&it.filters, &it.backdrop})
+            for (auto& f : *fl) {
+                if (f.kind == style::FilterFn::Kind::Blur) f.a *= k;
+                f.dx *= k; f.dy *= k; f.blur *= k;
+            }
+        if (it.mask) it.mask = std::make_shared<const DisplayList>(scale_list(*it.mask, k));
+        if (it.clip) it.clip = std::make_shared<const DisplayList>(scale_list(*it.clip, k));
+        for (float& q : it.pts) q *= k;
+        if (it.run) {
+            auto r = std::make_shared<render::ShapedRun>(*it.run);
+            for (auto& p : r->positions) { p.x *= k; p.y *= k; p.adv *= k; p.pen *= k; }
+            r->width *= k;
+            it.run = std::move(r);
+        }
+    }
+    return out;
+}
+
 // ── filter effects (filter, backdrop-filter, text-shadow blur, mask) ──────────
 
 namespace {
@@ -659,7 +726,10 @@ IRect grow(const IRect& r, int d, const IRect& lim) {
 
 } // namespace
 
-void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) {
+void rasterize(const DisplayList& dl0, Canvas& canvas, const render::Font& font) {
+    DisplayList scaled;
+    if (canvas.scale != 1.f) scaled = scale_list(dl0, canvas.scale);
+    const DisplayList& dl = canvas.scale != 1.f ? scaled : dl0;
     State s(font, canvas.ox, canvas.oy);
     s.targets.push_back({canvas.px.data(), canvas.w, canvas.h});
     s.rects.push_back(canvas.clip);
