@@ -298,7 +298,15 @@ float layout_grid(Env& env, Box& b, const Constraint& c, float content_w, float 
     const float row_gap = s.row_gap.resolve(std::max(0.f, content_h_def));
 
     // abs children: static position at the container origin
-    for (auto& up : b.kids) if (up->is_abs()) { up->static_parent = &b; up->static_x = 0; up->static_y = 0; env.abs_pending.push_back(up.get()); }
+    // (the content box acts as the grid area; justify-self / align-self place the box inside it)
+    for (auto& up : b.kids) if (up->is_abs()) {
+        up->static_parent = &b; up->static_x = 0; up->static_y = 0;
+        auto frac = [](Align a) { return a == Align::Center ? 0.5f : (a == Align::End || a == Align::FlexEnd) ? 1.f : 0.f; };
+        const ComputedStyle& ks = *up->st;
+        up->static_fx = frac(ks.justify_self != Align::Auto ? ks.justify_self : s.justify_items);
+        up->static_fy = frac(ks.align_self != Align::Auto ? ks.align_self : s.align_items);
+        env.abs_pending.push_back(up.get());
+    }
     if (m.items.empty() && m.n_cols == 0) return 0;
 
     // contributions of each item to the column tracks

@@ -233,7 +233,7 @@ Done:
 - [x] **Homeflix-Local ported to LuxScript** and running on the own engine
       (`tools/homeflixsnap.py` goldens).
 
-In progress (another agent, not landed): CSS animations (`@keyframes`), SVG, colour emoji.
+Landed since: CSS animations (`@keyframes`), SVG, colour emoji, filters/masks/`clip-path`, container queries, web fonts, counters, HiDPI raster.
 
 Open:
 - [ ] Windows build/host (the CEF side has a Win path; the own engine/host is Linux/X11 only).

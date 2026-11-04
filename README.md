@@ -44,7 +44,7 @@ Since M6/M7 (see [docs/ROADMAP.md](docs/ROADMAP.md)): a native FFmpeg media engi
 engine), the app host (`luxium --host`: one chrome-less window per client app, own-engine
 windows, lazy Chromium, 30/42/66 MB idle for 1/2/4 apps), a LuxScript SPA runtime (async
 handlers, http/ws/storage/history/events/forms) and engine-drawn forms. CSS animations,
-SVG and emoji are in progress; Windows and native Wayland are open.
+CSS animations/`@keyframes`, SVG, colour emoji, filters, masks, container queries and Color 4/5 are in; Windows and native Wayland are open.
 
 The showcase is `examples/counter.html`: two buttons wired in Lux Script,
 state in the page store, the counter updates on screen.
@@ -101,7 +101,7 @@ examples/           demo pages
 
 ## Tests against Chromium
 
-`css-tests/` holds 118 cases (one CSS feature per page, plus responsive,
+`css-tests/` holds 136 cases (135 pass; see docs/RENDERING.md for the known gaps) (one CSS feature per page, plus responsive,
 real-page and LuxScript-mutation cases).  Each is rendered by Luxium's own
 engine and by Chromium (CEF) and compared on box rects (±1px), computed styles,
 pixels and colour:

@@ -110,11 +110,14 @@ transformaciones no 3D se interpolan función a función (mismo número y tipo d
 `rotateX/Y`, `translateZ` se ignoran.  SVG: sin `clip-path`/`mask`/`filter`/`pattern`/`<text>`/`<image>`/`marker` ni `<symbol>` con `viewBox`.
 Emoji: solo la tira CBDT de Noto Color Emoji (sin COLRv1/sbix), con el mismo orden de fontconfig que Chromium para elegir la fuente.
 
-Sin implementar (se ve como diferencia visual o se ignora): `mask-image`, `backdrop-filter`, `::first-line/::first-letter`,
-contadores CSS, `text-shadow`, filtros y `mix-blend-mode`, `object-position`, multicolumna, `writing-mode`, `@font-face`
-remotas, PNG entrelazado/16 bits (y el alfa de PNG/WebP se compone sobre blanco; solo las imágenes vectoriales mezclan con alfa), `cqw` (se aproxima con el viewport),
-posición estática de hijos absolutos de un contenedor flex/grid (siempre 0,0), barra de scroll horizontal arrastrable,
-barras de cajas internas como *overlay* (no reservan hueco, a diferencia de Chromium), `caption-side: bottom`.
+Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 18 páginas contra el oráculo): `mix-blend-mode` y
+`background-blend-mode`, multicolumna (`column-count`, `columns`, `column-rule`), `writing-mode` vertical, `::first-letter` y
+`::first-line`, transformaciones 3D (`perspective`, `rotateX/Y`, `translateZ`), `shape-outside`, `subgrid`, `@layer` (se ignora
+el orden de capas: gana la última regla), `font-variant` (small-caps) y `font-feature-settings`, `border-radius` elíptico (`a / b`),
+`border-image` y `box-decoration-break`, `<svg>` sin `pattern`/`<text>`/`<image>`/`marker`, barra de scroll horizontal arrastrable, barras de cajas internas
+como *overlay* (no reservan hueco, a diferencia de Chromium), PNG entrelazado/16 bits.
+Ya implementados y en la suite: `text-shadow`, filtros, `backdrop-filter`, `mask-image`, `clip-path`, contadores, `object-position`,
+`@font-face`, `cq*`, `text-decoration` wavy/dotted/double, gradientes cónicos y repetidos, `object-fit`, `aspect-ratio`, `@supports`, `:is/:where`.
 Pendiente de método: importar un subconjunto de los reftests de web-platform-tests.
 
 ## 3b. Formularios, foco y eventos (para el runtime de scripts)
