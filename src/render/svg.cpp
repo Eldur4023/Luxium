@@ -1,6 +1,7 @@
 #include "render/svg.hpp"
 
 #include "render/images.hpp"
+#include "render/text.hpp"
 #include "style/values.hpp"
 
 #include <algorithm>
@@ -104,7 +105,14 @@ struct XmlParser {
         for (;;) {
             const size_t lt = s.find('<', i);
             if (lt == std::string::npos) return false;
-            out.text += decode_entities(s.substr(i, lt - i));
+            {
+                const std::string chunk = decode_entities(s.substr(i, lt - i));
+                out.text += chunk;
+                if ((out.tag == "text" || out.tag == "tspan" || out.tag == "textpath") && !chunk.empty()) {
+                    Node t; t.tag = "#text"; t.text = chunk;
+                    out.kids.push_back(std::move(t));
+                }
+            }
             i = lt;
             if (s.compare(i, 4, "<!--") == 0) { const size_t e = s.find("-->", i + 4); if (e == std::string::npos) return false; i = e + 3; continue; }
             if (s.compare(i, 9, "<![CDATA[") == 0) { const size_t e = s.find("]]>", i); if (e == std::string::npos) return false; out.text += s.substr(i + 9, e - i - 9); i = e + 3; continue; }
@@ -130,7 +138,10 @@ void from_dom_rec(const dom::Node& e, Node& out) {
     for (const auto& a : e.attrs) out.attrs.emplace_back(lower(a.first), decode_entities(a.second));
     for (const auto& c : e.children) {
         if (c->is_element()) { out.kids.emplace_back(); from_dom_rec(*c, out.kids.back()); }
-        else if (c->type == dom::NodeType::Text) out.text += c->text;
+        else if (c->type == dom::NodeType::Text) {
+            out.text += c->text;
+            if (out.tag == "text" || out.tag == "tspan" || out.tag == "textpath") { Node t; t.tag = "#text"; t.text = c->text; out.kids.push_back(std::move(t)); }
+        }
     }
 }
 
@@ -347,6 +358,11 @@ struct Style {
     bool hidden = false;
     uint32_t stop_color = 0xFF000000;
     float stop_opacity = 1;
+    std::string font_family = "sans-serif";
+    float font_size = 16;
+    int font_weight = 400;
+    bool italic = false;
+    int anchor = 0;                 // text-anchor: 0 start, 1 middle, 2 end
 };
 
 struct Stop { float off; uint32_t color; };   // color ARGB incl. stop-opacity
@@ -506,6 +522,11 @@ void apply_decl(Style& s, const std::string& name, const std::string& value, con
     else if (name == "visibility") { s.hidden = v == "hidden" || v == "collapse"; }
     else if (name == "stop-color") { bool ok; const uint32_t c = parse_col(v, s.color, ok); if (ok) s.stop_color = c; }
     else if (name == "stop-opacity") s.stop_opacity = std::clamp(parse_len(v, 1), 0.f, 1.f);
+    else if (name == "font-family") s.font_family = v;
+    else if (name == "font-size") s.font_size = std::max(0.f, parse_len(v, 16));
+    else if (name == "font-weight") s.font_weight = v == "bold" ? 700 : v == "normal" ? 400 : v == "bolder" ? 700 : v == "lighter" ? 300 : std::atoi(v.c_str());
+    else if (name == "font-style") s.italic = v == "italic" || v == "oblique";
+    else if (name == "text-anchor") s.anchor = v == "middle" ? 1 : v == "end" ? 2 : 0;
 }
 
 // ── rasterisation ───────────────────────────────────────────────────────────────────────────────────
@@ -702,7 +723,7 @@ Style style_of(Ctx& c, const Node& n, const Style& parent) {
     Style s = parent;
     s.opacity = 1;   // not inherited (`visibility` is: it lives in `hidden`; `display` is handled by render_node)
     static const char* kPresentation[] = {"fill", "stroke", "color", "fill-opacity", "stroke-opacity", "opacity", "stroke-width", "stroke-linecap",
-        "stroke-linejoin", "stroke-miterlimit", "stroke-dashoffset", "stroke-dasharray", "fill-rule", "display", "visibility", "stop-color", "stop-opacity"};
+        "stroke-linejoin", "stroke-miterlimit", "stroke-dashoffset", "stroke-dasharray", "fill-rule", "display", "visibility", "stop-color", "stop-opacity", "font-family", "font-size", "font-weight", "font-style", "text-anchor"};
     for (const char* k : kPresentation) if (const auto* v = n.attr(k)) apply_decl(s, k, *v, parent);
     for (const auto& r : c.css) if (css_matches(r.sel, n)) for (const auto& d : r.decls) apply_decl(s, d.first, d.second, parent);
     if (const auto* st = n.attr("style")) for (const auto& d : parse_decls(*st)) apply_decl(s, d.first, d.second, parent);
@@ -784,6 +805,44 @@ void grad_color(const Gradient& g, float t, float out[4]) {
 struct BBox { float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f; bool ok() const { return x1 >= x0; } };
 
 // Composites the current mask through a paint.
+void render_node(Ctx& c, const Node& n, const Style& parent, const Mat& ctm);
+
+// A <pattern> rendered once at device resolution; paint_mask samples it, wrapping.
+struct Tile { std::vector<float> px; int w = 0, h = 0; float x = 0, y = 0, pw = 1, ph = 1; Mat inv; };
+
+bool build_tile(Ctx& c, const Node& pat, const Mat& ctm, const BBox& bb, Tile& t) {
+    float x = parse_len(pat.str("x")), y = parse_len(pat.str("y")), w = parse_len(pat.str("width")), h = parse_len(pat.str("height"));
+    const bool obb = lower(trim(pat.str("patternunits", "objectBoundingBox"))) != "userspaceonuse";
+    if (obb) {
+        if (!bb.ok()) return false;
+        const float bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0;
+        x = bb.x0 + x * bw; y = bb.y0 + y * bh; w *= bw; h *= bh;
+    }
+    if (w <= 0 || h <= 0) return false;
+    Mat pt;
+    if (const auto* tf = pat.attr("patterntransform")) pt = parse_transform(*tf);
+    const Mat full = ctm * pt;
+    const float sc = std::max(full.scale(), 1e-4f);
+    const int tw = std::clamp(int(std::ceil(w * sc)), 1, 2048), th = std::clamp(int(std::ceil(h * sc)), 1, 2048);
+    Canvas saved = std::move(c.cv);
+    c.cv = Canvas{};
+    c.cv.w = tw; c.cv.h = th;
+    c.cv.layers.emplace_back(size_t(tw) * size_t(th) * 4, 0.f);
+    c.cv.mask.assign(size_t(tw) * size_t(th), 0.f);
+    Mat m; m.a = float(tw) / w; m.d = float(th) / h;
+    if (const auto* vb = pat.attr("viewbox")) {
+        Number nr{*vb}; float v[4];
+        if (nr.next(v[0]) && nr.next(v[1]) && nr.next(v[2]) && nr.next(v[3]) && v[2] > 0 && v[3] > 0) { m.a = float(tw) / v[2]; m.d = float(th) / v[3]; m.e = -v[0] * m.a; m.f = -v[1] * m.d; }
+    }
+    Style st; st.color = c.current;
+    for (const auto& k : pat.kids) render_node(c, k, st, m);
+    t.px = std::move(c.cv.layers[0]);
+    c.cv = std::move(saved);
+    t.w = tw; t.h = th; t.x = x; t.y = y; t.pw = w; t.ph = h;
+    t.inv = full.inverse();
+    return true;
+}
+
 void paint_mask(Ctx& c, int bx0, int by0, int bx1, int by1, const PaintRef& p, float opacity, const Mat& ctm, const BBox& bb, const Style& st) {
     Canvas& cv = c.cv;
     float* dst = cv.px();
@@ -792,9 +851,14 @@ void paint_mask(Ctx& c, int bx0, int by0, int bx1, int by1, const PaintRef& p, f
     const Gradient* grad = nullptr;
     Gradient gstore;
     Mat inv;
+    Tile tile;
+    bool have_tile = false;
     if (pr.kind == PaintRef::Url) {
         auto it = c.ids.find(pr.url);
-        if (it != c.ids.end() && (it->second->tag == "lineargradient" || it->second->tag == "radialgradient")) {
+        if (it != c.ids.end() && it->second->tag == "pattern") {
+            if (!build_tile(c, *it->second, ctm, bb, tile)) return;
+            have_tile = true;
+        } else if (it != c.ids.end() && (it->second->tag == "lineargradient" || it->second->tag == "radialgradient")) {
             gstore = build_gradient(c, *it->second);
             if (gstore.stops.empty()) return;
             if (gstore.stops.size() == 1) { pr.kind = PaintRef::Color; pr.color = gstore.stops[0].color; }
@@ -813,7 +877,7 @@ void paint_mask(Ctx& c, int bx0, int by0, int bx1, int by1, const PaintRef& p, f
         else return;
     }
     float solid[4] = {0, 0, 0, 0};
-    if (!grad) {
+    if (!grad && !have_tile) {
         const float a = float(pr.color >> 24) / 255.f;
         solid[3] = a; solid[0] = float((pr.color >> 16) & 255) / 255.f * a; solid[1] = float((pr.color >> 8) & 255) / 255.f * a; solid[2] = float(pr.color & 255) / 255.f * a;
     }
@@ -824,7 +888,22 @@ void paint_mask(Ctx& c, int bx0, int by0, int bx1, int by1, const PaintRef& p, f
             const float cov = mrow[x] * opacity;
             if (cov <= 0.001f) continue;
             float s[4] = {solid[0], solid[1], solid[2], solid[3]};
-            if (grad) {
+            if (have_tile) {
+                const Pt q = tile.inv.apply({float(x) + 0.5f, float(y) + 0.5f});
+                float u = std::fmod(q.x - tile.x, tile.pw), v = std::fmod(q.y - tile.y, tile.ph);
+                if (u < 0) u += tile.pw;
+                if (v < 0) v += tile.ph;
+                const float fx = u / tile.pw * float(tile.w) - 0.5f, fy = v / tile.ph * float(tile.h) - 0.5f;
+                const int ix = int(std::floor(fx)), iy = int(std::floor(fy));
+                const float ax = fx - float(ix), ay = fy - float(iy);
+                s[0] = s[1] = s[2] = s[3] = 0;
+                for (int k = 0; k < 4; ++k) {
+                    const int tx = ((ix + (k & 1)) % tile.w + tile.w) % tile.w, ty = ((iy + (k >> 1)) % tile.h + tile.h) % tile.h;
+                    const float wgt = ((k & 1) ? ax : 1 - ax) * ((k >> 1) ? ay : 1 - ay);
+                    const float* tp = &tile.px[(size_t(ty) * size_t(tile.w) + size_t(tx)) * 4];
+                    for (int ch = 0; ch < 4; ++ch) s[ch] += wgt * tp[ch];
+                }
+            } else if (grad) {
                 const Pt q = inv.apply({float(x) + 0.5f, float(y) + 0.5f});
                 float t;
                 if (!grad->radial) {
@@ -939,6 +1018,362 @@ Polys shape_path(const Node& n, float tol) {
     return {};
 }
 
+std::string url_id(const std::string& v) {   // "url(#id)" -> id
+    const size_t a = v.find("url(");
+    if (a == std::string::npos) return {};
+    size_t b = v.find(')', a);
+    if (b == std::string::npos) return {};
+    std::string r = trim(v.substr(a + 4, b - a - 4));
+    if (!r.empty() && (r.front() == '"' || r.front() == '\'')) r.erase(r.begin());
+    if (!r.empty() && (r.back() == '"' || r.back() == '\'')) r.pop_back();
+    return !r.empty() && r[0] == '#' ? r.substr(1) : std::string();
+}
+
+// A presentation property of a node: the attribute, else the inline style.
+std::string node_prop(const Node& n, const char* name) {
+    if (const auto* v = n.attr(name)) return *v;
+    if (const auto* st = n.attr("style")) for (const auto& d : parse_decls(*st)) if (d.first == name) return d.second;
+    return {};
+}
+
+// Viewport mapping of a viewBox into w x h (preserveAspectRatio).
+Mat viewport_mat(const float vb[4], float w, float h, const std::string& par_raw) {
+    const std::string par = lower(trim(par_raw.empty() ? "xMidYMid meet" : par_raw));
+    const bool none = par.find("none") != std::string::npos, slice = par.find("slice") != std::string::npos;
+    float sx = w / vb[2], sy = h / vb[3];
+    float ax = .5f, ay = .5f;
+    if (par.find("xmin") != std::string::npos) ax = 0; else if (par.find("xmax") != std::string::npos) ax = 1;
+    if (par.find("ymin") != std::string::npos) ay = 0; else if (par.find("ymax") != std::string::npos) ay = 1;
+    if (!none) sx = sy = slice ? std::max(sx, sy) : std::min(sx, sy);
+    Mat m;
+    m.a = sx; m.d = sy;
+    m.e = (w - vb[2] * sx) * ax - vb[0] * sx;
+    m.f = (h - vb[3] * sy) * ay - vb[1] * sy;
+    return m;
+}
+bool parse_viewbox(const Node& n, float vb[4]) {
+    const auto* v = n.attr("viewbox");
+    if (!v) return false;
+    Number nr{*v};
+    return nr.next(vb[0]) && nr.next(vb[1]) && nr.next(vb[2]) && nr.next(vb[3]) && vb[2] > 0 && vb[3] > 0;
+}
+
+// Renders `body` into a fresh transparent layer and returns it (premultiplied RGBA).
+std::vector<float> render_layer(Ctx& c, const std::function<void()>& body) {
+    c.cv.layers.emplace_back(size_t(c.cv.w) * size_t(c.cv.h) * 4, 0.f);
+    body();
+    std::vector<float> top = std::move(c.cv.layers.back());
+    c.cv.layers.pop_back();
+    return top;
+}
+
+void gaussian_blur(std::vector<float>& px, int w, int h, float sx, float sy) {
+    auto pass = [&](bool horiz, float sigma) {
+        if (sigma < 0.3f) return;
+        const int r = std::min(int(std::ceil(sigma * 3.f)), 200);
+        std::vector<float> k(size_t(2 * r + 1));
+        float sum = 0;
+        for (int i = -r; i <= r; ++i) { k[size_t(i + r)] = std::exp(-float(i * i) / (2 * sigma * sigma)); sum += k[size_t(i + r)]; }
+        for (float& v : k) v /= sum;
+        std::vector<float> out(px.size(), 0.f);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                float acc[4] = {0, 0, 0, 0};
+                for (int i = -r; i <= r; ++i) {
+                    const int xx = horiz ? x + i : x, yy = horiz ? y : y + i;
+                    if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+                    const float* sp = &px[(size_t(yy) * size_t(w) + size_t(xx)) * 4];
+                    const float kv = k[size_t(i + r)];
+                    for (int ch = 0; ch < 4; ++ch) acc[ch] += sp[ch] * kv;
+                }
+                float* dp = &out[(size_t(y) * size_t(w) + size_t(x)) * 4];
+                for (int ch = 0; ch < 4; ++ch) dp[ch] = acc[ch];
+            }
+        px.swap(out);
+    };
+    pass(true, sx);
+    pass(false, sy);
+}
+
+// <filter>: feGaussianBlur, feOffset and feDropShadow, applied in order to the element's own pixels.
+void apply_filter(Ctx& c, std::vector<float>& px, const Node& f, const Mat& ctm) {
+    const int w = c.cv.w, h = c.cv.h;
+    const float sc = std::max(ctm.scale(), 1e-4f);
+    for (const auto& pr : f.kids) {
+        if (pr.tag == "fegaussianblur") {
+            Number nr{pr.str("stddeviation", "0")};
+            float a = 0, b = 0;
+            if (!nr.next(a)) a = 0;
+            if (!nr.next(b)) b = a;
+            gaussian_blur(px, w, h, a * sc, b * sc);
+        } else if (pr.tag == "feoffset" || pr.tag == "fedropshadow") {
+            const float dx = parse_len(pr.str("dx")) * sc, dy = parse_len(pr.str("dy")) * sc;
+            std::vector<float> sh(px.size(), 0.f);
+            if (pr.tag == "fedropshadow") {
+                bool ok = true;
+                uint32_t col = parse_col(pr.str("flood-color", "black"), c.current, ok);
+                float op = parse_len(pr.str("flood-opacity"), 1);
+                const float ca = float(col >> 24) / 255.f * op;
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < w; ++x) {
+                        const int sx = x - int(std::lround(dx)), sy = y - int(std::lround(dy));
+                        if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+                        const float a = px[(size_t(sy) * size_t(w) + size_t(sx)) * 4 + 3] * ca;
+                        float* d = &sh[(size_t(y) * size_t(w) + size_t(x)) * 4];
+                        d[0] = float((col >> 16) & 255) / 255.f * a; d[1] = float((col >> 8) & 255) / 255.f * a; d[2] = float(col & 255) / 255.f * a; d[3] = a;
+                    }
+                Number nr{pr.str("stddeviation", "0")};
+                float a = 0, b = 0;
+                if (!nr.next(a)) a = 0;
+                if (!nr.next(b)) b = a;
+                gaussian_blur(sh, w, h, a * sc, b * sc);
+                for (size_t i = 0; i < px.size() / 4; ++i) {   // the element over its shadow
+                    const float ia = 1.f - px[i * 4 + 3];
+                    for (int ch = 0; ch < 4; ++ch) px[i * 4 + size_t(ch)] += sh[i * 4 + size_t(ch)] * ia;
+                }
+            } else {
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < w; ++x) {
+                        const int sx = x - int(std::lround(dx)), sy = y - int(std::lround(dy));
+                        if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+                        std::memcpy(&sh[(size_t(y) * size_t(w) + size_t(x)) * 4], &px[(size_t(sy) * size_t(w) + size_t(sx)) * 4], 4 * sizeof(float));
+                    }
+                px.swap(sh);
+            }
+        }
+    }
+}
+
+// Device-space bounding box of what a layer holds, as a user-space box (for objectBoundingBox units).
+BBox layer_bbox_user(const Ctx& c, const std::vector<float>& px, const Mat& ctm) {
+    int x0 = c.cv.w, y0 = c.cv.h, x1 = -1, y1 = -1;
+    for (int y = 0; y < c.cv.h; ++y)
+        for (int x = 0; x < c.cv.w; ++x)
+            if (px[(size_t(y) * size_t(c.cv.w) + size_t(x)) * 4 + 3] > 0.001f) { x0 = std::min(x0, x); x1 = std::max(x1, x + 1); y0 = std::min(y0, y); y1 = std::max(y1, y + 1); }
+    BBox bb;
+    if (x1 < 0) return bb;
+    const Mat inv = ctm.inverse();
+    for (int i = 0; i < 4; ++i) {
+        const Pt q = inv.apply({float((i & 1) ? x1 : x0), float((i & 2) ? y1 : y0)});
+        bb.x0 = std::min(bb.x0, q.x); bb.x1 = std::max(bb.x1, q.x); bb.y0 = std::min(bb.y0, q.y); bb.y1 = std::max(bb.y1, q.y);
+    }
+    return bb;
+}
+
+// clip-path / mask: the referenced content, drawn into a layer, scales every pixel of the element's layer.
+void apply_clip_or_mask(Ctx& c, std::vector<float>& px, const Node& ref, const Mat& ctm, bool is_mask) {
+    Mat m = ctm;
+    if (const auto* tf = ref.attr("transform")) m = m * parse_transform(*tf);
+    const std::string units = lower(trim(ref.str(is_mask ? "maskcontentunits" : "clippathunits")));
+    if (units == "objectboundingbox") {
+        const BBox bb = layer_bbox_user(c, px, ctm);
+        if (!bb.ok()) { std::fill(px.begin(), px.end(), 0.f); return; }
+        Mat o; o.a = bb.x1 - bb.x0; o.d = bb.y1 - bb.y0; o.e = bb.x0; o.f = bb.y0;
+        m = m * o;
+    }
+    Style st; st.color = c.current;
+    if (!is_mask) { st.fill.color = 0xFFFFFFFF; st.stroke = PaintRef{PaintRef::None}; }
+    const std::vector<float> cov = render_layer(c, [&] { for (const auto& k : ref.kids) render_node(c, k, st, m); });
+    for (size_t i = 0; i < px.size() / 4; ++i) {
+        const float* q = &cov[i * 4];
+        const float k = is_mask ? 0.2125f * q[0] + 0.7154f * q[1] + 0.0721f * q[2] : q[3];
+        for (int ch = 0; ch < 4; ++ch) px[i * 4 + size_t(ch)] *= k;
+    }
+}
+
+// Markers of a path-like element: start / mid (polyline-ish vertices) / end, oriented along the path.
+void draw_marker(Ctx& c, const Node& mk, Pt at, float angle_deg, const Style& st, const Mat& ctm) {
+    const float mw = parse_len(mk.str("markerwidth"), 3), mh = parse_len(mk.str("markerheight"), 3);
+    const bool sw_units = lower(trim(mk.str("markerunits", "strokeWidth"))) != "userspaceonuse";
+    const std::string orient = lower(trim(mk.str("orient", "0")));
+    float ang = 0;
+    if (orient == "auto" || orient == "auto-start-reverse") ang = angle_deg; else ang = parse_len(orient, 0);
+    Mat m = ctm;
+    Mat t; t.e = at.x; t.f = at.y; m = m * t;
+    const float r = ang * kPi / 180.f;
+    Mat rot; rot.a = std::cos(r); rot.b = std::sin(r); rot.c = -std::sin(r); rot.d = std::cos(r);
+    m = m * rot;
+    if (sw_units) { Mat sc; sc.a = sc.d = st.stroke_width; m = m * sc; }
+    float vb[4];
+    float refx = parse_len(mk.str("refx")), refy = parse_len(mk.str("refy"));
+    if (parse_viewbox(mk, vb)) {
+        const Mat vm = viewport_mat(vb, mw, mh, mk.str("preserveaspectratio"));
+        // the reference point is in viewBox units: through the viewBox mapping, then the marker origin is moved onto the vertex
+        const Pt rp = vm.apply({refx, refy});
+        Mat back; back.e = -rp.x; back.f = -rp.y;
+        m = m * back * vm;
+    } else { Mat back; back.e = -refx; back.f = -refy; m = m * back; }
+    Style base; base.color = c.current;
+    ++c.depth;
+    for (const auto& k : mk.kids) render_node(c, k, base, m);
+    --c.depth;
+}
+
+void draw_markers(Ctx& c, const Node& n, const Polys& path, const Style& st, const Mat& ctm) {
+    const std::string ms = url_id(node_prop(n, "marker-start")), mm = url_id(node_prop(n, "marker-mid")), me = url_id(node_prop(n, "marker-end"));
+    if (ms.empty() && mm.empty() && me.empty()) return;
+    if (c.depth > 8) return;
+    auto find = [&](const std::string& id) -> const Node* { auto it = c.ids.find(id); return it != c.ids.end() && it->second->tag == "marker" ? it->second : nullptr; };
+    auto dir = [](Pt a, Pt b) { return std::atan2(b.y - a.y, b.x - a.x) * 180.f / kPi; };
+    for (size_t pi = 0; pi < path.size(); ++pi) {
+        const auto& pts = path[pi].pts;
+        if (pts.size() < 2) continue;
+        // drop duplicate neighbours so a tangent exists
+        std::vector<Pt> v;
+        for (const Pt& p : pts) if (v.empty() || std::fabs(p.x - v.back().x) + std::fabs(p.y - v.back().y) > 1e-4f) v.push_back(p);
+        if (v.size() < 2) continue;
+        if (pi == 0) if (const Node* mk = find(ms)) draw_marker(c, *mk, v.front(), dir(v[0], v[1]), st, ctm);
+        if (n.tag != "path") if (const Node* mk = find(mm))
+            for (size_t i = 1; i + 1 < v.size(); ++i) {
+                const float a0 = dir(v[i - 1], v[i]), a1 = dir(v[i], v[i + 1]);
+                float d = a1 - a0;
+                while (d > 180) d -= 360;
+                while (d < -180) d += 360;
+                draw_marker(c, *mk, v[i], a0 + d / 2, st, ctm);
+            }
+        if (pi + 1 == path.size()) if (const Node* mk = find(me)) draw_marker(c, *mk, v.back(), dir(v[v.size() - 2], v.back()), st, ctm);
+    }
+}
+
+// <image>: a data: URL or an absolute path, fitted by preserveAspectRatio, sampled bilinearly through the CTM.
+void draw_image(Ctx& c, const Node& n, const Style& st, const Mat& ctm) {
+    const std::string* href = n.attr("href") ? n.attr("href") : n.attr("xlink:href");
+    if (!href || href->empty()) return;
+    const ImageBitmap* bm = load_image(*href);
+    if (!bm || bm->w <= 0 || bm->h <= 0) return;
+    const float x = parse_len(n.str("x")), y = parse_len(n.str("y")), w = parse_len(n.str("width")), h = parse_len(n.str("height"));
+    if (w <= 0 || h <= 0) return;
+    float iw = float(bm->w), ih = float(bm->h);
+    if (bm->svg) intrinsic_size(*bm->svg, iw, ih);
+    const float vb[4] = {0, 0, iw, ih};
+    const Mat fit = viewport_mat(vb, w, h, bm->svg && !has_viewbox(*bm->svg) ? std::string("none") : n.str("preserveaspectratio"));
+    Mat m = ctm;
+    Mat t; t.e = x; t.f = y;
+    m = m * t * fit;   // image pixel space -> device
+    const float sc = std::max(m.scale(), 1e-4f);
+    std::shared_ptr<const ImageBitmap> keep;
+    const ImageBitmap* src = bm;
+    if (bm->svg) {
+        keep = image_at(*bm, std::max(1, int(std::lround(iw * sc))), std::max(1, int(std::lround(ih * sc))));
+        if (!keep) return;
+        src = keep.get();
+    }
+    const float kx = float(src->w) / iw, ky = float(src->h) / ih;   // image units -> bitmap pixels
+    const Mat inv = m.inverse();
+    // device box of the fitted image (clipped to the viewport x,y,w,h by the caller's clip would need a mask: the viewport clips)
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int i = 0; i < 4; ++i) { const Pt q = m.apply({(i & 1) ? iw : 0.f, (i & 2) ? ih : 0.f}); x0 = std::min(x0, q.x); x1 = std::max(x1, q.x); y0 = std::min(y0, q.y); y1 = std::max(y1, q.y); }
+    const Mat vp = ctm * t;   // viewport box -> device, for clipping to it
+    const Mat vinv = vp.inverse();
+    const int bx0 = std::max(0, int(std::floor(x0))), by0 = std::max(0, int(std::floor(y0))), bx1 = std::min(c.cv.w, int(std::ceil(x1))), by1 = std::min(c.cv.h, int(std::ceil(y1)));
+    float* dst = c.cv.px();
+    const bool has_a = !src->rgba.empty();
+    for (int py = by0; py < by1; ++py)
+        for (int px = bx0; px < bx1; ++px) {
+            const Pt q = inv.apply({float(px) + 0.5f, float(py) + 0.5f});
+            if (q.x < 0 || q.y < 0 || q.x >= iw || q.y >= ih) continue;
+            const Pt vq = vinv.apply({float(px) + 0.5f, float(py) + 0.5f});
+            if (vq.x < 0 || vq.y < 0 || vq.x >= w || vq.y >= h) continue;
+            const float fx = q.x * kx - 0.5f, fy = q.y * ky - 0.5f;
+            const int ix = int(std::floor(fx)), iy = int(std::floor(fy));
+            const float ax = fx - float(ix), ay = fy - float(iy);
+            float s[4] = {0, 0, 0, 0};
+            for (int k = 0; k < 4; ++k) {
+                const int sx = std::clamp(ix + (k & 1), 0, src->w - 1), sy = std::clamp(iy + (k >> 1), 0, src->h - 1);
+                const float wgt = ((k & 1) ? ax : 1 - ax) * ((k >> 1) ? ay : 1 - ay);
+                float r, g, b, a;
+                if (has_a) { const uint8_t* p = &src->rgba[(size_t(sy) * size_t(src->w) + size_t(sx)) * 4]; a = p[3] / 255.f; r = p[0] / 255.f * a; g = p[1] / 255.f * a; b = p[2] / 255.f * a; }
+                else { const uint8_t* p = &src->rgb[(size_t(sy) * size_t(src->w) + size_t(sx)) * 3]; a = 1; r = p[0] / 255.f; g = p[1] / 255.f; b = p[2] / 255.f; }
+                s[0] += wgt * r; s[1] += wgt * g; s[2] += wgt * b; s[3] += wgt * a;
+            }
+            const float op = st.opacity;
+            float* d = dst + (size_t(py) * size_t(c.cv.w) + size_t(px)) * 4;
+            const float ia = 1.f - s[3] * op;
+            for (int ch = 0; ch < 3; ++ch) d[ch] = s[ch] * op + d[ch] * ia;
+            d[3] = s[3] * op + d[3] * ia;
+        }
+}
+
+// <text>: glyph outlines from the engine's font, filled and stroked like any shape.
+struct TextRun { std::string text; Style st; float dx = 0, dy = 0; bool has_x = false, has_y = false; float x = 0, y = 0; };
+void collect_text(Ctx& c, const Node& n, const Style& st, std::vector<TextRun>& out, bool first) {
+    for (const auto& k : n.kids) {
+        if (k.tag == "#text") {
+            std::string t;
+            bool sp = false;
+            for (char ch : k.text) {
+                if (ch == '\n' || ch == '\t' || ch == '\r' || ch == ' ') { sp = true; continue; }
+                if (sp && !t.empty()) t += ' ';
+                else if (sp && !out.empty() && !out.back().text.empty() && out.back().text.back() != ' ') t += ' ';
+                sp = false;
+                t += ch;
+            }
+            if (sp && !t.empty()) t += ' ';
+            if (t.empty() && !(sp && !out.empty())) continue;
+            TextRun r; r.text = t; r.st = st;
+            out.push_back(std::move(r));
+        } else if (k.tag == "tspan") {
+            Style ks = style_of(c, k, st);
+            TextRun marker; marker.st = ks;
+            if (k.attr("x")) { marker.has_x = true; marker.x = parse_len(k.str("x")); }
+            if (k.attr("y")) { marker.has_y = true; marker.y = parse_len(k.str("y")); }
+            marker.dx = parse_len(k.str("dx")); marker.dy = parse_len(k.str("dy"));
+            out.push_back(std::move(marker));   // an empty run that carries the positioning of what follows
+            collect_text(c, k, ks, out, false);
+        }
+    }
+    (void)first;
+}
+
+void draw_text(Ctx& c, const Node& n, const Style& st, const Mat& ctm) {
+    const Font* font = Font::active();
+    if (!font || st.hidden) return;
+    std::vector<TextRun> runs;
+    collect_text(c, n, st, runs, true);
+    float penx = parse_len(n.str("x")), peny = parse_len(n.str("y"));
+    penx += parse_len(n.str("dx")); peny += parse_len(n.str("dy"));
+    struct Piece { Polys polys; float x0, x1; Style st; };
+    std::vector<Piece> chunk;
+    float chunk_start = penx;
+    int chunk_anchor = st.anchor;
+    auto flush = [&]() {
+        if (chunk.empty()) return;
+        float w = penx - chunk_start;
+        const float shift = chunk_anchor == 1 ? -w / 2 : chunk_anchor == 2 ? -w : 0.f;
+        for (Piece& pc : chunk) {
+            for (auto& pl : pc.polys) for (Pt& q : pl.pts) q.x += shift;
+            draw_shape(c, pc.polys, pc.st, ctm);
+        }
+        chunk.clear();
+    };
+    bool first_run = true;
+    for (const TextRun& r : runs) {
+        if (r.has_x) { flush(); penx = r.x; chunk_start = penx; chunk_anchor = r.st.anchor; }
+        if (r.has_y) peny = r.y;
+        penx += r.dx; peny += r.dy;
+        if (first_run) { chunk_anchor = r.st.anchor; first_run = false; }
+        if (r.text.empty()) continue;
+        const Style& rs = r.st;
+        const FaceKey key = font->resolve(rs.font_family, rs.font_weight, rs.italic);
+        const ShapedRun run = font->shape_at(r.text, key, std::max(rs.font_size, 0.1f));
+        Piece pc; pc.st = rs; pc.x0 = penx;
+        for (const auto& p : run.positions) {
+            std::vector<std::vector<std::pair<float, float>>> contours;
+            font->glyph_outline(p.glyph_index, p.face >= 0 ? FaceKey{p.face} : key, rs.font_size, contours);
+            for (auto& ct : contours) {
+                if (ct.size() < 3) continue;
+                Poly pl; pl.closed = true;
+                for (auto& q : ct) pl.pts.push_back({penx + p.x + q.first, peny - p.y - q.second});
+                pc.polys.push_back(std::move(pl));
+            }
+        }
+        penx += run.width;
+        pc.x1 = penx;
+        chunk.push_back(std::move(pc));
+    }
+    flush();
+}
+
 void render_node(Ctx& c, const Node& n, const Style& parent, const Mat& ctm);
 
 void render_kids(Ctx& c, const Node& n, const Style& st, const Mat& ctm) {
@@ -947,7 +1382,7 @@ void render_kids(Ctx& c, const Node& n, const Style& st, const Mat& ctm) {
 
 void render_node(Ctx& c, const Node& n, const Style& parent, const Mat& ctm_in) {
     static const char* kSkip[] = {"defs", "style", "title", "desc", "metadata", "lineargradient", "radialgradient", "clippath", "mask", "pattern", "marker",
-                                  "symbol", "filter", "script", "text", "image", "foreignobject", "switch"};
+                                  "symbol", "filter", "script", "foreignobject", "switch", "#text"};
     for (const char* s : kSkip) if (n.tag == s) return;
     if (c.depth > 24) return;
     Style st = style_of(c, n, parent);
@@ -956,12 +1391,19 @@ void render_node(Ctx& c, const Node& n, const Style& parent, const Mat& ctm_in) 
     if (const auto* s = n.attr("style")) for (const auto& d : parse_decls(*s)) if (d.first == "display" && d.second == "none") return;
     Mat ctm = ctm_in;
     if (const auto* t = n.attr("transform")) ctm = ctm * parse_transform(*t);
-    const bool layer = st.opacity < 1.f;
+    const std::string clip_id = url_id(node_prop(n, "clip-path")), mask_id = url_id(node_prop(n, "mask")), filter_id = url_id(node_prop(n, "filter"));
+    const bool effects = !clip_id.empty() || !mask_id.empty() || !filter_id.empty();
+    const bool layer = st.opacity < 1.f || effects;
     if (layer) c.cv.layers.emplace_back(size_t(c.cv.w) * size_t(c.cv.h) * 4, 0.f);
     ++c.depth;
     if (n.tag == "g" || n.tag == "svg" || n.tag == "a") {
         Mat m = ctm;
-        if (n.tag == "svg") { m.e += 0; Mat t; t.e = parse_len(n.str("x")); t.f = parse_len(n.str("y")); m = ctm * t; }
+        if (n.tag == "svg") {   // a nested <svg>: its own viewport (x, y, width, height, viewBox)
+            Mat t; t.e = parse_len(n.str("x")); t.f = parse_len(n.str("y")); m = ctm * t;
+            float vb[4];
+            const float w = parse_len(n.str("width")), h = parse_len(n.str("height"));
+            if (parse_viewbox(n, vb) && w > 0 && h > 0) m = m * viewport_mat(vb, w, h, n.str("preserveaspectratio"));
+        }
         render_kids(c, n, st, m);
     } else if (n.tag == "use") {
         const std::string* href = n.attr("href") ? n.attr("href") : n.attr("xlink:href");
@@ -971,20 +1413,40 @@ void render_node(Ctx& c, const Node& n, const Style& parent, const Mat& ctm_in) 
                 Mat t; t.e = parse_len(n.str("x")); t.f = parse_len(n.str("y"));
                 const Node& ref = *it->second;
                 if (ref.tag == "symbol" || ref.tag == "svg") {
-                    Mat vb = ctm * t;
-                    render_kids(c, ref, st, vb);
+                    Mat vm = ctm * t;
+                    float vb[4];
+                    const float uw = n.attr("width") ? parse_len(n.str("width")) : (ref.attr("width") ? parse_len(ref.str("width")) : 0.f);
+                    const float uh = n.attr("height") ? parse_len(n.str("height")) : (ref.attr("height") ? parse_len(ref.str("height")) : 0.f);
+                    if (parse_viewbox(ref, vb)) {
+                        const float w = uw > 0 ? uw : vb[2], h = uh > 0 ? uh : vb[3];
+                        vm = vm * viewport_mat(vb, w, h, ref.str("preserveaspectratio"));
+                    }
+                    render_kids(c, ref, st, vm);
                 } else render_node(c, ref, st, ctm * t);
             }
         }
+    } else if (n.tag == "text") {
+        draw_text(c, n, st, ctm);
+    } else if (n.tag == "image") {
+        draw_image(c, n, st, ctm);
     } else {
         const float sc = std::max(ctm.scale(), 1e-4f);
         const Polys path = shape_path(n, 0.15f / sc);
-        if (!path.empty() && !st.hidden) draw_shape(c, path, st, ctm);
+        if (!path.empty() && !st.hidden) {
+            draw_shape(c, path, st, ctm);
+            if (n.tag == "path" || n.tag == "line" || n.tag == "polyline" || n.tag == "polygon") draw_markers(c, n, path, st, ctm);
+        }
     }
     --c.depth;
     if (layer) {
         std::vector<float> top = std::move(c.cv.layers.back());
         c.cv.layers.pop_back();
+        if (effects) {
+            auto look = [&](const std::string& id, const char* tag) -> const Node* { auto it = c.ids.find(id); return it != c.ids.end() && it->second->tag == tag ? it->second : nullptr; };
+            if (const Node* f = look(filter_id, "filter")) apply_filter(c, top, *f, ctm);
+            if (const Node* cp = look(clip_id, "clippath")) apply_clip_or_mask(c, top, *cp, ctm, false);
+            if (const Node* mk = look(mask_id, "mask")) apply_clip_or_mask(c, top, *mk, ctm, true);
+        }
         float* d = c.cv.px();
         const size_t n_px = size_t(c.cv.w) * size_t(c.cv.h);
         for (size_t i = 0; i < n_px; ++i) {
@@ -1045,11 +1507,20 @@ std::shared_ptr<const Doc> parse(const std::string& xml, uint32_t current) {
     return finish(std::move(root), current);
 }
 
-std::shared_ptr<const Doc> from_dom(const dom::Node& svg, uint32_t current) {
+std::shared_ptr<const Doc> from_dom(const dom::Node& svg, uint32_t current, const std::string& font_family, float font_size,
+                                    int font_weight, bool italic) {
     Node root;
     from_dom_rec(svg, root);
+    // text inherits the font of the page around the <svg>, unless the element names its own
+    auto def = [&](const char* k, const std::string& v) { if (!v.empty() && !root.attr(k)) root.attrs.emplace_back(k, v); };
+    def("font-family", font_family);
+    if (font_size > 0) def("font-size", std::to_string(font_size));
+    def("font-weight", std::to_string(font_weight));
+    def("font-style", italic ? "italic" : "normal");
     return finish(std::move(root), current);
 }
+
+bool has_viewbox(const Doc& d) { float vb[4]; return viewbox(d.root, vb); }
 
 void intrinsic_size(const Doc& d, float& w, float& h) {
     float vb[4];

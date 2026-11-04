@@ -54,6 +54,8 @@ struct Font::Face {
 
 static FT_Library ft_lib = nullptr;   // process-wide, fine per FreeType docs
 
+namespace { const Font* g_active_font = nullptr; }
+
 std::unique_ptr<Font> Font::load(const std::string& regular, const std::string& bold,
                                  const std::string& mono) {
     if (!ft_lib && FT_Init_FreeType(&ft_lib)) return nullptr;
@@ -69,6 +71,7 @@ std::unique_ptr<Font> Font::load(const std::string& regular, const std::string& 
     if (!load_face(font->regular_, regular) || !load_face(font->bold_, bold) ||
         !load_face(font->mono_, mono))
         return nullptr;
+    g_active_font = font.get();
     return font;
 }
 
@@ -90,10 +93,37 @@ std::unique_ptr<Font> Font::load_dejavu(const std::string& dir) {
             }
     if (!font->var_[0][0][0]) return nullptr;
     // legacy API (chrome text) keeps working on the same set
+    g_active_font = font.get();
     return font;
 }
 
-Font::~Font() = default;
+const Font* Font::active() { return g_active_font; }
+Font::~Font() { if (g_active_font == this) g_active_font = nullptr; }
+
+void Font::glyph_outline(uint32_t glyph_index, FaceKey key, float px, std::vector<std::vector<std::pair<float, float>>>& out) const {
+    Face* f = face(key);
+    if (!f || !f->ft) return;
+    use_size(f, px);
+    if (FT_Load_Glyph(f->ft, glyph_index, FT_LOAD_NO_BITMAP | FT_LOAD_NO_HINTING)) return;
+    if (f->ft->glyph->format != FT_GLYPH_FORMAT_OUTLINE) return;
+    struct Ctx { std::vector<std::vector<std::pair<float, float>>>* out; float px, py; } ctx{&out, 0, 0};
+    auto P = [](const FT_Vector* v) { return std::pair<float, float>(float(v->x) / 64.f, float(v->y) / 64.f); };
+    FT_Outline_Funcs fn{};
+    fn.move_to = [](const FT_Vector* to, void* u) { auto* c = static_cast<Ctx*>(u); c->out->emplace_back(); c->out->back().push_back({float(to->x) / 64.f, float(to->y) / 64.f}); c->px = float(to->x) / 64.f; c->py = float(to->y) / 64.f; return 0; };
+    fn.line_to = [](const FT_Vector* to, void* u) { auto* c = static_cast<Ctx*>(u); c->out->back().push_back({float(to->x) / 64.f, float(to->y) / 64.f}); c->px = float(to->x) / 64.f; c->py = float(to->y) / 64.f; return 0; };
+    fn.conic_to = [](const FT_Vector* ctl, const FT_Vector* to, void* u) {
+        auto* c = static_cast<Ctx*>(u);
+        const float cx = float(ctl->x) / 64.f, cy = float(ctl->y) / 64.f, tx = float(to->x) / 64.f, ty = float(to->y) / 64.f;
+        for (int i = 1; i <= 8; ++i) { const float t = float(i) / 8, a = (1 - t) * (1 - t), b = 2 * (1 - t) * t, d = t * t; c->out->back().push_back({a * c->px + b * cx + d * tx, a * c->py + b * cy + d * ty}); }
+        c->px = tx; c->py = ty; return 0; };
+    fn.cubic_to = [](const FT_Vector* c1, const FT_Vector* c2, const FT_Vector* to, void* u) {
+        auto* c = static_cast<Ctx*>(u);
+        const float x1 = float(c1->x) / 64.f, y1 = float(c1->y) / 64.f, x2 = float(c2->x) / 64.f, y2 = float(c2->y) / 64.f, tx = float(to->x) / 64.f, ty = float(to->y) / 64.f;
+        for (int i = 1; i <= 12; ++i) { const float t = float(i) / 12, m = 1 - t; const float a = m * m * m, b = 3 * m * m * t, d = 3 * m * t * t, e = t * t * t; c->out->back().push_back({a * c->px + b * x1 + d * x2 + e * tx, a * c->py + b * y1 + d * y2 + e * ty}); }
+        c->px = tx; c->py = ty; return 0; };
+    (void)P;
+    FT_Outline_Decompose(&f->ft->glyph->outline, &fn, &ctx);
+}
 
 Font::Face* Font::face(FaceKey k) const {
     if (k.id >= 0 && k.id < static_cast<int>(dyn_.size()) && dyn_[static_cast<size_t>(k.id)])

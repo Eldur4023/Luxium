@@ -488,7 +488,7 @@ struct Builder {
         }
         if (tag == "svg") {   // inline SVG: a replaced box drawn by the vector rasteriser
             b = make(Box::Kind::Replaced, &el, st);
-            if (auto doc = render::svg::from_dom(el, st->color)) {
+            if (auto doc = render::svg::from_dom(el, st->color, st->family_name, st->font_size, st->font_weight, st->italic)) {
                 float w, h;
                 render::svg::intrinsic_size(*doc, w, h);
                 auto bm = std::make_shared<render::ImageBitmap>();

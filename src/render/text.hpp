@@ -57,6 +57,10 @@ public:
     // regular/bold/italic/bold-italic; missing variants fall back).
     static std::unique_ptr<Font> load_dejavu(const std::string& dir);
     ~Font();
+    // The font the engine draws with (the last one created): SVG text takes its glyph outlines from it.
+    static const Font* active();
+    // A glyph's outline at `px` em as closed polylines in pixels, y up (FreeType's orientation).
+    void glyph_outline(uint32_t glyph_index, FaceKey key, float px, std::vector<std::vector<std::pair<float, float>>>& out) const;
 
     // Picks the face for a CSS `font-family` list like Chromium on Linux does:
     // each family goes through fontconfig and is accepted only if it is the

@@ -20,10 +20,14 @@ struct Doc;
 // Parses standalone SVG text; null when it is not an SVG document.  `current` is what `currentColor` means.
 std::shared_ptr<const Doc> parse(const std::string& xml, uint32_t current = 0xFF000000);
 // An inline <svg> element (its subtree is read as is).
-std::shared_ptr<const Doc> from_dom(const dom::Node& svg, uint32_t current);
+// `font_*`: the CSS font of the element's surroundings, which the SVG text inherits (family list, px, weight, italic).
+std::shared_ptr<const Doc> from_dom(const dom::Node& svg, uint32_t current, const std::string& font_family = {}, float font_size = 0,
+                                    int font_weight = 400, bool italic = false);
 
 // Intrinsic size: width/height attributes, else the viewBox, else 300x150.
 void intrinsic_size(const Doc& d, float& w, float& h);
+// True when the root <svg> has a viewBox (without one, an <image> stretches it to its box).
+bool has_viewbox(const Doc& d);
 // Rasterises at w x h pixels (cached by content, size and colour).
 std::shared_ptr<const ImageBitmap> raster(const std::shared_ptr<const Doc>& d, int w, int h);
 
