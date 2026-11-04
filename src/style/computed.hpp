@@ -247,6 +247,7 @@ struct ComputedStyle {
     uint32_t decoration_color = 0;     // 0 = currentcolor
     TextTransform text_transform = TextTransform::None;
     int           writing_mode = 0;   // 0 horizontal-tb, 1 vertical-rl, 2 vertical-lr (inherited)
+    bool          small_caps = false;   // font-variant: small-caps (inherited); lowercase letters drawn as 70 % capitals
     bool          rtl = false;   // direction: rtl (inherited)
     float    letter_spacing = 0, word_spacing = 0;
     float    text_indent = 0;

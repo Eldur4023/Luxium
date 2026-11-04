@@ -190,6 +190,7 @@ struct Env {
     std::vector<Box*> abs_pending;
     std::unordered_map<std::string, std::shared_ptr<const render::ShapedRun>> shape_cache;
     std::unordered_map<const ComputedStyle*, render::FaceKey> face_cache;
+    std::deque<ComputedStyle> derived;   // styles made on the fly (the small capitals of a font-variant), which tokens point to
 };
 
 struct FloatRec {

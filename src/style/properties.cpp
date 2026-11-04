@@ -706,6 +706,12 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         return true;
     }
     if (name == "text-orientation") return v == "mixed" || v == "upright" || v == "sideways" || v == "sideways-right" || v == "use-glyph-orientation";
+    if (name == "font-variant" || name == "font-variant-caps") {
+        s.small_caps = v.find("small-caps") != std::string::npos;   // all-small-caps and petite-caps are treated alike; other tokens are accepted
+        return true;
+    }
+    if (name == "font-variant-numeric" || name == "font-variant-ligatures" || name == "font-feature-settings" || name == "font-variation-settings" ||
+        name == "font-kerning" || name == "font-stretch" || name == "font-optical-sizing" || name == "font-variant-east-asian" || name == "font-variant-position") return true;
     if (name == "direction") {
         if (v != "ltr" && v != "rtl") return false;
         s.rtl = v == "rtl";
@@ -2016,7 +2022,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("text-align", text_align)
     if (n == "text-decoration-line") { d.underline = src.underline; d.line_through = src.line_through; d.overline = src.overline; return true; }
     CP("text-decoration-color", decoration_color)
-    CP("direction", rtl) CP("writing-mode", writing_mode) CP("text-transform", text_transform) CP("letter-spacing", letter_spacing) CP("word-spacing", word_spacing)
+    CP("direction", rtl) CP("font-variant", small_caps) CP("writing-mode", writing_mode) CP("text-transform", text_transform) CP("letter-spacing", letter_spacing) CP("word-spacing", word_spacing)
     CP("text-indent", text_indent) CP("white-space", white_space) CP("text-overflow", text_overflow_ellipsis)
     CP("overflow-wrap", overflow_wrap) CP("word-wrap", overflow_wrap) CP("word-break", word_break)
     if (n == "vertical-align") { d.vertical_align = src.vertical_align; d.vertical_align_len = src.vertical_align_len; return true; }

@@ -316,11 +316,49 @@ struct Ifc {
         const ComputedStyle* const fls = (fl_k > 0 && &s == blk.st) ? blk.first_line_st : nullptr;
         std::unique_ptr<Seg> seg_fl;
         if (fls) seg_fl = std::make_unique<Seg>(Seg{shape_cached(env, proc, face_of(env, *fls), fls->font_size), proc});
+        // font-variant: small-caps (synthesized like Blink: lowercase letters drawn as capitals at 70 % of the size)
+        std::string up;
+        std::vector<char> small;
+        std::unique_ptr<Seg> seg_sc;
+        const ComputedStyle* sc_style = nullptr;
+        if (tb.st->small_caps && !fls) {
+            up = proc; small.assign(proc.size(), 0);
+            bool any = false;
+            for (size_t i = 0; i < proc.size();) {
+                const size_t at = i;
+                const uint32_t cp = decode(proc, i);
+                const uint32_t u = upper(cp);
+                if (u == cp) continue;
+                std::string enc; encode(u, enc);
+                if (enc.size() != i - at) continue;   // the byte offsets of both strings must agree
+                up.replace(at, enc.size(), enc);
+                for (size_t k = at; k < i; ++k) small[k] = 1;
+                any = true;
+            }
+            if (any) {
+                env.derived.push_back(*tb.st);
+                env.derived.back().font_size = tb.st->font_size * 0.7f;
+                sc_style = &env.derived.back();
+                seg_sc = std::make_unique<Seg>(Seg{shape_cached(env, up, face_of(env, *sc_style), sc_style->font_size), up});
+            }
+        }
         for (const Spec& sp0 : specs) {
             const Spec& sp = sp0;
             const bool use_fl = fls && toks.size() < fl_k;
             const ComputedStyle& s = use_fl ? *fls : *tb.st;
             const Seg& seg = use_fl ? *seg_fl : seg_n;
+            if (sc_style && sp.kind == K::Word && !sp.hang) {   // split the word where the case changes
+                size_t a = sp.b0;
+                while (a < sp.b1) {
+                    size_t z = a + 1;
+                    while (z < sp.b1 && small[z] == small[a]) ++z;
+                    const bool sm = small[a] != 0;
+                    emit_word_span(&tb, sm ? *sc_style : s, sm ? *seg_sc : seg, a, z, wrap_ok);
+                    if (z < sp.b1 && !toks.empty()) toks.back().break_after = false;   // no break inside a word
+                    a = z;
+                }
+                continue;
+            }
             switch (sp.kind) {
             case K::Space: {
                 Tok t = slice_tok(&tb, s, seg, sp.b0, sp.b1, K::Space);

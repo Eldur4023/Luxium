@@ -115,7 +115,7 @@ Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 30 págin
 (se aplana), glifos verticales *upright* de `writing-mode` (el texto latino va de lado como en Chromium; el CJK no se endereza),
 `direction: rtl` solo a nivel de texto (flex, tablas, flotantes y la barra de scroll no se espejan), `<svg>` sin `filter` más allá de blur/offset/drop-shadow, sin `textPath`, sin marcadores `mid` en `path`, scroll horizontal de la página (un contenido más ancho que la ventana no saca barra: p. ej. `100vw`
 con la barra vertical, como hace Chromium), barra de scroll horizontal arrastrable de las cajas, PNG entrelazado/16 bits.
-Ya implementados y en la suite: SVG con `<text>`/`<tspan>` (contornos de la fuente del motor), `pattern`, `marker`, `clipPath`, `mask`, `<image>`, `<symbol viewBox>` y filtros blur/offset/drop-shadow, multicolumna (`column-count/width/gap/rule`, balanceada), `::first-letter` y `::first-line`, `subgrid`,
+Ya implementados y en la suite: `font-variant: small-caps` sintetizadas al 70 % como Blink, SVG con `<text>`/`<tspan>` (contornos de la fuente del motor), `pattern`, `marker`, `clipPath`, `mask`, `<image>`, `<symbol viewBox>` y filtros blur/offset/drop-shadow, multicolumna (`column-count/width/gap/rule`, balanceada), `::first-letter` y `::first-line`, `subgrid`,
 `mix-blend-mode` y `background-blend-mode`, `@layer`, radio elíptico, `border-image` (imagen y degradado), outlines sobre el resto del
 contexto, transformaciones 3D de un elemento plano (`perspective`, `rotateX/Y`, `translateZ`, `rotate3d`, `backface-visibility`),
 `shape-outside` (círculo, elipse, inset, polígono, `shape-margin`), `writing-mode` vertical, bidi a nivel de palabra con formado RTL

@@ -31,7 +31,7 @@ ComputedStyle inherited_style(const ComputedStyle& p) {
     s.color = p.color; s.font_size = p.font_size; s.font_weight = p.font_weight;
     s.italic = p.italic; s.family = p.family; s.family_name = p.family_name;
     s.lh_mode = p.lh_mode; s.lh_val = p.lh_val;
-    s.text_align = p.text_align; s.text_transform = p.text_transform; s.rtl = p.rtl; s.writing_mode = p.writing_mode;
+    s.text_align = p.text_align; s.text_transform = p.text_transform; s.rtl = p.rtl; s.small_caps = p.small_caps; s.writing_mode = p.writing_mode;
     s.letter_spacing = p.letter_spacing; s.word_spacing = p.word_spacing;
     s.text_indent = p.text_indent; s.white_space = p.white_space;
     s.visibility = p.visibility; s.cursor = p.cursor;
