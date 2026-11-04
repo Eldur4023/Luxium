@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
         if (!sections) { std::fprintf(stderr, "luxium --dump: %s\n", entry ? "no entry page" : err.c_str()); return 1; }
         auto doc = luxium::page::decode_document(sections->document, &err);
         std::vector<luxium::style::Rule> rules;
-        if (!doc || !luxium::page::decode_sheet(sections->sheet, rules, &err)) { std::fprintf(stderr, "luxium --dump: %s\n", err.c_str()); return 1; }
+        if (!doc || !luxium::page::decode_page_sheet(*sections, rules, &err)) { std::fprintf(stderr, "luxium --dump: %s\n", err.c_str()); return 1; }
         doc->print();
         std::printf("-- %zu rules\n", rules.size());
         for (const auto& r : rules)

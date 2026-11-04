@@ -106,7 +106,7 @@ bool inspect(const std::string& luxp_path, std::string* report) {
         auto doc = page::decode_document(s.document, &err);
         if (!doc) { *report += "  RECHAZADO: " + err + "\n"; ok = false; continue; }
         std::vector<style::Rule> rules;
-        if (!page::decode_sheet(s.sheet, rules, &err)) { *report += "  RECHAZADO: " + err + "\n"; ok = false; continue; }
+        if (!page::decode_page_sheet(s, rules, &err)) { *report += "  RECHAZADO: " + err + "\n"; ok = false; continue; }
         *report += "  documento: " + std::to_string(count_nodes(*doc)) + " nodos\n";
         *report += "  estilos:   " + std::to_string(rules.size()) + " reglas\n";
         if (s.program.empty()) { *report += "  programa:  ninguno\n"; continue; }

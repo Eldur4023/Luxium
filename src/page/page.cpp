@@ -87,7 +87,7 @@ bool Page::load_compiled(const PageSections& s, const std::string& name) {
     std::string err;
     auto doc = decode_document(s.document, &err);
     std::vector<style::Rule> rules;
-    if (doc && !decode_sheet(s.sheet, rules, &err)) doc.reset();
+    if (doc && !decode_page_sheet(s, rules, &err)) doc.reset();
     if (!doc) {
         load_string("<p>" + name + ": .luxp rechazado: " + err + "</p>", name);
         console(2, ".luxp rechazado: " + err);
