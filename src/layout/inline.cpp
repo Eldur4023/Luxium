@@ -557,13 +557,15 @@ struct LineBuilder {
     }
 
     // text-overflow: ellipsis on a line that doesn't fit
-    void ellipsize() {
+    void ellipsize(bool force = false) {
         const ComputedStyle& s = bs;
-        if (!s.text_overflow_ellipsis) return;
-        if (s.overflow_x == style::Overflow::Visible) return;
+        if (!force && !s.text_overflow_ellipsis) return;
+        if (!force && s.overflow_x == style::Overflow::Visible) return;
         float total = first_line ? bs.text_indent : 0.f;
         for (size_t i : line) total += ifc.toks[i].w;
-        if (total <= avail + 0.01f) return;
+        if (!force && total <= avail + 0.01f) return;
+        // a forced ellipsis (line clamp) goes after the line: trailing spaces go first
+        while (force && !line.empty() && ifc.toks[line.back()].k == K::Space) { total -= ifc.toks[line.back()].w; line.pop_back(); }
         Tok e = ifc.make_word(nullptr, s, "\xE2\x80\xA6");
         // drop whole tokens from the end until the ellipsis fits
         while (!line.empty() && total + e.w > avail + 0.01f) {
@@ -597,7 +599,13 @@ struct LineBuilder {
     }
 
     void finish_line(bool forced, bool last) {
-        ellipsize();
+        // -webkit-line-clamp: lines past the clamp are not laid out; the last kept one ends in an ellipsis
+        const int clamp = bs.webkit_box && bs.box_orient_v ? bs.line_clamp : 0;
+        if (clamp > 0 && int(b.lines.size()) >= clamp) {
+            line.clear(); line_started = false; used = 0; first_line = false;
+            return;
+        }
+        ellipsize(clamp > 0 && int(b.lines.size()) + 1 == clamp && !last);
         LineBox lb;
         // 1. positions along the line
         std::vector<float> xs(line.size());

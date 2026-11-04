@@ -513,7 +513,7 @@ struct Painter {
         case OF::None: dw = b.nat_w; dh = b.nat_h; break;
         case OF::ScaleDown: { const float sc = std::min(1.f, std::min(cw / b.nat_w, ch / b.nat_h)); dw = b.nat_w * sc; dh = b.nat_h * sc; break; }
         }
-        const float px = cx + (cw - dw) / 2, py = cy + (ch - dh) / 2;
+        const float px = cx + s.object_pos_x.resolve(cw - dw), py = cy + s.object_pos_y.resolve(ch - dh);   // object-position
         // intersect the placed image with the content box
         const float ix0 = std::max(px, cx), iy0 = std::max(py, cy), ix1 = std::min(px + dw, cx + cw), iy1 = std::min(py + dh, cy + ch);
         if (ix1 <= ix0 || iy1 <= iy0) return;

@@ -185,6 +185,10 @@ struct ComputedStyle {
     std::vector<FilterFn> filter, backdrop_filter;
     std::vector<BgLayer> mask;          // mask-image layers (+ mask-size/-position/-repeat), alpha multiplies the element
     ObjectFit object_fit = ObjectFit::Fill;
+    // -webkit-line-clamp: only with display: -webkit-box / -webkit-inline-box and -webkit-box-orient: vertical
+    bool     webkit_box = false, box_orient_v = false;
+    int      line_clamp = 0;
+    Len      object_pos_x = Len::Pct(50), object_pos_y = Len::Pct(50);   // object-position
 
     // ── text ────────────────────────────────────────────────────────────────
     uint32_t color = 0xFF000000;

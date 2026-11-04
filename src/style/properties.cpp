@@ -439,6 +439,8 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
             {"table-column", Display::TableColumn}, {"table-column-group", Display::TableColumnGroup},
             {"table-caption", Display::TableCaption}, {"list-item", Display::ListItem},
             {"flow-root", Display::FlowRoot}};
+        s.webkit_box = v == "-webkit-box" || v == "-webkit-inline-box";
+        if (s.webkit_box) { s.display = v == "-webkit-box" ? Display::FlowRoot : Display::InlineBlock; return true; }
         auto it = m.find(v);
         if (it == m.end()) {
             // two-value syntax: "block flex", "inline flow-root" ...
@@ -778,6 +780,15 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         }
         return true;
     }
+    if (name == "-webkit-line-clamp") {
+        if (v == "none") { s.line_clamp = 0; return true; }
+        float n;
+        if (!parse_number(v, n) || n < 1 || n != std::floor(n)) return false;
+        s.line_clamp = int(n);
+        return true;
+    }
+    if (name == "-webkit-box-orient") { s.box_orient_v = v == "vertical" || v == "block-axis"; return true; }
+    if (name == "object-position") return parse_position_pair(t, env, s.object_pos_x, s.object_pos_y);
     if (name == "object-fit") {
         if (v == "fill") s.object_fit = ObjectFit::Fill; else if (v == "contain") s.object_fit = ObjectFit::Contain;
         else if (v == "cover") s.object_fit = ObjectFit::Cover; else if (v == "none") s.object_fit = ObjectFit::None;
@@ -1526,6 +1537,9 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("border-top-left-radius", radius[0]) CP("border-top-right-radius", radius[1]) CP("border-bottom-right-radius", radius[2]) CP("border-bottom-left-radius", radius[3])
     CP("background-color", bg_color) CP("background-image", bg) CP("background-repeat", bg) CP("background-position", bg) CP("background-size", bg)
     CP("box-shadow", box_shadow) CP("text-shadow", text_shadow) CP("filter", filter) CP("backdrop-filter", backdrop_filter) CP("mask-image", mask) CP("-webkit-mask-image", mask) CP("object-fit", object_fit)
+    if (n == "display") { d.display = src.display; d.webkit_box = src.webkit_box; return true; }
+    CP("-webkit-line-clamp", line_clamp) CP("-webkit-box-orient", box_orient_v)
+    if (n == "object-position") { d.object_pos_x = src.object_pos_x; d.object_pos_y = src.object_pos_y; return true; }
     CP("color", color) CP("font-size", font_size) CP("font-weight", font_weight) CP("font-style", italic)
     if (n == "font-family") { d.family = src.family; d.family_name = src.family_name; return true; }
     if (n == "line-height") { d.lh_mode = src.lh_mode; d.lh_val = src.lh_val; return true; }

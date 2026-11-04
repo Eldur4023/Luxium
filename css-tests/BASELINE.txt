@@ -6,6 +6,7 @@ box/t-box-margin-collapse-negative
 box/t-box-margin-collapse-parent
 box/t-box-margin-collapse-siblings
 box/t-box-minmax
+box/t-box-object-position
 box/t-box-padding-percent
 box/t-box-radius-paint
 box/t-box-sizing
@@ -109,6 +110,7 @@ text/t-text-ellipsis
 text/t-text-em-strong
 text/t-text-emoji
 text/t-text-line-boxes
+text/t-text-line-clamp
 text/t-text-overflow-wrap
 text/t-text-spacing
 text/t-text-transform
