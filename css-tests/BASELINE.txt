@@ -38,6 +38,7 @@ homeflix/t-hf-catalog
 homeflix/t-hf-catalog-search
 homeflix/t-hf-new-series
 homeflix/t-hf-picker
+homeflix/t-hf-player
 homeflix/t-hf-series
 integration/t-int-blog
 integration/t-int-cards
@@ -105,6 +106,7 @@ table/t-table-collapse
 table/t-table-spans
 table/t-table-th-default
 table/t-table-valign
+text/t-font-fallback-chain
 text/t-font-families
 text/t-text-align-justify
 text/t-text-decoration

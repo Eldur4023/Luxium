@@ -96,6 +96,7 @@ private:
     mutable std::vector<std::unique_ptr<Face>> dyn_;                 // faces chosen by resolve()
     mutable std::unordered_map<std::string, int> resolve_cache_;     // "family|weight|italic" -> id
     mutable std::unordered_map<std::string, int> file_ids_;          // "path#index#flags" -> id
+    mutable std::unordered_map<int, std::vector<int>> chain_;        // face -> the later faces of the family list that resolved to it
     mutable std::unordered_map<uint64_t, int> fallback_cache_;       // (cp, base face) -> id
     int face_from_match(void* fc_pattern, int weight, bool italic) const;
     const Glyph& color_glyph(Face* f, uint32_t glyph_index, float px, uint64_t key) const;

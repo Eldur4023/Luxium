@@ -419,6 +419,11 @@ int Font::fallback_for(uint32_t cp, FaceKey base) const {
     static bool inited = false;
     if (!inited) inited = FcInit();
     Face* bf = face(base);
+    // Like Blink's font-family walk: the next families of the CSS list that carry the glyph win over the system fallback
+    // (`system-ui, sans-serif` takes the arrows from Arial/Liberation Sans, not from whatever fontconfig ranks first).
+    if (auto ch = chain_.find(base.id); ch != chain_.end())
+        for (int id : ch->second)
+            if (Face* cf = face(FaceKey{id}); cf && FT_Get_Char_Index(cf->ft, cp) != 0) { fallback_cache_[k] = id; return id; }
     const int weight = bf ? bf->req_weight : 400;
     const bool italic = bf ? bf->req_italic : false;
     FcPattern* pat = FcPatternCreate();
@@ -505,7 +510,8 @@ FaceKey Font::resolve(const std::string& family_list, int weight, bool italic) c
     int found = -1;
     const int w = weight >= 600 ? 700 : 400;
     size_t i = 0;
-    while (i <= family_list.size() && found < 0) {
+    std::vector<int> chain;   // the other families of the list that exist: tried per character before the system fallback
+    while (i <= family_list.size()) {
         size_t e = family_list.find(',', i);
         if (e == std::string::npos) e = family_list.size();
         std::string name = family_list.substr(i, e - i);
@@ -523,8 +529,13 @@ FaceKey Font::resolve(const std::string& family_list, int weight, bool italic) c
         else if (l == "monospace" || l == "ui-monospace") { q = "Monospace"; any = true; }
         else if (l == "cursive") { q = "Comic Sans MS"; any = true; }
         else if (l == "fantasy") { q = "Impact"; any = true; }
-        found = match_family(q, any, w, italic);
+        const int m = match_family(q, any, w, italic);
+        if (m < 0) continue;
+        if (found < 0) found = m;
+        else if (m != found && std::find(chain.begin(), chain.end(), m) == chain.end()) chain.push_back(m);
     }
+    // shortcut: faces are keyed by id, not by family list, so two lists with the same first face share (merge) their chains
+    if (found >= 0) { auto& c = chain_[found]; for (int m : chain) if (std::find(c.begin(), c.end(), m) == c.end()) c.push_back(m); }
     if (found < 0) found = match_family("Times New Roman", false, w, italic);   // Chromium's standard font
     if (found < 0) found = match_family("DejaVu Sans", true, w, italic);
     if (found < 0) found = 0;
