@@ -34,6 +34,7 @@ struct Item {
         LayerPush, LayerPop,   // group opacity
         ShiftPush, ShiftPop,   // translate everything in between by (x, y): transform: translate()
         TransformPush, TransformPop,   // general 2D affine `m` (doc -> doc) over everything in between; x,y,w,h = its source bounds
+        Poly,          // filled polygon `pts` (x,y pairs, doc coords), anti-aliased; color = fill (clip-path mask)
     } kind = Kind::Rect;
 
     float x = 0, y = 0, w = 0, h = 0;     // doc coords (already snapped for boxes)
@@ -75,6 +76,13 @@ struct Item {
 
     // TransformPush: x' = m0 x + m2 y + m4, y' = m1 x + m3 y + m5
     float m[6] = {1, 0, 0, 1, 0, 0};
+
+    // Poly
+    std::vector<float> pts;
+    bool evenodd = false;
+
+    // Layer: clip-path shape, painted like `mask` (a Poly item); its alpha multiplies the group too
+    std::shared_ptr<const std::vector<Item>> clip;
 };
 
 using DisplayList = std::vector<Item>;

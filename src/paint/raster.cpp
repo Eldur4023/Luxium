@@ -132,6 +132,49 @@ void fill_rect(State& s, const Item& it) {
         }
 }
 
+void fill_poly(State& s, const Item& it) {
+    const size_t n = it.pts.size() / 2;
+    if (n < 3 || it.w <= 0 || it.h <= 0) return;
+    const IRect b = bounds_of(s, it.x, it.y, it.w, it.h);
+    if (b.x1 <= b.x0 || b.y1 <= b.y0) return;
+    Target& t = s.tgt();
+    const bool rcl = !s.rc().empty();
+    constexpr int kSub = 16;   // sub-scanlines per pixel row; exact horizontal coverage on each
+    std::vector<float> row(static_cast<size_t>(b.x1 - b.x0));
+    std::vector<std::pair<float, int>> xs;
+    for (int y = b.y0; y < b.y1; ++y) {
+        std::fill(row.begin(), row.end(), 0.f);
+        for (int k = 0; k < kSub; ++k) {
+            const float sy = y + (k + 0.5f) / kSub - s.oy;
+            xs.clear();
+            for (size_t i = 0; i < n; ++i) {
+                const size_t j = (i + 1) % n;
+                const float x0 = it.pts[2 * i], y0 = it.pts[2 * i + 1], x1 = it.pts[2 * j], y1 = it.pts[2 * j + 1];
+                if ((y0 <= sy) == (y1 <= sy)) continue;
+                xs.emplace_back(x0 + (sy - y0) * (x1 - x0) / (y1 - y0) + s.ox, y1 > y0 ? 1 : -1);
+            }
+            std::sort(xs.begin(), xs.end());
+            int wind = 0;
+            for (size_t i = 0; i + 1 < xs.size(); ++i) {
+                wind += xs[i].second;
+                const bool in = it.evenodd ? (i % 2 == 0) : wind != 0;
+                if (!in) continue;
+                const float a = std::max<float>(xs[i].first, b.x0), e = std::min<float>(xs[i + 1].first, b.x1);
+                if (e <= a) continue;
+                const int ia = int(a), ie = int(e);
+                for (int x = ia; x <= ie && x < b.x1; ++x)
+                    row[x - b.x0] += (std::min<float>(e, x + 1) - std::max<float>(a, x)) / kSub;
+            }
+        }
+        for (int x = b.x0; x < b.x1; ++x) {
+            float cov = std::min(1.f, row[x - b.x0]);
+            if (cov <= 0.002f) continue;
+            if (rcl) cov *= clip_cov(s, x + 0.5f, y + 0.5f);
+            if (cov > 0) blend(t.px[static_cast<size_t>(y) * t.w + x], it.color, cov);
+        }
+    }
+}
+
 void fill_border(State& s, const Item& it) {
     const IRect b = bounds_of(s, it.x, it.y, it.w, it.h);
     Target& t = s.tgt();
@@ -632,6 +675,7 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
         switch (it.kind) {
         case Item::Kind::Rect: case Item::Kind::Line: fill_rect(s, it); break;
         case Item::Kind::Border: fill_border(s, it); break;
+        case Item::Kind::Poly: fill_poly(s, it); break;
         case Item::Kind::Gradient: fill_gradient(s, it); break;
         case Item::Kind::Image: draw_image(s, it); break;
         case Item::Kind::Shadow: draw_shadow(s, it); break;
@@ -757,14 +801,15 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
             s.targets.pop_back();
             Target& dst = s.tgt();
             const Item* push = info.push;
-            if (push && (!push->filters.empty() || push->mask) && info.bounds.x1 > info.bounds.x0 && info.bounds.y1 > info.bounds.y0) {
+            if (push && (!push->filters.empty() || push->mask || push->clip) && info.bounds.x1 > info.bounds.x0 && info.bounds.y1 > info.bounds.y0) {
                 FBuf fb = read_region(layer, info.bounds);
                 for (const auto& f : push->filters) apply_filter(fb, f);
-                if (push->mask) {   // the mask's alpha (painted in doc coords over a transparent buffer) scales the group
+                for (const auto& mk : {push->mask, push->clip}) {   // mask-image, then clip-path: each one's alpha scales the group
+                    if (!mk) continue;
                     std::vector<uint32_t> mbuf(static_cast<size_t>(layer.w) * layer.h, 0u);
                     Canvas mc;
                     mc.px = mbuf; mc.w = layer.w; mc.h = layer.h; mc.ox = s.ox; mc.oy = s.oy; mc.clip = info.bounds;
-                    rasterize(*push->mask, mc, s.font);
+                    rasterize(*mk, mc, s.font);
                     for (int y = 0; y < fb.h; ++y)
                         for (int x = 0; x < fb.w; ++x) {
                             const float k = float(mbuf[size_t(y + fb.r.y0) * layer.w + (x + fb.r.x0)] >> 24) / 255.f;

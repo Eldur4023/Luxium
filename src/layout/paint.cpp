@@ -184,7 +184,7 @@ struct Painter {
         if (s.position == Position::Fixed) return true;
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
-        if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty()) return true;
+        if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None) return true;
         if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear()) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
@@ -202,6 +202,67 @@ struct Painter {
         dl->push_back(std::move(it));
     }
     void clip_pop() { Item it; it.kind = Item::Kind::ClipPop; dl->push_back(std::move(it)); }
+
+    // clip-path: the basic shape against its reference box, as a one-polygon display list (alpha = coverage).
+    std::shared_ptr<const paint::DisplayList> clip_shape(const Box& sc, const style::ClipPath& cp) {
+        float bx = sc.ax, by = sc.ay, bw = sc.w, bh = sc.h;
+        auto shrink = [&](const Edges& e, float k) { bx += k * e.l; by += k * e.t; bw -= k * e.h(); bh -= k * e.v(); };
+        if (cp.box == 1) shrink(sc.border, 1);
+        else if (cp.box == 2) { shrink(sc.border, 1); shrink(sc.padding, 1); }
+        else if (cp.box == 3) shrink(sc.margin, -1);
+        bw = std::max(bw, 0.f); bh = std::max(bh, 0.f);
+        std::vector<float> P;
+        auto pt = [&](float x, float y) { P.push_back(x); P.push_back(y); };
+        constexpr float kPi = 3.14159265f;
+        auto arc = [&](float cx, float cy, float rx, float ry, float a0, float a1) {   // corner / ellipse arc, a0..a1 in turns of pi/2
+            const int n = 24;
+            for (int i = 0; i <= n; ++i) { const float a = (a0 + (a1 - a0) * i / n) * kPi / 2; pt(cx + rx * std::cos(a), cy + ry * std::sin(a)); }
+        };
+        bool evenodd = cp.evenodd;
+        if (cp.kind == style::ClipPath::Kind::Inset) {
+            const float t = cp.edge[0].resolve(bh), r = cp.edge[1].resolve(bw), b = cp.edge[2].resolve(bh), l = cp.edge[3].resolve(bw);
+            const float x0 = bx + l, y0 = by + t, x1 = bx + bw - r, y1 = by + bh - b;
+            const float w = std::max(0.f, x1 - x0), h = std::max(0.f, y1 - y0);
+            float rx[4], ry[4];
+            for (int k = 0; k < 4; ++k) { rx[k] = std::max(0.f, cp.rx[k].resolve(w)); ry[k] = std::max(0.f, cp.ry[k].resolve(h)); }
+            float f = 1.f;   // radii overlap: scale all down (CSS Backgrounds 3 section 5.5)
+            auto chk = [&](float sum, float avail) { if (sum > avail && sum > 0) f = std::min(f, avail / sum); };
+            chk(rx[0] + rx[1], w); chk(rx[3] + rx[2], w); chk(ry[0] + ry[3], h); chk(ry[1] + ry[2], h);
+            for (int k = 0; k < 4; ++k) { rx[k] *= f; ry[k] *= f; }
+            if (w <= 0 || h <= 0) return std::make_shared<paint::DisplayList>();
+            // clockwise from the top-left corner's end of the top edge; an arc of 0 radius collapses to its corner
+            arc(x0 + rx[0], y0 + ry[0], rx[0], ry[0], 2, 3);
+            arc(x1 - rx[1], y0 + ry[1], rx[1], ry[1], 3, 4);
+            arc(x1 - rx[2], y1 - ry[2], rx[2], ry[2], 0, 1);
+            arc(x0 + rx[3], y1 - ry[3], rx[3], ry[3], 1, 2);
+        } else if (cp.kind == style::ClipPath::Kind::Circle || cp.kind == style::ClipPath::Kind::Ellipse) {
+            const float cx = bx + cp.cx.resolve(bw), cy = by + cp.cy.resolve(bh);
+            const float dl_ = std::fabs(cx - bx), dr = std::fabs(bx + bw - cx), dt = std::fabs(cy - by), db = std::fabs(by + bh - cy);
+            auto side = [&](int kw, const Len& l, bool horiz, bool circle) {
+                if (kw == 1 || kw == 2) {
+                    const float a = horiz ? dl_ : dt, b = horiz ? dr : db;
+                    if (circle) return kw == 1 ? std::min({dl_, dr, dt, db}) : std::max({dl_, dr, dt, db});
+                    return kw == 1 ? std::min(a, b) : std::max(a, b);
+                }
+                return l.resolve(circle ? std::sqrt((bw * bw + bh * bh) / 2) : horiz ? bw : bh);
+            };
+            const bool circ = cp.kind == style::ClipPath::Kind::Circle;
+            const float rx = std::max(0.f, side(cp.rkw[0], cp.r[0], true, circ));
+            const float ry = circ ? rx : std::max(0.f, side(cp.rkw[1], cp.r[1], false, false));
+            if (rx <= 0 || ry <= 0) return std::make_shared<paint::DisplayList>();
+            arc(cx, cy, rx, ry, 0, 4);
+        } else {
+            for (const auto& q : cp.pts) pt(bx + q.first.resolve(bw), by + q.second.resolve(bh));
+        }
+        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        for (size_t i = 0; i < P.size(); i += 2) { x0 = std::min(x0, P[i]); x1 = std::max(x1, P[i]); y0 = std::min(y0, P[i + 1]); y1 = std::max(y1, P[i + 1]); }
+        if (P.size() < 6) return std::make_shared<paint::DisplayList>();
+        paint::Item it; it.kind = Item::Kind::Poly; it.pts = std::move(P); it.evenodd = evenodd; it.color = 0xFF000000;
+        it.x = x0; it.y = y0; it.w = x1 - x0; it.h = y1 - y0;
+        auto m = std::make_shared<paint::DisplayList>();
+        m->push_back(std::move(it));
+        return m;
+    }
 
     size_t layer_push(float alpha) {
         Item it; it.kind = Item::Kind::LayerPush; it.alpha = alpha;
@@ -1012,7 +1073,7 @@ struct Painter {
             }
         } unshift{this, moved, general, tf_at, saved_cur};
         size_t layer = 0;
-        const bool lay = s.opacity < 1.f || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty();
+        const bool lay = s.opacity < 1.f || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None;
         if (lay) {
             layer = layer_push(s.opacity);
             const float x0 = sn(sc.ax), y0 = sn(sc.ay), x1 = sn(sc.ax + sc.w), y1 = sn(sc.ay + sc.h);
@@ -1031,6 +1092,7 @@ struct Painter {
                 dl = saved;
                 (*dl)[layer].mask = std::move(m);
             }
+            if (s.clip_path.kind != style::ClipPath::Kind::None) (*dl)[layer].clip = clip_shape(sc, s.clip_path);
         }
         self(sc, bg);
         const bool cl = clips(sc);

@@ -16,6 +16,7 @@ dyn/t-dyn-append
 dyn/t-dyn-remove
 dyn/t-dyn-restyle
 effects/t-fx-backdrop
+effects/t-fx-clip-path
 effects/t-fx-filter
 effects/t-fx-mask
 effects/t-fx-text-shadow

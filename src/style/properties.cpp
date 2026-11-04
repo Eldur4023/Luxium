@@ -250,6 +250,96 @@ bool parse_position_pair(const Tokens& t, const Env& env, Len& x, Len& y) {
     return true;
 }
 
+// clip-path: <basic-shape> || <geometry-box> | none.  path()/url()/shape() are not supported (invalid).
+bool parse_clip_path(const std::string& value, const Env& env, ClipPath& out) {
+    out = ClipPath{};
+    const auto toks = tokens(value);
+    if (toks.empty() || toks.size() > 2) return false;
+    bool have_shape = false, have_box = false;
+    for (const auto& raw_tk : toks) {
+        const std::string tk = lower_ascii(raw_tk);
+        if (tk == "border-box" || tk == "padding-box" || tk == "content-box" || tk == "margin-box") {
+            if (have_box) return false;
+            have_box = true;
+            out.box = tk == "border-box" ? 0 : tk == "padding-box" ? 1 : tk == "content-box" ? 2 : 3;
+            continue;
+        }
+        if (tk == "fill-box" || tk == "stroke-box" || tk == "view-box") { if (have_box) return false; have_box = true; continue; }
+        const size_t open = tk.find('(');
+        if (have_shape || open == std::string::npos || tk.back() != ')') return false;
+        have_shape = true;
+        const std::string fn = tk.substr(0, open);
+        const std::string arg = trim_ws(tk.substr(open + 1, tk.size() - open - 2));
+        Tokens t = tokens(arg);
+        if (fn == "inset") {
+            out.kind = ClipPath::Kind::Inset;
+            size_t i = 0;
+            std::vector<Len> e;
+            for (; i < t.size() && t[i] != "round"; ++i) { Len l; if (!parse_length(t[i], env, l)) return false; e.push_back(l); }
+            if (e.empty() || e.size() > 4) return false;
+            const size_t n = e.size();   // top right bottom left, the border-width shorthand expansion
+            out.edge[0] = e[0]; out.edge[1] = e[n > 1 ? 1 : 0]; out.edge[2] = e[n > 2 ? 2 : 0]; out.edge[3] = e[n > 3 ? 3 : n > 1 ? 1 : 0];
+            for (int k = 0; k < 4; ++k) { out.rx[k] = out.ry[k] = Len::Px(0); }
+            if (i < t.size()) {
+                std::vector<Len> h, v;
+                bool slash = false;
+                for (++i; i < t.size(); ++i) {
+                    if (t[i] == "/") { if (slash) return false; slash = true; continue; }
+                    Len l;
+                    if (!parse_length(t[i], env, l) || l.px < 0 || l.pct < 0) return false;
+                    (slash ? v : h).push_back(l);
+                }
+                if (h.empty() || h.size() > 4 || (slash && (v.empty() || v.size() > 4))) return false;
+                if (!slash) v = h;
+                auto expand = [](const std::vector<Len>& a, Len* o) {
+                    const size_t m = a.size();
+                    o[0] = a[0]; o[1] = a[m > 1 ? 1 : 0]; o[2] = a[m > 2 ? 2 : 0]; o[3] = a[m > 3 ? 3 : m > 1 ? 1 : 0];
+                };
+                expand(h, out.rx); expand(v, out.ry);
+            }
+            continue;
+        }
+        if (fn == "circle" || fn == "ellipse") {
+            const bool circ = fn == "circle";
+            out.kind = circ ? ClipPath::Kind::Circle : ClipPath::Kind::Ellipse;
+            size_t at = t.size();
+            for (size_t i = 0; i < t.size(); ++i) if (t[i] == "at") { at = i; break; }
+            const size_t nr = circ ? 1 : 2;
+            if (at != 0 && at != nr) return false;
+            for (size_t i = 0; i < at; ++i) {
+                if (t[i] == "closest-side") out.rkw[i] = 1;
+                else if (t[i] == "farthest-side") out.rkw[i] = 2;
+                else if (!parse_length(t[i], env, out.r[i]) || out.r[i].px < 0 || out.r[i].pct < 0) return false;
+            }
+            if (at == 0) out.rkw[0] = out.rkw[1] = 1;   // default: closest-side
+            if (at < t.size()) {
+                Tokens pos(t.begin() + at + 1, t.end());
+                if (!parse_position_pair(pos, env, out.cx, out.cy)) return false;
+            }
+            continue;
+        }
+        if (fn == "polygon") {
+            out.kind = ClipPath::Kind::Polygon;
+            for (const auto& item : split_commas(arg)) {
+                Tokens p = tokens(item);
+                if (p.size() == 1 && out.pts.empty() && (p[0] == "nonzero" || p[0] == "evenodd")) { out.evenodd = p[0] == "evenodd"; continue; }
+                Len x, y;
+                if (p.size() != 2 || !parse_length(p[0], env, x) || !parse_length(p[1], env, y)) return false;
+                out.pts.emplace_back(x, y);
+            }
+            if (out.pts.empty()) return false;
+            continue;
+        }
+        return false;
+    }
+    if (!have_shape) {   // a lone <geometry-box> clips to that box's edge
+        out.kind = ClipPath::Kind::Inset;
+        for (auto& l : out.edge) l = Len::Px(0);
+        for (int k = 0; k < 4; ++k) out.rx[k] = out.ry[k] = Len::Px(0);
+    }
+    return true;
+}
+
 void set_list_style(ComputedStyle& s, const std::string& v, bool& ok) {
     if (v == "disc") s.list_style = ListStyle::Disc;
     else if (v == "circle") s.list_style = ListStyle::Circle;
@@ -730,6 +820,13 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         if (v != "none" && !parse_shadow_list(raw, env, s.color, out)) return false;
         for (const auto& sh : out) if (sh.inset || sh.spread != 0) return false;   // text-shadow has neither
         s.text_shadow = out;
+        return true;
+    }
+    if (name == "clip-path") {
+        if (v == "none") { s.clip_path = ClipPath{}; return true; }
+        ClipPath cp;
+        if (!parse_clip_path(raw, env, cp)) return false;
+        s.clip_path = cp;
         return true;
     }
     if (name == "filter" || name == "backdrop-filter") {   // -webkit-backdrop-filter is Safari-only: Chromium ignores it
@@ -1536,7 +1633,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     if (n == "border-left-color") { d.border_color[3] = src.border_color[3]; d.bc_current[3] = src.bc_current[3]; return true; }
     CP("border-top-left-radius", radius[0]) CP("border-top-right-radius", radius[1]) CP("border-bottom-right-radius", radius[2]) CP("border-bottom-left-radius", radius[3])
     CP("background-color", bg_color) CP("background-image", bg) CP("background-repeat", bg) CP("background-position", bg) CP("background-size", bg)
-    CP("box-shadow", box_shadow) CP("text-shadow", text_shadow) CP("filter", filter) CP("backdrop-filter", backdrop_filter) CP("mask-image", mask) CP("-webkit-mask-image", mask) CP("object-fit", object_fit)
+    CP("box-shadow", box_shadow) CP("text-shadow", text_shadow) CP("clip-path", clip_path) CP("filter", filter) CP("backdrop-filter", backdrop_filter) CP("mask-image", mask) CP("-webkit-mask-image", mask) CP("object-fit", object_fit)
     if (n == "display") { d.display = src.display; d.webkit_box = src.webkit_box; return true; }
     CP("-webkit-line-clamp", line_clamp) CP("-webkit-box-orient", box_orient_v)
     if (n == "object-position") { d.object_pos_x = src.object_pos_x; d.object_pos_y = src.object_pos_y; return true; }

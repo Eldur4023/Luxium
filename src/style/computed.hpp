@@ -105,6 +105,19 @@ struct FilterFn {
     uint32_t color = 0xFF000000;
 };
 
+// `clip-path` basic shape.  box: reference box 0 border, 1 padding, 2 content, 3 margin.
+struct ClipPath {
+    enum class Kind : uint8_t { None, Inset, Circle, Ellipse, Polygon } kind = Kind::None;
+    int box = 0;
+    Len edge[4];                 // inset(): top right bottom left
+    Len rx[4], ry[4];            // inset() round: tl tr br bl (horizontal / vertical radii)
+    Len r[2];                    // circle: r[0]; ellipse: rx, ry (keywords go in rkw)
+    int rkw[2] = {0, 0};         // 0 length, 1 closest-side, 2 farthest-side
+    Len cx = Len::Pct(50), cy = Len::Pct(50);
+    bool evenodd = false;
+    std::vector<std::pair<Len, Len>> pts;
+};
+
 // grid track size: fr, px/%, auto, min-content, max-content, minmax(a, b)
 struct Track {
     enum class Kind { Len, Fr, Auto, MinContent, MaxContent, MinMax } kind = Kind::Auto;
@@ -184,6 +197,7 @@ struct ComputedStyle {
     std::vector<Shadow>  text_shadow;   // inherited
     std::vector<FilterFn> filter, backdrop_filter;
     std::vector<BgLayer> mask;          // mask-image layers (+ mask-size/-position/-repeat), alpha multiplies the element
+    ClipPath clip_path;
     ObjectFit object_fit = ObjectFit::Fill;
     // -webkit-line-clamp: only with display: -webkit-box / -webkit-inline-box and -webkit-box-orient: vertical
     bool     webkit_box = false, box_orient_v = false;
