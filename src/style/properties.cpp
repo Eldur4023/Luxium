@@ -818,16 +818,25 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         Len e[4];
         if (!parse_edges(parts[0], env, e, false, true)) return false;
         // order: tl tr br bl  (same expansion as margin: top=tl right=tr bottom=br left=bl)
-        for (int i = 0; i < 4; ++i) s.radius[i] = e[i];
+        for (int i = 0; i < 4; ++i) { s.radius[i] = e[i]; s.radiusv[i] = e[i]; }
+        s.radius_ell = false;
+        if (parts.size() > 1) {
+            Len v[4];
+            if (!parse_edges(parts[1], env, v, false, true)) return false;
+            for (int i = 0; i < 4; ++i) s.radiusv[i] = v[i];
+            s.radius_ell = true;
+        }
         return true;
     }
     if (name == "border-top-left-radius" || name == "border-top-right-radius" ||
         name == "border-bottom-right-radius" || name == "border-bottom-left-radius") {
-        Len l;
-        if (!parse_length(t[0], env, l)) return false;
+        Len l, lv;
+        if (t.size() > 2 || !parse_length(t[0], env, l)) return false;
+        if (t.size() == 2) { if (!parse_length(t[1], env, lv)) return false; } else lv = l;
         const int i = name == "border-top-left-radius" ? 0 : name == "border-top-right-radius" ? 1 :
                       name == "border-bottom-right-radius" ? 2 : 3;
-        s.radius[i] = l;
+        s.radius[i] = l; s.radiusv[i] = lv;
+        if (t.size() == 2) s.radius_ell = true;
         return true;
     }
 
@@ -1689,7 +1698,7 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         }
         return true;
     }
-    if (name == "scrollbar-width") { s.scrollbar_thin = v == "thin"; return v == "thin" || v == "auto" || v == "none"; }
+    if (name == "scrollbar-width") { s.scrollbar_thin = v == "thin"; s.scrollbar_none = v == "none"; return v == "thin" || v == "auto" || v == "none"; }
     if (name == "scrollbar-color") {
         if (v == "auto") { s.scrollbar_set = false; return true; }
         if (t.size() != 2) return false;

@@ -71,7 +71,20 @@ inline void blend(uint32_t& dst, uint32_t src, float cov) {
 // signed distance to a rounded box (negative inside); radius picked per quadrant
 inline float sdf_rrect(float px, float py, float x, float y, float w, float h, const Radii& r) {
     const float cx = x + w * 0.5f, cy = y + h * 0.5f;
-    const float rad = px < cx ? (py < cy ? r.tl : r.bl) : (py < cy ? r.tr : r.br);
+    const bool left = px < cx, top = py < cy;
+    const float rad = left ? (top ? r.tl : r.bl) : (top ? r.tr : r.br);
+    if (r.elliptical()) {
+        const float ry = left ? (top ? r.vtl() : r.vbl()) : (top ? r.vtr() : r.vbr());
+        const float qx = std::fabs(px - cx) - (w * 0.5f - rad);
+        const float qy = std::fabs(py - cy) - (h * 0.5f - ry);
+        if (qx > 0 && qy > 0 && rad > 0 && ry > 0) {   // corner: first-order distance to the ellipse
+            const float k = std::sqrt((qx / rad) * (qx / rad) + (qy / ry) * (qy / ry));
+            const float gx = qx / (rad * rad), gy = qy / (ry * ry);
+            const float g = std::sqrt(gx * gx + gy * gy) / std::max(k, 1e-6f);
+            return (k - 1.f) / std::max(g, 1e-6f);
+        }
+        return std::max(qx - rad, qy - ry);
+    }
     const float qx = std::fabs(px - cx) - (w * 0.5f - rad);
     const float qy = std::fabs(py - cy) - (h * 0.5f - rad);
     const float ax = std::max(qx, 0.f), ay = std::max(qy, 0.f);
@@ -86,7 +99,7 @@ inline float clip_cov(const State& s, float bx, float by) {
     for (const auto& rc : s.rc()) {
         // away from the corners (and a pixel from the straight edges) the coverage is exactly 1: skip the SDF
         const float px = bx - s.ox, py = by - s.oy;
-        const float rm = std::max(std::max(rc.r.tl, rc.r.tr), std::max(rc.r.br, rc.r.bl)) + 1.f;
+        const float rm = rc.r.max_r() + 1.f;
         if (px >= rc.x + 1.f && px <= rc.x + rc.w - 1.f && py >= rc.y + 1.f && py <= rc.y + rc.h - 1.f &&
             ((px >= rc.x + rm && px <= rc.x + rc.w - rm) || (py >= rc.y + rm && py <= rc.y + rc.h - rm)))
             continue;
@@ -187,6 +200,7 @@ void fill_border(State& s, const Item& it) {
     ir.tr = std::max(0.f, it.radii.tr - std::max(it.bw[1], it.bw[0]));
     ir.br = std::max(0.f, it.radii.br - std::max(it.bw[1], it.bw[2]));
     ir.bl = std::max(0.f, it.radii.bl - std::max(it.bw[3], it.bw[2]));
+    if (it.radii.elliptical()) ir = it.radii.inset(it.bw[3], it.bw[0], it.bw[1], it.bw[2]);
     const bool rounded = it.radii.any();
     const bool rcl = !s.rc().empty();
     // Rows well inside the inner rectangle (clear of its rounded corners) only have ink in the left and right
@@ -542,6 +556,7 @@ static DisplayList scale_list(const DisplayList& dl, float k) {
     for (Item& it : out) {
         it.x *= k; it.y *= k; it.w *= k; it.h *= k;
         it.radii.tl *= k; it.radii.tr *= k; it.radii.br *= k; it.radii.bl *= k;
+        it.radii.tlv *= k; it.radii.trv *= k; it.radii.brv *= k; it.radii.blv *= k;
         for (float& b : it.bw) b *= k;
         it.glen *= k; it.gcx *= k; it.gcy *= k; it.grx *= k; it.gry *= k;
         it.blur *= k; it.spread *= k; it.cx *= k; it.cy *= k; it.cw *= k; it.ch *= k;

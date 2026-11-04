@@ -14,7 +14,7 @@ DOM ──► style/ ──► layout/build ──► layout/{block,inline,flex,
 | Módulo | Qué hace |
 |---|---|
 | `src/style/selector.*` | Selectores L3 (+ `:is/:where/:not`, `nth-*`, `[attr op v i]`, `::before/::after`), especificidad (a,b,c) |
-| `src/style/stylesheet.*` | Parser de hojas: `!important`, `@media` (rango, `not`, listas), `@import`, `@supports/@layer` transparentes |
+| `src/style/stylesheet.*` | Parser de hojas: `!important`, `@media` (rango, `not`, listas), `@import`, `@supports` transparente, `@layer` (orden de capas en la cascada) |
 | `src/style/values.*` | Longitudes (`calc()`, `em/rem/vw/pt…`), colores (148 nombres, `hsl()`, `#rgba`), degradados, sombras |
 | `src/style/properties.*` | Tabla de propiedades → `ComputedStyle` tipado; shorthands; `inherit/initial/unset` |
 | `src/style/cascade.*` | Orden origen/`!important`/especificidad, `var()`, atributos presentacionales (`bgcolor`, `<table border>`…), herencia |
@@ -112,9 +112,7 @@ Emoji: solo la tira CBDT de Noto Color Emoji (sin COLRv1/sbix), con el mismo ord
 
 Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 18 páginas contra el oráculo): `mix-blend-mode` y
 `background-blend-mode`, multicolumna (`column-count`, `columns`, `column-rule`), `writing-mode` vertical, `::first-letter` y
-`::first-line`, transformaciones 3D (`perspective`, `rotateX/Y`, `translateZ`), `shape-outside`, `subgrid`, `@layer` (se ignora
-el orden de capas: gana la última regla), `font-variant` (small-caps) y `font-feature-settings`, `border-radius` elíptico (`a / b`),
-`border-image` y `box-decoration-break`, `<svg>` sin `pattern`/`<text>`/`<image>`/`marker`, barra de scroll horizontal arrastrable, barras de cajas internas
+`::first-line`, transformaciones 3D (`perspective`, `rotateX/Y`, `translateZ`), `shape-outside`, `subgrid`, `font-variant` (small-caps) y `font-feature-settings`, `border-image` y `box-decoration-break`, texto bidi / `direction: rtl`, `<svg>` sin `pattern`/`<text>`/`<image>`/`marker`, barra de scroll horizontal arrastrable, barras de cajas internas
 como *overlay* (no reservan hueco, a diferencia de Chromium), PNG entrelazado/16 bits.
 Ya implementados y en la suite: `text-shadow`, filtros, `backdrop-filter`, `mask-image`, `clip-path`, contadores, `object-position`,
 `@font-face`, `cq*`, `text-decoration` wavy/dotted/double, gradientes cónicos y repetidos, `object-fit`, `aspect-ratio`, `@supports`, `:is/:where`.

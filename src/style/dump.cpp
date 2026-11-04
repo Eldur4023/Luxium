@@ -124,7 +124,7 @@ const std::vector<std::pair<std::string, Getter>>& table() {
         }
         const char* corners[] = {"top-left", "top-right", "bottom-right", "bottom-left"};
         for (int i = 0; i < 4; ++i)
-            add(std::string("border-") + corners[i] + "-radius", [i](const ComputedStyle& s, bool&) { return len(s.radius[i]); });
+            add(std::string("border-") + corners[i] + "-radius", [i](const ComputedStyle& s, bool&) { return s.radius_ell && len(s.radiusv[i]) != len(s.radius[i]) ? len(s.radius[i]) + " " + len(s.radiusv[i]) : len(s.radius[i]); });
         add("max-width", [](const ComputedStyle& s, bool&) { return s.max_width.is_auto ? std::string("none") : len(s.max_width); });
         add("flex-grow", [](const ComputedStyle& s, bool&) { return num(s.flex_grow); });
         add("flex-shrink", [](const ComputedStyle& s, bool&) { return num(s.flex_shrink); });

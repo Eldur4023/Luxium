@@ -21,6 +21,7 @@ ComputedStyle inherited_style(const ComputedStyle& parent);
 struct RuleIndex {
     std::unordered_map<std::string, std::vector<int>> by_id, by_class, by_tag;
     std::vector<int> universal;
+    std::vector<int> layer;   // per rule: 0 = unlayered, n = the n-th @layer by first appearance
     void build(const std::vector<Rule>& rules);
 };
 

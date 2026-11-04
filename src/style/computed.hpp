@@ -199,6 +199,8 @@ struct ComputedStyle {
     uint32_t    border_color[4] = {0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000};
     bool        bc_current[4] = {true, true, true, true};   // currentcolor: follows `color`
     Len      radius[4] = {Len::Px(0), Len::Px(0), Len::Px(0), Len::Px(0)};   // tl tr br bl
+    Len      radiusv[4] = {Len::Px(0), Len::Px(0), Len::Px(0), Len::Px(0)};  // vertical radii, only read when radius_ell
+    bool     radius_ell = false;   // border-radius with a `/` or two values per corner: elliptical
     Len      inset[4] = {Len::Auto(), Len::Auto(), Len::Auto(), Len::Auto()};  // top right bottom left
 
     // ── painting ────────────────────────────────────────────────────────────
@@ -282,7 +284,7 @@ struct ComputedStyle {
     bool     pointer_events = true;
     uint32_t accent = 0;                // accent-color (0 = auto)
     bool     appearance_none = false;   // appearance: none (controls keep only their CSS look)
-    bool     scrollbar_thin = false, scrollbar_set = false;   // scrollbar-width: thin; scrollbar-color given
+    bool     scrollbar_thin = false, scrollbar_none = false, scrollbar_set = false;   // scrollbar-width: thin; scrollbar-color given
     uint32_t scrollbar_thumb = 0, scrollbar_track = 0;
     // transform: a 2D affine map p' = O + L (p - O) + t with L = [tf0 tf2; tf1 tf3] (x' = a x + c y, y' = b x + d y),
     // t = (translate_x, translate_y) (% of the border box) and O = transform-origin.

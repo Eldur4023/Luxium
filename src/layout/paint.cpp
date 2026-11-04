@@ -117,6 +117,11 @@ Radii radii_of(const ComputedStyle& s, float w, float h) {
     float f = 1.f;
     auto chk = [&](float sum, float avail) { if (sum > avail && sum > 0) f = std::min(f, avail / sum); };
     chk(r.tl + r.tr, w); chk(r.bl + r.br, w); chk(r.tl + r.bl, h); chk(r.tr + r.br, h);
+    if (s.radius_ell) {
+        r.tlv = px(s.radiusv[0], h); r.trv = px(s.radiusv[1], h); r.brv = px(s.radiusv[2], h); r.blv = px(s.radiusv[3], h);
+        chk(r.tlv + r.blv, h); chk(r.trv + r.brv, h);
+        r.tlv *= f; r.trv *= f; r.brv *= f; r.blv *= f;
+    }
     r.tl *= f; r.tr *= f; r.br *= f; r.bl *= f;
     return r;
 }
@@ -524,7 +529,7 @@ struct Painter {
             if (!s.bg.empty()) {
                 const Radii prad{std::max(0.f, rad.tl - std::max(b.border.l, b.border.t)), std::max(0.f, rad.tr - std::max(b.border.r, b.border.t)),
                                  std::max(0.f, rad.br - std::max(b.border.r, b.border.b)), std::max(0.f, rad.bl - std::max(b.border.l, b.border.b))};
-                bg_layers(s, pad, clip_pad ? pad : r, clip_pad ? prad : rad);
+                bg_layers(s, pad, clip_pad ? pad : r, clip_pad ? (rad.elliptical() ? rad.inset(b.border.l, b.border.t, b.border.r, b.border.b) : prad) : rad);
             }
         }
         // inset shadows
@@ -665,6 +670,7 @@ struct Painter {
         rect(sn(tx) + 1.5f, y + 1.5f, tl - 3.f, t - 3.f, thumb, {(t - 3.f) / 2, (t - 3.f) / 2, (t - 3.f) / 2, (t - 3.f) / 2});
     }
     void scrollbar(Box& b) {
+        if (b.st->scrollbar_none) return;   // scrollbar-width: none: still scrolls, draws nothing
         scrollbar_h(b);
         if (!scrolls_y(b)) return;
         float x, y, w, h;

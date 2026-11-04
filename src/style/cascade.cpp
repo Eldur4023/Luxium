@@ -1,3 +1,4 @@
+#include <climits>
 #include "style/cascade.hpp"
 
 #include <style/properties.hpp>
@@ -64,6 +65,12 @@ Resolver::Resolver() : ua_(ua_rules()), ua_idx_(ua_index()) {}
 
 void RuleIndex::build(const std::vector<Rule>& rules) {
     by_id.clear(); by_class.clear(); by_tag.clear(); universal.clear();
+    layer.assign(rules.size(), 0);
+    {
+        std::unordered_map<std::string, int> ids;
+        for (size_t i = 0; i < rules.size(); ++i)
+            if (!rules[i].layer.empty()) layer[i] = ids.try_emplace(rules[i].layer, int(ids.size()) + 1).first->second;
+    }
     for (size_t i = 0; i < rules.size(); ++i) {
         bool uni = false;
         std::vector<std::pair<int, std::string>> keys;   // 0 id, 1 class, 2 tag
@@ -250,6 +257,7 @@ struct Entry {
     int spec;
     int order;
     bool important;
+    int layer = 0;   // -1 presentational hint (loses to everything), 0 unlayered, n = @layer rank
 };
 
 } // namespace
@@ -320,7 +328,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
                 if (matches(sel, el)) best = std::max(best, sel.specificity);
             }
             if (best < 0) continue;
-            for (const auto& d : r.decls) entries.push_back({&d, rank, best, r.order, d.important});
+            for (const auto& d : r.decls) entries.push_back({&d, rank, best, r.order, d.important, idx.layer.empty() ? 0 : idx.layer[size_t(ri)]});
         }
     };
     collect(ua_, ua_idx_, 0);
@@ -329,7 +337,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
     if (pseudo == Pseudo::None) {
         hint_decls = presentational_hints(el);
         int n = 0;
-        for (const auto& d : hint_decls) entries.push_back({&d, 1, -1, n++, false});
+        for (const auto& d : hint_decls) entries.push_back({&d, 1, -1, n++, false, -1});
     }
     std::vector<Decl> inline_decls;
     if (pseudo == Pseudo::None && el.has_attr("style")) {
@@ -345,6 +353,15 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
     std::stable_sort(entries.begin(), entries.end(), [&](const Entry& a, const Entry& b) {
         const int ka = key(a), kb = key(b);
         if (ka != kb) return ka < kb;
+        if (a.layer != b.layer) {
+            // normal: later layers win, unlayered beats every layer; !important: reversed
+            auto eff = [](const Entry& e) {
+                if (e.layer < 0) return -1;
+                if (e.important) return e.layer == 0 ? 0 : INT_MAX - e.layer;
+                return e.layer == 0 ? INT_MAX : e.layer;
+            };
+            return eff(a) < eff(b);
+        }
         if (a.spec != b.spec) return a.spec < b.spec;
         return a.order < b.order;
     });

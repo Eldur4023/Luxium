@@ -7,6 +7,7 @@
 #include <render/text.hpp>
 #include <style/computed.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -15,8 +16,24 @@ namespace luxium::render { struct ImageBitmap; }
 namespace luxium::paint {
 
 struct Radii {
-    float tl = 0, tr = 0, br = 0, bl = 0;
+    float tl = 0, tr = 0, br = 0, bl = 0;           // horizontal radii
+    float tlv = -1, trv = -1, brv = -1, blv = -1;   // vertical radii; < 0: same as the horizontal one (circular)
     bool any() const { return tl > 0 || tr > 0 || br > 0 || bl > 0; }
+    float vtl() const { return tlv < 0 ? tl : tlv; }
+    float vtr() const { return trv < 0 ? tr : trv; }
+    float vbr() const { return brv < 0 ? br : brv; }
+    float vbl() const { return blv < 0 ? bl : blv; }
+    bool elliptical() const { return tlv >= 0 || trv >= 0 || brv >= 0 || blv >= 0; }
+    float max_r() const { return std::max({tl, tr, br, bl, vtl(), vtr(), vbr(), vbl()}); }
+    // the radii of the inner edge of a border / padding box: each side's width taken off the matching axis
+    Radii inset(float l, float t, float r, float b) const {
+        Radii o;
+        o.tl = std::max(0.f, tl - l); o.tlv = std::max(0.f, vtl() - t);
+        o.tr = std::max(0.f, tr - r); o.trv = std::max(0.f, vtr() - t);
+        o.br = std::max(0.f, br - r); o.brv = std::max(0.f, vbr() - b);
+        o.bl = std::max(0.f, bl - l); o.blv = std::max(0.f, vbl() - b);
+        return o;
+    }
 };
 
 struct Stop { uint32_t argb = 0; float t = 0; };   // t along the gradient line (0..1)
