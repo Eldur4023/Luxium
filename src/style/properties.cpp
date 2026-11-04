@@ -868,6 +868,61 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         s.bg_color = c;
         return true;
     }
+    if (name == "border-image" || name == "border-image-source" || name == "border-image-slice" || name == "border-image-width" ||
+        name == "border-image-outset" || name == "border-image-repeat") {
+        const bool all = name == "border-image";
+        BorderImage bi = s.border_img;
+        if (all) bi = BorderImage{};
+        std::string text = raw;
+        {   // a `/` outside parentheses separates slice / width / outset; inside (url(a/b), calc()) it is part of the value
+            std::string sp; int depth = 0;
+            for (char ch : text) {
+                if (ch == '(') ++depth; else if (ch == ')') --depth;
+                if (ch == '/' && depth == 0) sp += " / "; else sp += ch;
+            }
+            text = sp;
+        }
+        int stage = name == "border-image-width" ? 1 : name == "border-image-outset" ? 2 : 0;
+        std::vector<std::string> nums;   // the numbers of the current stage
+        auto flush = [&]() -> bool {
+            if (stage == 0 && !nums.empty() && nums.size() <= 4) {
+                for (int i = 0; i < 4; ++i) {
+                    const std::string& w = nums[i < int(nums.size()) ? (size_t)i : (nums.size() == 1 ? 0 : nums.size() == 2 ? (size_t)(i % 2) : nums.size() == 3 ? (size_t)(i == 3 ? 1 : i) : (size_t)i)];
+                    bi.slice_pct[i] = w.back() == '%';
+                    char* e = nullptr; bi.slice[i] = std::strtof(w.c_str(), &e);
+                    if (*e && *e != '%') return false;
+                }
+            } else if (stage == 1 && !nums.empty() && nums.size() <= 4) {
+                for (int i = 0; i < 4; ++i) {
+                    const std::string& w = nums[i < int(nums.size()) ? (size_t)i : (nums.size() == 1 ? 0 : nums.size() == 2 ? (size_t)(i % 2) : nums.size() == 3 ? (size_t)(i == 3 ? 1 : i) : (size_t)i)];
+                    bi.width_auto[i] = w == "auto";
+                    if (w == "auto") continue;
+                    char* e = nullptr; const float n = std::strtof(w.c_str(), &e);
+                    if (!*e) { bi.width[i] = n; bi.width_num[i] = true; }
+                    else { Len l; if (!parse_length(w, env, l)) return false; bi.width[i] = l.px; bi.width_num[i] = false; }
+                }
+            }
+            nums.clear();
+            return true;
+        };
+        for (const auto& tk : tokens(text)) {
+            const std::string w = lower_ascii(tk);
+            if (w == "/") { if (!flush()) return false; ++stage; continue; }
+            if (w == "fill") { bi.fill = true; continue; }
+            if (w == "stretch" || w == "repeat" || w == "round" || w == "space") continue;   // edges always stretch
+            if (w.starts_with("url(") || w.find("gradient(") != std::string::npos || w == "none") {
+                if (w == "none") { bi.src = BgLayer{}; bi.set = false; continue; }
+                BgLayer L;
+                if (!parse_bg_layer(Tokens{tk}, env, s.color, L, nullptr)) return false;
+                bi.src = L; bi.set = true;
+                continue;
+            }
+            nums.push_back(w);
+        }
+        if (!flush()) return false;
+        s.border_img = bi;
+        return true;
+    }
     if (name == "background" || name == "background-image") {
         std::vector<BgLayer> layers;
         uint32_t color = s.bg_color;

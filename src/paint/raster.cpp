@@ -280,7 +280,8 @@ void fill_border(State& s, const Item& it) {
             switch (it.bs[side]) {
             case BS::None: case BS::Hidden: continue;
             case BS::Dashed: {
-                const float dash = std::max(2.f, bwid * 3.f), gap = dash;
+                // Blink: thin lines get 3w dashes with 3w gaps here; from 3px up the dash is 2w and the gap w
+                const float dash = bwid >= 3.f ? bwid * 2.f : std::max(2.f, bwid * 3.f), gap = bwid >= 3.f ? bwid : dash;
                 const float rem = std::fmod(along, dash + gap);
                 if (rem >= dash) continue;
                 break;

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <paint/raster.hpp>
 
 namespace luxium::layout {
 
@@ -487,6 +488,57 @@ struct Painter {
     }
 
     // ── box decoration ──────────────────────────────────────────────────────
+    // border-image: the source cut in nine pieces; the corners go to the corners of the border box at the border
+    // widths, the edges and the centre stretch.
+    void border_image(const Box& b, const Rect& r) {
+        const style::BorderImage& bi = b.st->border_img;
+        std::shared_ptr<const render::ImageBitmap> img;
+        float SW = r.w, SH = r.h;
+        if (bi.src.kind == style::BgLayer::Kind::Url) {
+            img = image_for(bi.src.url);
+            if (!img) return;
+            SW = float(img->w); SH = float(img->h);
+        } else if (bi.src.kind == style::BgLayer::Kind::Gradient) {
+            // no intrinsic size: the gradient is rendered once at the border box size, then cut like any image
+            const int gw = std::max(1, int(std::lround(r.w))), gh = std::max(1, int(std::lround(r.h)));
+            paint::DisplayList tmp;
+            paint::DisplayList* saved = dl;
+            dl = &tmp;
+            emit_gradient(bi.src.grad, 0, 0, float(gw), float(gh), {});
+            dl = saved;
+            std::vector<uint32_t> px(size_t(gw) * size_t(gh), 0u);
+            paint::Canvas cv;
+            cv.px = px; cv.w = gw; cv.h = gh; cv.ox = cv.oy = 0; cv.clip = {0, 0, gw, gh};
+            paint::rasterize(tmp, cv, env.font);
+            auto bm = std::make_shared<render::ImageBitmap>();
+            bm->w = gw; bm->h = gh; bm->rgba.resize(px.size() * 4);
+            for (size_t i = 0; i < px.size(); ++i) {
+                bm->rgba[i * 4] = uint8_t(px[i] >> 16); bm->rgba[i * 4 + 1] = uint8_t(px[i] >> 8);
+                bm->rgba[i * 4 + 2] = uint8_t(px[i]); bm->rgba[i * 4 + 3] = uint8_t(px[i] >> 24);
+            }
+            img = bm;
+            SW = float(gw); SH = float(gh);
+        } else return;
+        const float bw[4] = {b.border.t, b.border.r, b.border.b, b.border.l};
+        auto slice = [&](int i, float dim) { return std::clamp(bi.slice_pct[i] ? bi.slice[i] / 100.f * dim : bi.slice[i], 0.f, dim); };
+        const float st = slice(0, SH), sr = slice(1, SW), sb = slice(2, SH), sl = slice(3, SW);
+        float dw[4];
+        const float sdim[4] = {st, sr, sb, sl};
+        for (int i = 0; i < 4; ++i) dw[i] = bi.width_auto[i] ? sdim[i] : bi.width_num[i] ? bi.width[i] * bw[i] : bi.width[i];
+        const float xs[4] = {0, sl, SW - sr, SW}, ys[4] = {0, st, SH - sb, SH};                     // source cuts
+        const float xd[4] = {0, dw[3], std::max(dw[3], r.w - dw[1]), r.w}, yd[4] = {0, dw[0], std::max(dw[0], r.h - dw[2]), r.h};   // destination cuts
+        for (int j = 0; j < 3; ++j)
+            for (int i = 0; i < 3; ++i) {
+                if (i == 1 && j == 1 && !bi.fill) continue;
+                const float sx = xs[i], sy = ys[j], sw = xs[i + 1] - xs[i], sh = ys[j + 1] - ys[j];
+                const float dx = r.x + xd[i], dy = r.y + yd[j], ww = xd[i + 1] - xd[i], hh = yd[j + 1] - yd[j];
+                if (sw <= 0 || sh <= 0 || ww <= 0 || hh <= 0) continue;
+                Item it; it.kind = Item::Kind::Image; it.img = img; it.x = dx; it.y = dy; it.w = ww; it.h = hh;
+                it.sx = sx; it.sy = sy; it.sw = sw; it.sh = sh;
+                dl->push_back(std::move(it));
+            }
+    }
+
     void borders(const Box& b, const Rect& r, const Radii& rad, bool left = true, bool right = true) {
         const ComputedStyle& s = *b.st;
         Item it; it.kind = Item::Kind::Border; it.x = r.x; it.y = r.y; it.w = r.w; it.h = r.h; it.radii = rad;
@@ -559,7 +611,8 @@ struct Painter {
             const uint32_t col = b.ctl ? s.border_color[0] : 0xFF767676;
             for (int i = 0; i < 4; ++i) { it.bw[i] = 1; it.bc[i] = col; it.bs[i] = style::BorderStyle::Solid; }
             dl->push_back(std::move(it));
-        } else if (!b.border_collapsed) borders(b, r, rad);
+        } else if (s.border_img.set && !b.border_collapsed) border_image(b, r);
+        else if (!b.border_collapsed) borders(b, r, rad);
         // column-rule: a line centred in each gap between columns, as tall as the content box
         if (b.mc_n > 1 && s.column_rule_w > 0 && s.column_rule_style != style::BorderStyle::None && s.column_rule_style != style::BorderStyle::Hidden) {
             const uint32_t col = s.column_rule_cur ? s.color : s.column_rule_color;
@@ -1049,7 +1102,7 @@ struct Painter {
     void self(Box& b, bool bg = true) {
         decor(b, bg && !(prop_body && &b == tree.body_box));
         if (b.kind == Box::Kind::Replaced) replaced(b);
-        outline(b);
+        pending_outlines.push_back(&b);   // painted over the rest of the stacking context (Blink's outline phase)
         if (b.node && b.kind != Box::Kind::Inline && !b.anonymous) {
             const std::string& tg = b.node->name;
             if (b.ctl) {
@@ -1072,8 +1125,16 @@ struct Painter {
         }
     }
 
+    std::vector<Box*> pending_outlines;
+    void flush_outlines(size_t from, size_t to_exclusive_end = size_t(-1)) {
+        std::vector<Box*> take(pending_outlines.begin() + long(from), pending_outlines.begin() + long(std::min(to_exclusive_end, pending_outlines.size())));
+        pending_outlines.erase(pending_outlines.begin() + long(from), pending_outlines.begin() + long(from + take.size()));
+        for (Box* q : take) outline(*q);
+    }
+
     void paint_sc(Box& sc, bool bg = true) {
         const ComputedStyle& s = *sc.st;
+        const size_t outline_mark = pending_outlines.size();
         if (s.position == Position::Fixed && dl != &out.fixed) {
             auto* saved = dl;
             dl = &out.fixed;
@@ -1192,7 +1253,9 @@ struct Painter {
         }
         content(sc);
         if (cl) scrollbar(sc);
+        flush_outlines(outline_mark + 1);   // the outlines of everything inside, still under the clip
         if (cl) clip_pop();
+        flush_outlines(outline_mark);       // its own
         if (lay) layer_pop(layer);
     }
 

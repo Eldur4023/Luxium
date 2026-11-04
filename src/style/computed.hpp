@@ -94,6 +94,18 @@ struct BgLayer {
     bool        clip_padding = false;   // background-clip: padding-box
 };
 
+// border-image: the source (an image or a gradient), how it is cut (slice), and how wide its pieces are drawn.
+struct BorderImage {
+    bool set = false;
+    BgLayer src;
+    float slice[4] = {100, 100, 100, 100};   // top right bottom left
+    bool  slice_pct[4] = {true, true, true, true};
+    bool  fill = false;
+    float width[4] = {1, 1, 1, 1};           // a multiple of the border width, or px when !width_num
+    bool  width_num[4] = {true, true, true, true};
+    bool  width_auto[4] = {false, false, false, false};
+};
+
 struct Shadow {
     float x = 0, y = 0, blur = 0, spread = 0;
     uint32_t color = 0xFF000000;
@@ -206,6 +218,7 @@ struct ComputedStyle {
 
     // ── painting ────────────────────────────────────────────────────────────
     uint32_t bg_color = kTransparent;
+    BorderImage border_img;
     std::vector<BgLayer> bg;
     std::vector<int> bg_blend;   // background-blend-mode per layer (cycled), same codes as mix_blend; empty = normal
     std::vector<Shadow>  box_shadow;
