@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
         auto f = luxium::net::Fetch::start(target);
         while (!f->done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
         if (!f->ok()) { std::fprintf(stderr, "cannot fetch '%s': %s\n", target.c_str(), f->error().c_str()); return 2; }
-        if (f->is_luxp()) page.load_luxp(f->body(), target);   // a Lux server answers its compiled page
+        if (f->is_luxp()) page.load_luxp(f->body(), target, f->block_origin());   // a Lux server answers its compiled page
         else page.load_string(f->body(), target);
     } else if (!page.load_file(target)) {
         std::fprintf(stderr, "cannot read '%s'\n", target.c_str());
@@ -173,6 +173,14 @@ int main(int argc, char** argv) {
             spin(page, 5);
         } else if (cmd == "wait") {
             spin(page, std::atoi(arg.c_str()));
+        } else if (cmd == "get") {   // navigate to another URL: a second page from the same server (block cache)
+            auto f = luxium::net::Fetch::start(arg);
+            while (!f->done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (!f->ok()) { std::printf("get %s: %s\n", arg.c_str(), f->error().c_str()); rc = 1; continue; }
+            std::printf("get %s -> %zu bytes%s\n", arg.c_str(), f->body().size(), f->is_luxp() ? " (luxp)" : "");
+            if (f->is_luxp()) page.load_luxp(f->body(), arg, f->block_origin());
+            else page.load_string(f->body(), arg);
+            spin(page, 5);
         } else if (cmd == "until") {
             auto c2 = arg.rfind(':');
             int ms = 5000;

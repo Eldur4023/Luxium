@@ -36,7 +36,8 @@ public:
     bool load_string(const std::string& html, const std::string& source_name);
     // A .luxp received over the network (its entry page; resources are not
     // fetched yet).
-    bool load_luxp(const std::string& bytes, const std::string& name);
+    // `blocks_origin`: whose cached blocks the answer may refer to (default: the origin of `name`).
+    bool load_luxp(const std::string& bytes, const std::string& name, const std::string& blocks_origin = std::string());
 
 
     // The shell sets this: a click on (or under) an <a href> calls it with

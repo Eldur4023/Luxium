@@ -32,6 +32,9 @@ public:
     const std::string& error() const;
     const std::string& url() const;     // the URL that was asked for
     std::string final_url() const;      // where it ended up after redirects (valid once done())
+    // The origin whose cached blocks this request announced (X-Luxp-Have): the answer's blocks are
+    // resolved, and its new ones kept, under it -- even after a redirect to another origin.
+    std::string block_origin() const;
 
 private:
     // Shared with the worker thread: dropping a Fetch mid-transfer (a newer

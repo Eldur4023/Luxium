@@ -1,4 +1,6 @@
 #include "page/doc_template.hpp"
+#include "page/doc_template_run.hpp"
+#include <util/wire.hpp>
 
 #include <cctype>
 #include <cstring>
@@ -34,27 +36,15 @@ bool read_marker(const std::string& s, size_t& i, char& kind, uint32_t& id) {
     return true;
 }
 
-void put_uv(std::string& out, uint64_t v) {
-    while (v >= 0x80) { out += char((v & 0x7F) | 0x80); v >>= 7; }
-    out += char(v);
-}
-
-void put_str(std::string& out, const std::string& s) { put_uv(out, s.size()); out += s; }
-
-// A count that is not known yet: one byte now, patched when it is -- a node
-// with children is written in place, with no buffer of its own for them.  Most
-// counts fit the byte; the rare 128+ child list is lengthened (the reader only
-// sees LEB128).
-size_t reserve_count(std::string& out) { out.push_back('\0'); return out.size() - 1; }
-
-void patch_count(std::string& out, size_t at, uint32_t n) {
-    if (n < 0x80) {
-        out[at] = char(n);
-    } else {
-        std::string enc;
-        put_uv(enc, n);
-        out.replace(at, 1, enc);   // moves what was written after it, once
+// Every marker in `s` is an S (a value inside a script body).
+bool only_script_markers(const std::string& s) {
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] != kStart) { ++i; continue; }
+        char kind;
+        uint32_t id;
+        if (!read_marker(s, i, kind, id) || kind != 'S') return false;
     }
+    return true;
 }
 
 // ── scanning the skeleton's source ──────────────────────────────────────────
@@ -79,7 +69,8 @@ std::string scan_source(const std::string& s) {
             uint32_t id;
             const size_t at = i;
             if (!read_marker(s, i, kind, id)) return "marker mal formado";
-            if (!raw_close.empty() && raw_close.rfind("<pending:", 0) != 0) return "un valor dentro de <script>/<style>";
+            if (!raw_close.empty() && raw_close.rfind("<pending:", 0) != 0 && !(kind == 'S' && raw_close == "</script"))
+                return "un valor dentro de <script>/<style>";
             if (state == Comment || state == Bang) return "un valor dentro de un comentario o doctype";
             if (state == Tag) {
                 if (!quote) return "un valor fuera de comillas en una etiqueta";
@@ -159,7 +150,8 @@ struct DocTemplate::Item {
     std::string        bytes;          // Static: whole encoded nodes
     uint32_t           count = 0;      //   ...and how many
     std::vector<Piece> parts;          // Text
-    struct Attr { uint32_t name = 0; std::vector<Piece> parts; bool dynamic = false; };
+    struct Attr { uint32_t name = 0; std::vector<Piece> parts; bool dynamic = false; std::string enc; };
+    std::string        head;           // Elem: type, name, attr count, pre-encoded
     uint32_t           name = 0;       // Elem
     std::vector<Attr>  attrs;
     std::vector<Item>  children;       // Elem's children; the body of a Loop; the `then` of an If
@@ -291,9 +283,13 @@ struct Builder {
             if (has_marker(k)) return fail("un valor en un nombre de atributo");
             if (resource && has_marker(v)) return fail("un valor en un atributo de <link>/<script>");
         }
+        // A <script> body may hold values (S markers only: they sit inside a string literal and the program
+        // takes them as constants; the document never carries a script's text).  A <style> body, or any
+        // other marker there, makes the template ineligible.
         if (raw)
             for (const auto& c : n.children)
-                if (has_marker(c->text)) return fail("un valor dentro de <script>/<style>");
+                if (has_marker(c->text) && !(n.is_element("script") && only_script_markers(c->text)))
+                    return fail("un valor dentro de <script>/<style>");
 
         Item it;
         it.kind = Kind::Elem;
@@ -313,6 +309,13 @@ struct Builder {
             if (pos != toks.size()) return fail("una estructura se abre y se cierra en elementos distintos");
         }
         if (is_static(it)) return static_item(n, out);   // the original subtree, written once
+        it.head += char(dom::NodeType::Element);
+        put_uv(it.head, it.name);
+        put_uv(it.head, it.attrs.size());
+        for (auto& a : it.attrs) {
+            put_uv(a.enc, a.name);
+            if (!a.dynamic) put_str(a.enc, a.parts.empty() ? std::string() : a.parts[0].lit);
+        }
         out = std::move(it);
         return true;
     }
@@ -410,84 +413,106 @@ struct Builder {
     }
 };
 
-// ── rendering ───────────────────────────────────────────────────────────────
+} // namespace
 
-void flush(std::string& buf, uint32_t& count, std::string& pending) {
-    if (pending.empty()) return;
-    buf += char(dom::NodeType::Text);
-    put_str(buf, pending);
-    ++count;
-    pending.clear();
-}
+// ── the program ─────────────────────────────────────────────────────────────
 
-bool render_seq(const std::vector<Item>& seq, DocTemplate::Host& h, std::string& buf, uint32_t& count,
-                std::string& pending);
+namespace {
 
-bool assemble(const std::vector<Piece>& parts, DocTemplate::Host& h, std::string& out) {
-    for (const auto& p : parts) {
-        if (p.hole < 0) out += p.lit;
-        else if (!h.hole(uint32_t(p.hole), out)) return false;
+using Op = DocTemplate::Op;
+
+struct Emitter {
+    std::vector<Op>&                  ops;
+    std::string&                      lits;
+    std::vector<DocTemplate::Part>&   parts;
+
+    size_t put(Op::Code code, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0) {
+        ops.push_back({code, a, b, c});
+        return ops.size() - 1;
     }
-    return true;
-}
-
-bool render_seq(const std::vector<Item>& seq, DocTemplate::Host& h, std::string& buf, uint32_t& count,
-                std::string& pending) {
-    for (const Item& it : seq) {
-        switch (it.kind) {
-            case Kind::Static:
-                flush(buf, count, pending);
-                buf += it.bytes;
-                count += it.count;
-                break;
-            case Kind::Text:
-                if (!assemble(it.parts, h, pending)) return false;
-                break;
-            case Kind::Elem: {
-                flush(buf, count, pending);
-                buf += char(dom::NodeType::Element);
-                put_uv(buf, it.name);
-                put_uv(buf, it.attrs.size());
-                std::string value;
-                for (const auto& a : it.attrs) {
-                    put_uv(buf, a.name);
-                    if (!a.dynamic) {
-                        put_str(buf, a.parts.empty() ? std::string() : a.parts[0].lit);
-                    } else {
-                        value.clear();
-                        if (!assemble(a.parts, h, value)) return false;
-                        put_str(buf, value);
+    void bytes(Op::Code code, const std::string& s, uint32_t count = 0) {
+        if (s.empty() && code != Op::Static) return;
+        const uint32_t off = uint32_t(lits.size());
+        lits += s;
+        put(code, off, uint32_t(s.size()), count);
+    }
+    // The pieces as a run of Parts; returns {first, count}.
+    std::pair<uint32_t, uint32_t> run(const std::vector<Piece>& ps) {
+        const uint32_t first = uint32_t(parts.size());
+        for (const auto& p : ps) {
+            DocTemplate::Part part;
+            if (p.hole >= 0) {
+                part.hole = p.hole;
+            } else {
+                if (p.lit.empty()) continue;
+                part.off = uint32_t(lits.size());
+                part.len = uint32_t(p.lit.size());
+                lits += p.lit;
+            }
+            parts.push_back(part);
+        }
+        return {first, uint32_t(parts.size()) - first};
+    }
+    void seq(const std::vector<Item>& items) {
+        for (const Item& it : items) {
+            switch (it.kind) {
+                case Kind::Static: bytes(Op::Static, it.bytes, it.count); break;
+                case Kind::Text: {
+                    auto [first, n] = run(it.parts);
+                    if (n) put(Op::Text, first, n);
+                    break;
+                }
+                case Kind::Elem: {
+                    std::string pre = it.head;
+                    bool opened = false;
+                    auto flush_pre = [&] {
+                        bytes(opened ? Op::AttrStatic : Op::ElemOpen, pre);
+                        opened = true;
+                        pre.clear();
+                    };
+                    for (const auto& a : it.attrs) {
+                        pre += a.enc;
+                        if (!a.dynamic) continue;
+                        flush_pre();
+                        auto [first, n] = run(a.parts);
+                        put(Op::AttrDyn, first, n);
                     }
+                    flush_pre();
+                    if (it.children.size() == 1 && it.children[0].kind == Kind::Text) {
+                        auto [first, n] = run(it.children[0].parts);
+                        put(Op::Leaf, first, n);
+                        break;
+                    }
+                    put(Op::ElemBody);
+                    seq(it.children);
+                    put(Op::ElemClose);
+                    break;
                 }
-                const size_t at = reserve_count(buf);
-                uint32_t kids = 0;
-                std::string text;
-                if (!render_seq(it.children, h, buf, kids, text)) return false;
-                flush(buf, kids, text);
-                patch_count(buf, at, kids);
-                ++count;
-                break;
-            }
-            case Kind::Loop: {
-                size_t items = 0;
-                if (!h.loop_begin(it.id, items)) return false;
-                for (size_t i = 0; i < items; ++i) {
-                    h.loop_item(it.id, i, items);
-                    if (!render_seq(it.children, h, buf, count, pending)) { h.loop_end(it.id); return false; }
+                case Kind::Loop: {
+                    const size_t begin = put(Op::LoopBegin, it.id);
+                    const uint32_t body = uint32_t(ops.size());
+                    seq(it.children);
+                    put(Op::LoopNext, it.id, body);
+                    ops[begin].b = uint32_t(ops.size());
+                    break;
                 }
-                h.loop_end(it.id);
-                break;
-            }
-            case Kind::If: {
-                bool v = false;
-                if (!h.test(it.id, v)) return false;
-                if (!render_seq(v ? it.children : it.orelse, h, buf, count, pending)) return false;
-                break;
+                case Kind::If: {
+                    const size_t iff = put(Op::If, it.id);
+                    seq(it.children);
+                    if (!it.orelse.empty()) {
+                        const size_t j = put(Op::Jump);
+                        ops[iff].b = uint32_t(ops.size());
+                        seq(it.orelse);
+                        ops[j].a = uint32_t(ops.size());
+                    } else {
+                        ops[iff].b = uint32_t(ops.size());
+                    }
+                    break;
+                }
             }
         }
     }
-    return true;
-}
+};
 
 } // namespace
 
@@ -507,9 +532,13 @@ std::unique_ptr<DocTemplate> DocTemplate::build(const dom::Node& skeleton, const
     std::vector<Tok> toks;
     if (!b.flatten(skeleton, toks)) return no(b.why);
     size_t pos = 0;
-    if (!b.parse_seq(toks, pos, t->root_, 0)) return no(b.why);
+    std::vector<Item> root;
+    if (!b.parse_seq(toks, pos, root, 0)) return no(b.why);
     if (pos != toks.size()) return no("una estructura se abre y se cierra en elementos distintos");
-    b.fold(t->root_, true);
+    b.fold(root, true);
+    Emitter em{t->ops_, t->lits_, t->parts_};
+    em.seq(root);
+    em.put(Op::End);
 
     wire::Writer w;
     encode_prologue(w, t->names_);
@@ -517,15 +546,134 @@ std::unique_ptr<DocTemplate> DocTemplate::build(const dom::Node& skeleton, const
     return t;
 }
 
-bool DocTemplate::render(Host& host, std::string& out) const {
-    out = prologue_;
-    out += char(dom::NodeType::Document);
-    const size_t at = reserve_count(out);
-    uint32_t count = 0;
-    std::string pending;
-    if (!render_seq(root_, host, out, count, pending)) return false;
-    flush(out, count, pending);
-    patch_count(out, at, count);
+bool DocTemplate::render(Host& host, std::string& out) const { return run(host, out); }
+
+// ── the template as a block ─────────────────────────────────────────────────
+
+std::string DocTemplate::serialize() const {
+    wire::Writer w;
+    w.uv(1);   // layout of this block
+    w.str(prologue_);
+    w.str(lits_);
+    w.uv(parts_.size());
+    for (const Part& p : parts_) { w.uv(uint64_t(p.hole + 1)); w.uv(p.off); w.uv(p.len); }
+    w.uv(ops_.size());
+    for (const Op& o : ops_) { w.u8(o.code); w.uv(o.a); w.uv(o.b); w.uv(o.c); }
+    return std::move(w.out);
+}
+
+std::unique_ptr<DocTemplate> DocTemplate::from_bytes(const std::string& bytes, std::string* err) {
+    auto fail = [&](const char* why) -> std::unique_ptr<DocTemplate> { if (err) *err = why; return nullptr; };
+    wire::Reader r{bytes};
+    if (r.uv() != 1) return fail("plantilla de documento de otra version");
+    std::unique_ptr<DocTemplate> t(new DocTemplate());
+    t->prologue_ = r.str(1u << 24);
+    t->lits_ = r.str(1u << 26);
+    const uint32_t np = r.count(1u << 22, 3);
+    t->parts_.reserve(np);
+    for (uint32_t i = 0; i < np && r.ok; ++i) {
+        Part p;
+        p.hole = int64_t(r.uv()) - 1;
+        p.off = r.uv32();
+        p.len = r.uv32();
+        if (p.hole < 0 && (uint64_t(p.off) + p.len > t->lits_.size())) return fail("plantilla con un literal fuera de rango");
+        t->parts_.push_back(p);
+    }
+    const uint32_t no = r.count(1u << 22, 4);
+    t->ops_.reserve(no);
+    for (uint32_t i = 0; i < no && r.ok; ++i) {
+        Op o;
+        const uint8_t code = r.u8();
+        if (code > Op::Jump) return fail("plantilla con una operacion desconocida");
+        o.code = Op::Code(code);
+        o.a = r.uv32(); o.b = r.uv32(); o.c = r.uv32();
+        t->ops_.push_back(o);
+    }
+    if (!r.done()) return fail("plantilla de documento truncada");
+    const size_t n = t->ops_.size();
+    if (n == 0 || t->ops_[n - 1].code != Op::End) return fail("plantilla sin final");
+    // Shape.  Everything that could loop or leave the program is checked here, so running it
+    // terminates (jumps go forward, a loop's one backward jump is its LoopNext) and stays inside.
+    std::vector<size_t> loops;   // pc of each open LoopBegin
+    for (size_t pc = 0; pc < n; ++pc) {
+        const Op& o = t->ops_[pc];
+        switch (o.code) {
+            case Op::End: if (pc != n - 1) return fail("plantilla con un final en medio"); break;
+            case Op::Static: case Op::ElemOpen: case Op::AttrStatic:
+                if (uint64_t(o.a) + o.b > t->lits_.size()) return fail("plantilla con bytes fuera de rango");
+                break;
+            case Op::Text: case Op::AttrDyn: case Op::Leaf:
+                if (uint64_t(o.a) + o.b > t->parts_.size()) return fail("plantilla con partes fuera de rango");
+                break;
+            case Op::LoopBegin:
+                if (o.b <= pc + 1 || o.b >= n) return fail("plantilla con un bucle mal cerrado");
+                loops.push_back(pc);
+                break;
+            case Op::LoopNext:
+                if (loops.empty() || o.b != loops.back() + 1 || t->ops_[loops.back()].b != pc + 1)
+                    return fail("plantilla con un bucle mal cerrado");
+                loops.pop_back();
+                break;
+            case Op::If: if (o.b <= pc || o.b >= n) return fail("plantilla con un salto fuera de rango"); break;
+            case Op::Jump: if (o.a <= pc || o.a >= n) return fail("plantilla con un salto fuera de rango"); break;
+            default: break;
+        }
+    }
+    if (!loops.empty()) return fail("plantilla con un bucle sin cerrar");
+    return t;
+}
+
+namespace {
+// The host of expand(): the values come from the trace instead of from a template engine.
+struct TraceReader final {
+    const std::string& in;
+    size_t at = 0;
+    bool   ok = true;
+    size_t items_left = 1u << 20;   // loop iterations the whole page may have
+    uint64_t uv() {
+        uint64_t v = 0;
+        for (int shift = 0; shift < 63; shift += 7) {
+            if (at >= in.size()) { ok = false; return 0; }
+            const uint8_t b = uint8_t(in[at++]);
+            v |= uint64_t(b & 0x7F) << shift;
+            if (!(b & 0x80)) return v;
+        }
+        ok = false;
+        return 0;
+    }
+    bool hole(uint32_t, std::string& out) {
+        const uint64_t n = uv();
+        if (!ok || n > in.size() - at) { ok = false; return false; }
+        out.append(in, at, size_t(n));
+        at += size_t(n);
+        return true;
+    }
+    bool test(uint32_t, bool& v) {
+        if (at >= in.size()) { ok = false; return false; }
+        v = in[at++] != 0;
+        return true;
+    }
+    bool loop_begin(uint32_t, size_t& items) {
+        const uint64_t n = uv();
+        if (!ok || n > items_left) { ok = false; return false; }
+        items_left -= size_t(n);
+        items = size_t(n);
+        return true;
+    }
+    void loop_item(uint32_t, size_t, size_t) {}
+    void loop_end(uint32_t) {}
+};
+} // namespace
+
+bool DocTemplate::expand(const std::string& trace, std::string& document, std::string* err) const {
+    TraceReader rd{trace};
+    document.clear();
+    constexpr size_t kMaxDocument = 64u << 20;
+    if (!run(rd, document, kMaxDocument, 1u << 26) || !rd.ok || rd.at != trace.size()) {
+        if (err) *err = "traza de documento invalida";
+        document.clear();
+        return false;
+    }
     return true;
 }
 

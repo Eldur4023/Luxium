@@ -56,10 +56,11 @@ bool Page::load_string(const std::string& html, const std::string& source_name) 
     return true;
 }
 
-bool Page::load_luxp(const std::string& bytes, const std::string& name) {
+bool Page::load_luxp(const std::string& bytes, const std::string& name, const std::string& blocks_origin) {
     Container c;
     std::string err;
-    if (!decode_container(bytes, c, &err)) {
+    auto blocks = BlockStore::global().view(blocks_origin.empty() ? url_origin(name) : blocks_origin);
+    if (!decode_container(bytes, c, &err, blocks.get())) {
         load_string("<p>" + name + ": .luxp rechazado: " + err + "</p>", name);
         console(2, ".luxp rechazado: " + err);
         return true;

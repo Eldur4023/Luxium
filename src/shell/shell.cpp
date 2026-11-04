@@ -383,13 +383,14 @@ void Shell::poll_fetch() {
     // Relative URLs (http.get("/api/.."), <img>, <video>) resolve against where the page really came from:
     // a 302 to another origin (Lux Desktop apps do this in remote-server mode) moves the base with it.
     const std::string url  = fetch_->final_url();
+    const std::string blocks_origin = fetch_->block_origin();
     fetch_.reset();
     if (not_luxp) {   // the web's HTML/JS: Chromium's job
         open_in_cef(url);
         return;
     }
     if (ok && luxp) {
-        page_.load_luxp(body, url);   // verified section by section; never handed to Chromium
+        page_.load_luxp(body, url, blocks_origin);   // verified section by section; never handed to Chromium
         after_load();
         return;
     }

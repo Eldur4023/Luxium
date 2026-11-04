@@ -1,5 +1,7 @@
 #include "net/fetch.hpp"
 
+#include "page/luxp.hpp"
+
 #include <curl/curl.h>
 
 #include <algorithm>
@@ -124,6 +126,12 @@ std::unique_ptr<Fetch> Fetch::start(const std::string& url, bool luxp_only) {
         CachedPage held;
         const bool have = cache_find(url, held);
         if (have) headers = curl_slist_append(headers, ("If-None-Match: " + held.etag).c_str());
+        // The stylesheet and program blocks this origin already sent: it leaves them out of the answer.
+        const std::string blocks = luxium::page::BlockStore::global().have_header(luxium::page::url_origin(url));
+        // This build can rebuild a document from a template block and the trace of its values.
+        headers = curl_slist_append(headers, "X-Luxp-Caps: trace");
+        if (!blocks.empty())
+            headers = curl_slist_append(headers, (std::string(luxium::page::kHaveHeader) + ": " + blocks).c_str());
         curl_easy_setopt(c, CURLOPT_URL, url.c_str());
         curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
@@ -187,6 +195,8 @@ Fetch::~Fetch() = default;   // the thread keeps the State alive until it ends
 bool Fetch::done() const { std::lock_guard<std::mutex> lk(st_->m); return st_->done; }
 bool Fetch::ok() const { std::lock_guard<std::mutex> lk(st_->m); return st_->ok; }
 bool Fetch::not_luxp() const { std::lock_guard<std::mutex> lk(st_->m); return st_->not_luxp; }
+std::string Fetch::block_origin() const { return luxium::page::url_origin(url_); }
+
 bool Fetch::is_luxp() const {
     std::lock_guard<std::mutex> lk(st_->m);
     return luxp_type(st_->content_type.c_str());

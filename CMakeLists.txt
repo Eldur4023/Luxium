@@ -136,6 +136,7 @@ add_executable(luxium
     src/page/bundle.cpp
     src/page/doc_codec.cpp
     src/page/luxp.cpp
+    src/page/doc_template.cpp
 )
 # The media shim is embedded in the binary as a raw string literal.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/media/shim.js" _shim_js)
@@ -200,6 +201,7 @@ add_executable(luxium_headless
     src/page/bundle.cpp
     src/page/doc_codec.cpp
     src/page/luxp.cpp
+    src/page/doc_template.cpp
 )
 target_include_directories(luxium_headless PRIVATE src)
 target_link_libraries(luxium_headless PRIVATE lux_script luxium_media ZLIB::ZLIB ${CURL_LIBRARIES})
