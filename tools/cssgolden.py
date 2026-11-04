@@ -47,12 +47,18 @@ def main():
                 continue
             try:
                 PROBE.unlink(missing_ok=True)
-                subprocess.run(
+                proc = subprocess.Popen(
                     [str(REPO / "build" / "luxium"), str(oracle_source(html)), "--size", size,
                      "--cefshot", str(PPM), "--cefprobe", str(PROBE)],
-                    cwd=REPO, check=True, timeout=60,
+                    cwd=REPO,
                     env={**os.environ, "LUXIUM_SCALE": "1"},   # the oracle at 1x even on a HiDPI desktop
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    if proc.wait(timeout=60) != 0:
+                        raise RuntimeError(f"luxium exited {proc.returncode}")
+                except subprocess.TimeoutExpired:
+                    proc.kill()   # only the process this script launched, never the user's running host
+                    raise
                 img = Image.open(PPM).convert("RGB")
                 w, h = img.size
                 png.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +71,6 @@ def main():
             except Exception as e:  # noqa: BLE001
                 bad += 1
                 print("FAILED", rel, size, repr(e), flush=True)
-                subprocess.run(["pkill", "-x", "luxium"], capture_output=True)
     print(f"\n{ok} new goldens, {skip} already there, {bad} failures")
     return 1 if bad else 0
 
