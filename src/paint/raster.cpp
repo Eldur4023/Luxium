@@ -91,6 +91,40 @@ inline float sdf_rrect(float px, float py, float x, float y, float w, float h, c
     return std::sqrt(ax * ax + ay * ay) + std::min(std::max(qx, qy), 0.f) - rad;
 }
 
+// mix-blend-mode: `src` (straight ARGB, times `alpha`) over `dst` with the separable blend function B(cb, cs)
+inline void blend_mode(uint32_t& dst, uint32_t src, float alpha, int mode) {
+    const float as = ((src >> 24) & 255) / 255.f * alpha, ab = ((dst >> 24) & 255) / 255.f;
+    if (as <= 0) return;
+    auto B = [&](float cb, float cs) {
+        switch (mode) {
+        case 1: return cb * cs;
+        case 2: return cb + cs - cb * cs;
+        case 3: return cb <= 0.5f ? 2 * cs * cb : 1 - 2 * (1 - cs) * (1 - cb);   // overlay = hard-light with swapped roles
+        case 4: return std::min(cb, cs);
+        case 5: return std::max(cb, cs);
+        case 6: return cb <= 0 ? 0.f : cs >= 1 ? 1.f : std::min(1.f, cb / (1 - cs));
+        case 7: return cb >= 1 ? 1.f : cs <= 0 ? 0.f : 1 - std::min(1.f, (1 - cb) / cs);
+        case 8: return cs <= 0.5f ? 2 * cs * cb : 1 - 2 * (1 - cs) * (1 - cb);
+        case 9: {
+            if (cs <= 0.5f) return cb - (1 - 2 * cs) * cb * (1 - cb);
+            const float d = cb <= 0.25f ? ((16 * cb - 12) * cb + 4) * cb : std::sqrt(cb);
+            return cb + (2 * cs - 1) * (d - cb);
+        }
+        case 10: return std::fabs(cb - cs);
+        case 11: return cb + cs - 2 * cb * cs;
+        default: return cs;
+        }
+    };
+    const float ao = as + ab * (1 - as);
+    uint32_t out = uint32_t(ao * 255.f + 0.5f) << 24;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        const float cs = ((src >> sh) & 255) / 255.f, cb = ((dst >> sh) & 255) / 255.f;
+        const float co = as * (1 - ab) * cs + as * ab * B(cb, cs) + (1 - as) * ab * cb;
+        out |= uint32_t(std::clamp(ao > 0 ? co / ao : 0.f, 0.f, 1.f) * 255.f + 0.5f) << sh;
+    }
+    dst = out;
+}
+
 inline float cov_from_sdf(float d) { return std::clamp(0.5f - d, 0.f, 1.f); }
 
 // coverage of the active rounded clips at a buffer-space pixel center
@@ -913,7 +947,10 @@ void rasterize(const DisplayList& dl0, Canvas& canvas, const render::Font& font)
             for (int y = info.bounds.y0; y < info.bounds.y1; ++y)
                 for (int x = info.bounds.x0; x < info.bounds.x1; ++x) {
                     const uint32_t p = layer.px[static_cast<size_t>(y) * layer.w + x];
-                    if (p >> 24) blend(dst.px[static_cast<size_t>(y) * dst.w + x], p, info.alpha);
+                    if (p >> 24) {
+                        if (push && push->blend) blend_mode(dst.px[static_cast<size_t>(y) * dst.w + x], p, info.alpha, push->blend);
+                        else blend(dst.px[static_cast<size_t>(y) * dst.w + x], p, info.alpha);
+                    }
                 }
             s.layer_bufs.pop_back();
             break;

@@ -401,11 +401,19 @@ struct Painter {
         dl->push_back(std::move(it));
     }
 
-    void bg_layers(const ComputedStyle& s, const Rect& area, const Rect& clip, const Radii& cr) { bg_list(s.bg, area, clip, cr); }
-    void bg_list(const std::vector<style::BgLayer>& layers, const Rect& area, const Rect& clip, const Radii& cr) {
+    void bg_layers(const ComputedStyle& s, const Rect& area, const Rect& clip, const Radii& cr) { bg_list(s.bg, area, clip, cr, &s.bg_blend); }
+    void bg_list(const std::vector<style::BgLayer>& layers, const Rect& area, const Rect& clip, const Radii& cr, const std::vector<int>* blends = nullptr) {
         for (size_t li = layers.size(); li-- > 0;) {
             const style::BgLayer& L = layers[li];
             if (L.kind == style::BgLayer::Kind::None) continue;
+            // background-blend-mode: this layer is a group composited with its blend function (popped when the iteration ends)
+            struct Guard { std::function<void()> f; ~Guard() { if (f) f(); } } guard;
+            if (const int bm = blends && !blends->empty() ? (*blends)[li % blends->size()] : 0) {
+                const size_t at = layer_push(1.f);
+                (*dl)[at].blend = bm;
+                guard.f = [this, at] { layer_pop(at); };
+            }
+
             std::shared_ptr<const render::ImageBitmap> img;
             float nw = 0, nh = 0;
             if (L.kind == style::BgLayer::Kind::Url) {
@@ -1141,13 +1149,13 @@ struct Painter {
             }
         } unshift{this, moved, general, tf_at, saved_cur};
         size_t layer = 0;
-        const bool lay = s.opacity < 1.f || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None || s.bg_clip_text;
+        const bool lay = s.opacity < 1.f || s.mix_blend != 0 || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None || s.bg_clip_text;
         if (lay) {
             layer = layer_push(s.opacity);
             const float x0 = sn(sc.ax), y0 = sn(sc.ay), x1 = sn(sc.ax + sc.w), y1 = sn(sc.ay + sc.h);
             {
                 Item& L = (*dl)[layer];
-                L.filters = s.filter; L.backdrop = s.backdrop_filter;
+                L.filters = s.filter; L.backdrop = s.backdrop_filter; L.blend = s.mix_blend;
                 L.cx = x0; L.cy = y0; L.cw = x1 - x0; L.ch = y1 - y0;
                 L.radii = radii_of(s, x1 - x0, y1 - y0);
             }

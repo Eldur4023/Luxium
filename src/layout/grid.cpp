@@ -66,6 +66,13 @@ Model build_model(Env& env, Box& b, float content_w) {
     Model m;
     m.cols = s.grid_template_columns;
     m.rows = s.grid_template_rows;
+    // subgrid: the tracks are the parent's, over the span this box occupies
+    auto adopt_tracks = [](std::vector<Track>& dst, const std::vector<float>& sizes) {
+        dst.clear();
+        for (float w : sizes) { Track t; t.kind = Track::Kind::Len; t.len = Len::Px(w); dst.push_back(t); }
+    };
+    if (s.grid_cols_sub && !b.sub_cols.empty()) adopt_tracks(m.cols, b.sub_cols);
+    if (s.grid_rows_sub && !b.sub_rows.empty()) adopt_tracks(m.rows, b.sub_rows);
 
     // repeat(auto-fill / auto-fit): as many repetitions as fit
     if (s.grid_col_autorepeat && !s.grid_col_auto_pattern.empty()) {
@@ -289,13 +296,28 @@ void resolve_free(std::vector<TrackState>& tr, float avail, float gap, bool stre
 
 } // namespace
 
+// The track sizes a subgrid child lays itself out on: the parent's tracks over its span, widened by half the gap
+// difference at each interior boundary, minus its own border and padding at the two ends.
+static void sub_tracks(const Box&, bool own_set, float own_gap, float parent_gap, int from, int span,
+                       const std::vector<TrackState>& tr, std::vector<float>& out, float& gap_out, float lead, float trail) {
+    const float og = own_set ? own_gap : parent_gap, d = parent_gap - og;
+    out.clear();
+    for (int i = 0; i < span; ++i) {
+        float v = tr[size_t(from + i)].base + (i > 0 ? d / 2 : 0.f) + (i < span - 1 ? d / 2 : 0.f);
+        if (i == 0) v -= lead;
+        if (i == span - 1) v -= trail;
+        out.push_back(std::max(0.f, v));
+    }
+    gap_out = og;
+}
+
 float layout_grid(Env& env, Box& b, const Constraint& c, float content_w, float content_h_def,
                   float min_h, float max_h) {
     const ComputedStyle& s = *b.st;
     Model m = build_model(env, b, content_w);
     (void)max_h;
-    const float col_gap = s.column_gap.resolve(content_w);
-    const float row_gap = s.row_gap.resolve(std::max(0.f, content_h_def));
+    const float col_gap = s.grid_cols_sub && !b.sub_cols.empty() ? b.sub_cgap : s.column_gap.resolve(content_w);
+    const float row_gap = s.grid_rows_sub && !b.sub_rows.empty() ? b.sub_rgap : s.row_gap.resolve(std::max(0.f, content_h_def));
 
     // abs children: static position at the container origin
     // (the content box acts as the grid area; justify-self / align-self place the box inside it)
@@ -369,6 +391,8 @@ float layout_grid(Env& env, Box& b, const Constraint& c, float content_w, float 
         Box& k = *it.box;
         const ComputedStyle& ks = *k.st;
         const float aw = span_w(it);
+        k.sub_cols.clear(); k.sub_rows.clear();
+        if (ks.grid_cols_sub) { sub_tracks(k, ks.column_gap_set, ks.column_gap.resolve(aw), col_gap, it.col, it.col_span, cols, k.sub_cols, k.sub_cgap, k.padding.l + k.border.l, k.padding.r + k.border.r); }
         Constraint cc; cc.cb_w = aw; cc.cb_h = -1; cc.bfc = nullptr;
         const Align ja = ks.justify_self != Align::Auto ? ks.justify_self : s.justify_items;
         const bool stretch_w = (ja == Align::Normal || ja == Align::Stretch) && ks.width.is_auto && k.kind != Box::Kind::Replaced &&
@@ -383,8 +407,24 @@ float layout_grid(Env& env, Box& b, const Constraint& c, float content_w, float 
         TrackState& t = rows[it.row];
         if (t.intrinsic_min || t.auto_max) t.base = std::max(t.base, it.h);
     }
+    // a rows-subgrid child shares its own rows with the parent: each inner row sizes the matching parent track
+    // (the gap difference between parent and subgrid is taken off the tracks on either side of each boundary)
+    for (GItem& it : m.items) {
+        Box& k = *it.box;
+        if (!k.st->grid_rows_sub || k.own_rows.empty()) continue;
+        const int n = std::min<int>(it.row_span, int(k.own_rows.size()));
+        const float d = k.st->row_gap_set ? row_gap - k.st->row_gap.resolve(0) : 0.f;
+        for (int r = 0; r < n; ++r) {
+            float need = k.own_rows[size_t(r)] - (r > 0 ? d / 2 : 0.f) - (r < n - 1 ? d / 2 : 0.f);
+            if (r == 0) need += k.margin.t + k.border.t + k.padding.t;
+            if (r == n - 1) need += k.margin.b + k.border.b + k.padding.b;
+            TrackState& t = rows[size_t(it.row + r)];
+            if (t.intrinsic_min || t.auto_max) t.base = std::max(t.base, need);
+        }
+    }
     for (GItem& it : m.items) {
         if (it.row_span <= 1) continue;
+        if (it.box->st->grid_rows_sub && !it.box->own_rows.empty()) continue;
         float have = row_gap * float(it.row_span - 1);
         for (int i = it.row; i < it.row + it.row_span; ++i) have += rows[i].base;
         distribute(rows, it.row, it.row_span, it.h - have);
@@ -447,6 +487,7 @@ float layout_grid(Env& env, Box& b, const Constraint& c, float content_w, float 
         const bool repl = k.kind == Box::Kind::Replaced;
         const bool stretch_w = (ja == Align::Normal || ja == Align::Stretch) && ks.width.is_auto && !repl && !k.mar_l_auto && !k.mar_r_auto;
         const bool stretch_h = (aa == Align::Normal || aa == Align::Stretch) && ks.height.is_auto && !repl && !k.mar_t_auto && !k.mar_b_auto;
+        if (ks.grid_rows_sub) { k.sub_rows.clear(); sub_tracks(k, ks.row_gap_set, ks.row_gap.resolve(ah), row_gap, it.row, it.row_span, rows, k.sub_rows, k.sub_rgap, k.padding.t + k.border.t, k.padding.b + k.border.b); }
         Constraint cc; cc.cb_w = aw; cc.cb_h = ah; cc.bfc = nullptr;
         if (stretch_w) cc.forced_w = std::max(0.f, aw - k.margin.h());
         else { cc.shrink = true; cc.avail_w = aw; }
@@ -471,6 +512,8 @@ float layout_grid(Env& env, Box& b, const Constraint& c, float content_w, float 
         }
         k.x = ax + x; k.y = ay + y;
     }
+    b.own_rows.clear();
+    for (const auto& t : rows) b.own_rows.push_back(t.base);
     return content_h_def >= 0 ? content_h_def : rows_total;
 }
 

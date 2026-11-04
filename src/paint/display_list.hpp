@@ -88,6 +88,7 @@ struct Item {
     // Layer (group opacity, and the effects that need the group: filter, backdrop-filter, mask).
     // cx..ch + radii = the element's border box (backdrop region; mask area).
     float alpha = 1.f;
+    int blend = 0;   // mix-blend-mode of the group (style::ComputedStyle::mix_blend)
     std::vector<style::FilterFn> filters, backdrop;
     std::shared_ptr<const std::vector<Item>> mask;   // painted in doc coords; its alpha multiplies the group
 

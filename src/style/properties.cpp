@@ -698,6 +698,25 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         else return false;
         return true;
     }
+    if (name == "mix-blend-mode" || name == "background-blend-mode") {
+        static const char* const names[] = {"normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn",
+                                            "hard-light", "soft-light", "difference", "exclusion"};
+        auto code = [&](const std::string& w) { for (int i = 0; i < 12; ++i) if (w == names[i]) return i; return -1; };
+        if (name == "mix-blend-mode") { const int c = code(v); if (c < 0) return false; s.mix_blend = c; return true; }
+        std::vector<int> list;
+        size_t from = 0;
+        while (from <= v.size()) {
+            size_t comma = v.find(',', from);
+            if (comma == std::string::npos) comma = v.size();
+            const size_t a = v.find_first_not_of(" \t", from), z = v.find_last_not_of(" \t", comma ? comma - 1 : 0);
+            const int c = a == std::string::npos || a > z ? -1 : code(v.substr(a, z - a + 1));
+            if (c < 0) return false;
+            list.push_back(c);
+            from = comma + 1;
+        }
+        s.bg_blend = list;
+        return true;
+    }
     if (name == "opacity") {
         float n;
         if (v.back() == '%') { if (!parse_number(v.substr(0, v.size() - 1), n)) return false; n /= 100.f; }
@@ -1268,14 +1287,14 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         if (t[0] == "normal") a = Len::Px(0); else if (!parse_length(t[0], env, a)) return false;
         if (t.size() == 1) b = a;
         else if (t[1] == "normal") b = Len::Px(0); else if (!parse_length(t[1], env, b)) return false;
-        s.row_gap = a; s.column_gap = b; s.column_gap_set = t.size() == 1 ? t[0] != "normal" : t[1] != "normal";
+        s.row_gap = a; s.column_gap = b; s.column_gap_set = t.size() == 1 ? t[0] != "normal" : t[1] != "normal"; s.row_gap_set = t[0] != "normal";
         return true;
     }
     if (name == "row-gap" || name == "column-gap" || name == "grid-row-gap" || name == "grid-column-gap") {
         Len l;
         if (v == "normal") l = Len::Px(0); else if (!parse_length(v, env, l)) return false;
         (name.find("row") != std::string::npos ? s.row_gap : s.column_gap) = l;
-        if (name.find("row") == std::string::npos) s.column_gap_set = v != "normal";
+        if (name.find("row") == std::string::npos) s.column_gap_set = v != "normal"; else s.row_gap_set = v != "normal";
         return true;
     }
     if (name == "column-count") {
@@ -1324,6 +1343,12 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
     }
 
     // ── grid ───────────────────────────────────────────────────────────────
+    if ((name == "grid-template-columns" || name == "grid-template-rows") && v.starts_with("subgrid")) {
+        (name == "grid-template-columns" ? s.grid_cols_sub : s.grid_rows_sub) = true;
+        (name == "grid-template-columns" ? s.grid_template_columns : s.grid_template_rows).clear();
+        return true;
+    }
+    if (name == "grid-template-columns" || name == "grid-template-rows") (name == "grid-template-columns" ? s.grid_cols_sub : s.grid_rows_sub) = false;
     if (name == "grid-template-columns") {
         std::vector<Track> tr;
         std::vector<Track> pat; int ar = 0; size_t pos = 0;
@@ -1854,7 +1879,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     }
     CP("display", display) CP("position", position) CP("float", float_) CP("clear", clear)
     CP("box-sizing", box_sizing) CP("overflow-x", overflow_x) CP("overflow-y", overflow_y)
-    CP("visibility", visibility) CP("opacity", opacity)
+    CP("visibility", visibility) CP("opacity", opacity) CP("mix-blend-mode", mix_blend) CP("background-blend-mode", bg_blend)
     if (n == "z-index") { d.z_auto = src.z_auto; d.z_index = src.z_index; return true; }
     CP("width", width) CP("height", height) CP("min-width", min_width) CP("min-height", min_height)
     CP("max-width", max_width) CP("max-height", max_height)

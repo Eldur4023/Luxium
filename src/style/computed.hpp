@@ -185,6 +185,7 @@ struct ComputedStyle {
     Overflow overflow_x = Overflow::Visible, overflow_y = Overflow::Visible;
     Visibility visibility = Visibility::Visible;
     float    opacity = 1.f;
+    int      mix_blend = 0;   // mix-blend-mode: 0 normal, 1 multiply, 2 screen, 3 overlay, 4 darken, 5 lighten, 6 color-dodge, 7 color-burn, 8 hard-light, 9 soft-light, 10 difference, 11 exclusion
     bool     z_auto = true;
     int      z_index = 0;
 
@@ -206,6 +207,7 @@ struct ComputedStyle {
     // ── painting ────────────────────────────────────────────────────────────
     uint32_t bg_color = kTransparent;
     std::vector<BgLayer> bg;
+    std::vector<int> bg_blend;   // background-blend-mode per layer (cycled), same codes as mix_blend; empty = normal
     std::vector<Shadow>  box_shadow;
     std::vector<Shadow>  text_shadow;   // inherited
     std::vector<FilterFn> filter, backdrop_filter;
@@ -257,6 +259,7 @@ struct ComputedStyle {
     Len      flex_basis = Len::Auto();
     int      column_count = 0;            // multicol: 0 = auto
     Len      column_width = Len::Auto();  // multicol: auto = from column-count
+    bool     row_gap_set = false;
     bool     column_gap_set = false;      // column-gap other than `normal` (multicol: normal = 1em)
     float    column_rule_w = 0; style::BorderStyle column_rule_style = style::BorderStyle::None;
     uint32_t column_rule_color = 0; bool column_rule_cur = true;
@@ -265,6 +268,7 @@ struct ComputedStyle {
 
     // ── grid ────────────────────────────────────────────────────────────────
     std::vector<Track> grid_template_columns, grid_template_rows;
+    bool     grid_cols_sub = false, grid_rows_sub = false;   // grid-template-columns/rows: subgrid
     std::vector<Track> grid_auto_columns, grid_auto_rows;
     bool     grid_auto_flow_column = false, grid_auto_flow_dense = false;
     GridLine grid_column_start, grid_column_end, grid_row_start, grid_row_end;

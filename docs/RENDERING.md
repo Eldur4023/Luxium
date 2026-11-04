@@ -110,10 +110,9 @@ transformaciones no 3D se interpolan función a función (mismo número y tipo d
 `rotateX/Y`, `translateZ` se ignoran.  SVG: sin `clip-path`/`mask`/`filter`/`pattern`/`<text>`/`<image>`/`marker` ni `<symbol>` con `viewBox`.
 Emoji: solo la tira CBDT de Noto Color Emoji (sin COLRv1/sbix), con el mismo orden de fontconfig que Chromium para elegir la fuente.
 
-Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 18 páginas contra el oráculo): `mix-blend-mode` y
-`background-blend-mode`, `writing-mode` vertical, transformaciones 3D (`perspective`, `rotateX/Y`, `translateZ`), `shape-outside`, `subgrid`, `font-variant` (small-caps) y `font-feature-settings`, `border-image` y `box-decoration-break`, texto bidi / `direction: rtl`, `<svg>` sin `pattern`/`<text>`/`<image>`/`marker`, barra de scroll horizontal arrastrable, barras de cajas internas
+Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 22 páginas contra el oráculo): `writing-mode` vertical, transformaciones 3D (`perspective`, `rotateX/Y`, `translateZ`), `shape-outside`, `font-variant` (small-caps) y `font-feature-settings`, `border-image` y `box-decoration-break`, texto bidi / `direction: rtl`, `<svg>` sin `pattern`/`<text>`/`<image>`/`marker`, barra de scroll horizontal arrastrable, barras de cajas internas
 como *overlay* (no reservan hueco, a diferencia de Chromium), PNG entrelazado/16 bits.
-Ya implementados y en la suite: `text-shadow`, filtros, `backdrop-filter`, `mask-image`, `clip-path`, contadores, `object-position`,
+Ya implementados y en la suite: multicolumna, `::first-letter`/`::first-line`, `subgrid`, `mix-blend-mode` y `background-blend-mode`, `@layer`, radio elíptico, `text-shadow`, filtros, `backdrop-filter`, `mask-image`, `clip-path`, contadores, `object-position`,
 `@font-face`, `cq*`, `text-decoration` wavy/dotted/double, gradientes cónicos y repetidos, `object-fit`, `aspect-ratio`, `@supports`, `:is/:where`.
 Pendiente de método: importar un subconjunto de los reftests de web-platform-tests.
 
