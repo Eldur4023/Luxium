@@ -91,7 +91,7 @@ bool establishes_bfc(const Box& b) {
     if (b.is_atomic_inline()) return true;
     if (s.overflow_x != Overflow::Visible && s.overflow_x != Overflow::Clip) return true;
     if (s.overflow_y != Overflow::Visible && s.overflow_y != Overflow::Clip) return true;
-    if (s.multicol()) return true;
+    if (s.multicol() || s.writing_mode != 0) return true;
     switch (s.display) {
     case Display::FlowRoot: case Display::Flex: case Display::Grid: case Display::Table:
     case Display::TableCell: case Display::TableCaption: case Display::InlineBlock:
@@ -302,6 +302,9 @@ Intrinsic outer_intrinsic(Env& env, Box& c) {
     return {in.min + extra, in.max + extra};
 }
 
+static float layout_block_flow(Env& env, Box& b, float content_w, float content_h_spec, Bfc& bfc,
+                               float ox, float oy, bool top_merge, Strut& pending_out);
+
 Intrinsic intrinsic_widths(Env& env, Box& b) {
     if (b.has_intr) return {b.min_c, b.max_c};
     Intrinsic r;
@@ -319,7 +322,18 @@ Intrinsic intrinsic_widths(Env& env, Box& b) {
         case Display::Grid: case Display::InlineGrid: r = grid_intrinsic(env, b); break;
         case Display::Table: case Display::InlineTable: r = table_intrinsic(env, b); break;
         default:
-            if (has_real_inline(b)) r = inline_intrinsic(env, b);
+            if (b.st->writing_mode != 0 && b.node && has_real_inline(b)) {
+                // vertical writing mode: the physical width is the block size, i.e. the height of the lines the text
+                // makes at the box's inline size (its height, or one unwrapped line)
+                const ComputedStyle& s = *b.st;
+                float inl = (!s.height.is_auto && !s.height.has_pct()) ? s.height.px : std::min(inline_intrinsic(env, b).max, std::max(env.vh, 1.f));
+                if (s.box_sizing == style::BoxSizing::Border && !s.height.is_auto && !s.height.has_pct()) inl = std::max(0.f, inl - b.border.v() - b.padding.v());
+                Bfc tmp;
+                Strut pend;
+                const float blk = layout_block_flow(env, b, inl, -1.f, tmp, 0.f, 0.f, false, pend) + pend.value();
+                r = {blk, blk};
+            }
+            else if (has_real_inline(b)) r = inline_intrinsic(env, b);
             else {
                 float fl_sum = 0;   // consecutive floats sit side by side
                 for (auto& k : b.kids) {
@@ -343,6 +357,24 @@ Intrinsic intrinsic_widths(Env& env, Box& b) {
 
 static float layout_block_flow(Env& env, Box& b, float content_w, float content_h_spec, Bfc& bfc,
                                float ox, float oy, bool top_merge, Strut& pending_out);
+
+// A block in a vertical writing mode.  Its inline content is laid out as a horizontal frame whose width is the box's
+// height (the inline size), then drawn rotated a quarter turn (see Painter::paint_sc): Latin text runs sideways, as
+// Chromium does with text-orientation: mixed; upright CJK glyphs are not modelled.  Returns the content height (the
+// inline size); `content_w` becomes the block size unless a width was given.
+static float layout_vertical(Env& env, Box& b, const Constraint& c, float& content_w, float spec_h, Bfc& bfc, float ox, float oy) {
+    const ComputedStyle& s = *b.st;
+    const float avail = c.cb_h >= 0 ? c.cb_h : env.vh;
+    float inl = spec_h;
+    if (inl < 0) inl = std::min(inline_intrinsic(env, b).max, std::max(avail, 1.f));
+    Strut pending;
+    const float blk = layout_block_flow(env, b, inl, -1.f, bfc, ox, oy, false, pending) + pending.value();
+    if (s.width.is_auto && !s.width.kw) content_w = blk;
+    b.vert = s.writing_mode;
+    if (s.writing_mode == 2 && b.has_inline_content)   // vertical-lr: the first line is on the left
+        for (LineBox& l : b.lines) l.y = blk - l.y - l.h;
+    return inl;
+}
 
 // Multi-column container (CSS Multi-column 1, column-fill: balance).  The content is laid out once at the column
 // width as a single tall column, then cut into columns between line boxes and between blocks: each piece moves
@@ -643,6 +675,10 @@ void layout_box(Env& env, Box& b, const Constraint& c) {
         content_h = layout_grid(env, b, c, content_w, spec_h, min_h_c, max_h_c);
         break;
     default: {
+        if (s.writing_mode != 0 && b.kind == Box::Kind::Block && b.node && s.display != Display::Table && !s.multicol()) {
+            content_h = layout_vertical(env, b, c, content_w, spec_h, bfc, ox, oy);
+            break;
+        }
         if (s.multicol() && s.display != Display::Table) {
             content_h = layout_columns(env, b, content_w, spec_h, bfc, ox, oy);
             break;

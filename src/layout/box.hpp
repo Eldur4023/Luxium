@@ -122,6 +122,7 @@ struct Box {
     float sub_cgap = 0, sub_rgap = 0;
     std::vector<float> own_rows;             // grid container: the row track sizes it used (a rows-subgrid child feeds them to its parent)
     float sb_gutter = 0;                     // classic scrollbar: width taken from the content box (inside the border box)
+    int vert = 0;                            // vertical writing mode laid out as a horizontal frame and drawn rotated: 1 rl, 2 lr
     int mc_n = 0; float mc_w = 0, mc_gap = 0;   // multicol container: columns used, column width, gap (painting the rules)
     Strut bottom_strut;                 // margin sticking out below (collapsed with last child)
     bool has_inline_content = false;

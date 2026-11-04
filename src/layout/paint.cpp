@@ -194,7 +194,7 @@ struct Painter {
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
         if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None || s.bg_clip_text) return true;
-        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear() || s.tf_3d()) return true;
+        if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear() || s.tf_3d() || b.vert) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
     }
@@ -1310,7 +1310,23 @@ struct Painter {
             clip_push(x0, y0, x1 - x0, y1 - y0, {std::max(0.f, rad.tl - sc.border.l), std::max(0.f, rad.tr - sc.border.r),
                                                   std::max(0.f, rad.br - sc.border.r), std::max(0.f, rad.bl - sc.border.l)});
         }
+        size_t vt = 0;
+        if (sc.vert) {   // the inline frame is drawn rotated a quarter turn clockwise about the content box
+            const float cx = sc.ax + sc.border.l + sc.padding.l, cy = sc.ay + sc.border.t + sc.padding.t, wc = sc.w - sc.border.h() - sc.padding.h();
+            Item it; it.kind = Item::Kind::TransformPush;
+            it.m[0] = 0; it.m[1] = 1; it.m[2] = -1; it.m[3] = 0; it.m[4] = cx + cy + wc; it.m[5] = cy - cx;
+            dl->push_back(std::move(it));
+            vt = dl->size() - 1;
+        }
         content(sc);
+        if (sc.vert) {
+            float x0, y0, x1, y1;
+            Item& push = (*dl)[vt];
+            if (!bounds_since(vt, x0, y0, x1, y1)) { push.x = push.y = push.w = push.h = 0; }
+            else { push.x = x0 - 1; push.y = y0 - 1; push.w = x1 - x0 + 2; push.h = y1 - y0 + 2; }
+            Item pop; pop.kind = Item::Kind::TransformPop;
+            dl->push_back(std::move(pop));
+        }
         if (cl) scrollbar(sc);
         flush_outlines(outline_mark + 1);   // the outlines of everything inside, still under the clip
         if (cl) clip_pop();

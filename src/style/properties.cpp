@@ -698,6 +698,14 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         else return false;
         return true;
     }
+    if (name == "writing-mode") {
+        if (v == "horizontal-tb" || v == "lr" || v == "lr-tb" || v == "rl" || v == "rl-tb") s.writing_mode = 0;
+        else if (v == "vertical-rl" || v == "sideways-rl" || v == "tb" || v == "tb-rl") s.writing_mode = 1;
+        else if (v == "vertical-lr" || v == "sideways-lr" || v == "tb-lr") s.writing_mode = 2;
+        else return false;
+        return true;
+    }
+    if (name == "text-orientation") return v == "mixed" || v == "upright" || v == "sideways" || v == "sideways-right" || v == "use-glyph-orientation";
     if (name == "direction") {
         if (v != "ltr" && v != "rtl") return false;
         s.rtl = v == "rtl";
@@ -2008,7 +2016,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("text-align", text_align)
     if (n == "text-decoration-line") { d.underline = src.underline; d.line_through = src.line_through; d.overline = src.overline; return true; }
     CP("text-decoration-color", decoration_color)
-    CP("direction", rtl) CP("text-transform", text_transform) CP("letter-spacing", letter_spacing) CP("word-spacing", word_spacing)
+    CP("direction", rtl) CP("writing-mode", writing_mode) CP("text-transform", text_transform) CP("letter-spacing", letter_spacing) CP("word-spacing", word_spacing)
     CP("text-indent", text_indent) CP("white-space", white_space) CP("text-overflow", text_overflow_ellipsis)
     CP("overflow-wrap", overflow_wrap) CP("word-wrap", overflow_wrap) CP("word-break", word_break)
     if (n == "vertical-align") { d.vertical_align = src.vertical_align; d.vertical_align_len = src.vertical_align_len; return true; }

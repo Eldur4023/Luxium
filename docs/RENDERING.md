@@ -110,9 +110,18 @@ transformaciones no 3D se interpolan función a función (mismo número y tipo d
 `rotateX/Y`, `translateZ` se ignoran.  SVG: sin `clip-path`/`mask`/`filter`/`pattern`/`<text>`/`<image>`/`marker` ni `<symbol>` con `viewBox`.
 Emoji: solo la tira CBDT de Noto Color Emoji (sin COLRv1/sbix), con el mismo orden de fontconfig que Chromium para elegir la fuente.
 
-Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 22 páginas contra el oráculo): `writing-mode` vertical, `shape-outside`, `font-variant: small-caps` y `font-feature-settings`, `<svg>` sin `pattern`/`<text>`/`<image>`/`marker`, barra de scroll horizontal arrastrable, barras de cajas internas
-como *overlay* (no reservan hueco, a diferencia de Chromium), PNG entrelazado/16 bits.
-Ya implementados y en la suite: multicolumna, `::first-letter`/`::first-line`, `subgrid`, `mix-blend-mode` y `background-blend-mode`, `@layer`, radio elíptico, `border-image`, transformaciones 3D de un elemento plano (`perspective`, `rotateX/Y`, `translateZ`, `rotate3d`, `backface-visibility`; sin `preserve-3d`), bidi a nivel de palabra con `direction: rtl` (sin espejar flex/tablas/flotantes), `auto-fit` que colapsa pistas vacías, hueco de scrollbar clásico (15px) en `overflow: auto|scroll`, outlines sobre el resto del contexto, `text-shadow`, filtros, `backdrop-filter`, `mask-image`, `clip-path`, contadores, `object-position`,
+Sin implementar o distinto de Chromium (medido con `css-tests/probe/`, 30 páginas contra el oráculo): `font-variant: small-caps` y
+`font-feature-settings` (el probe pasa por tolerancia, pero las versalitas no se sintetizan), `transform-style: preserve-3d`
+(se aplana), glifos verticales *upright* de `writing-mode` (el texto latino va de lado como en Chromium; el CJK no se endereza),
+`direction: rtl` solo a nivel de texto (flex, tablas, flotantes y la barra de scroll no se espejan), `<svg>` sin
+`pattern`/`<text>`/`<image>`/`marker`, scroll horizontal de la página (un contenido más ancho que la ventana no saca barra: p. ej. `100vw`
+con la barra vertical, como hace Chromium), barra de scroll horizontal arrastrable de las cajas, PNG entrelazado/16 bits.
+Ya implementados y en la suite: multicolumna (`column-count/width/gap/rule`, balanceada), `::first-letter` y `::first-line`, `subgrid`,
+`mix-blend-mode` y `background-blend-mode`, `@layer`, radio elíptico, `border-image` (imagen y degradado), outlines sobre el resto del
+contexto, transformaciones 3D de un elemento plano (`perspective`, `rotateX/Y`, `translateZ`, `rotate3d`, `backface-visibility`),
+`shape-outside` (círculo, elipse, inset, polígono, `shape-margin`), `writing-mode` vertical, bidi a nivel de palabra con formado RTL
+(árabe unido), `auto-fit` que colapsa pistas vacías, hueco de scrollbar clásico (15px) en `overflow: auto|scroll`, `scrollbar-width: none`,
+pesos de fuente intermedios (300, 500...), `text-shadow`, filtros, `backdrop-filter`, `mask-image`, `clip-path`, contadores, `object-position`,
 `@font-face`, `cq*`, `text-decoration` wavy/dotted/double, gradientes cónicos y repetidos, `object-fit`, `aspect-ratio`, `@supports`, `:is/:where`.
 Pendiente de método: importar un subconjunto de los reftests de web-platform-tests.
 
