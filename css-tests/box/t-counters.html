@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; font-size: 14px; counter-reset: sec; line-height: 1.2; }
+.row { margin: 4px 0; }
+h3 { counter-reset: sub; counter-increment: sec; margin: 4px 0; font-size: 14px; }
+h3::before { content: counter(sec) ". "; color: #c00; }
+h4 { counter-increment: sub; margin: 2px 0 2px 20px; font-size: 13px; font-weight: normal; }
+h4::before { content: counter(sec) "." counter(sub) " - "; color: #06c; }
+.nest, .nest div { counter-reset: item; }
+.nest div { margin-left: 16px; }
+.nest p { counter-increment: item; margin: 1px 0; }
+.nest p::before { content: counters(item, ".") ") "; color: #080; }
+.styles span { display: block; counter-increment: st; }
+.styles { counter-reset: st; }
+.s1::before { content: counter(st, decimal-leading-zero) " "; }
+.s2::before { content: counter(st, lower-alpha) " "; }
+.s3::before { content: counter(st, upper-alpha) " "; }
+.s4::before { content: counter(st, lower-roman) " "; }
+.s5::before { content: counter(st, upper-roman) " "; }
+.s6::before { content: counter(st, lower-latin) "/" counter(st, upper-latin) " "; }
+.s7::before { content: counter(st, disc) counter(st, circle) counter(st, none) "|"; }
+.cs span { counter-increment: c 5; }
+.cs { counter-reset: c 10; }
+.cs span::after { content: " [" counter(c) "]"; color: #a0a; }
+.set { counter-reset: z 3; }
+.set b { counter-set: z 40; }
+.set i { counter-increment: z -2; }
+.set u::before { content: counter(z); }
+.ol { counter-reset: n; }
+.ol li { counter-increment: n; }
+.ol li::after { content: " (" counter(n) ")"; color: #888; }
+.dlz { list-style: decimal-leading-zero; }
+.none { counter-increment: q; }
+.none::before { content: counter(q) counters(q, "-"); }
+.sep { counter-reset: x 2; }
+.sep > i { counter-reset: x; display: block; }
+.sep > i::before { content: counters(x, "+", upper-roman); }
+.hid { display: none; counter-increment: hh; }
+.vis::before { content: "[" counter(hh) "]"; }
+</style>
+<div class="row"><h3 data-t="a1">First</h3><h4 data-t="a2">one</h4><h4 data-t="a3">two</h4><h3 data-t="a4">Second</h3><h4 data-t="a5">one</h4><h3 data-t="a6">Third</h3><h4 data-t="a7">one</h4><h4>two</h4><h4>three</h4></div>
+<div class="row nest" data-t="n0"><p data-t="n1">a</p><p>b</p><div><p data-t="n2">c</p><p>d</p><div><p data-t="n3">e</p></div><p>f</p></div><div><p data-t="n4">g</p></div><p>h</p></div>
+<div class="row styles"><span class="s1" data-t="s1">x</span><span class="s2" data-t="s2">x</span><span class="s3" data-t="s3">x</span><span class="s4" data-t="s4">x</span><span class="s5" data-t="s5">x</span><span class="s6" data-t="s6">x</span><span class="s7" data-t="s7">x</span><span style="counter-increment: st 7"></span><span class="s1"></span><span class="s1" data-t="s8">x</span><span class="s4" data-t="s9">x</span><span class="s2" data-t="s10">x</span></div>
+<div class="row cs"><span data-t="c1">a</span> <span data-t="c2">b</span> <span data-t="c3">c</span></div>
+<div class="row set"><u data-t="z1">u1</u> <b>b</b> <u data-t="z2">u2</u> <i>i</i> <u data-t="z3">u3</u></div>
+<ol class="ol row"><li data-t="o1">one</li><li data-t="o2">two</li><li data-t="o3">three</li></ol>
+<ol class="dlz row" start="8"><li data-t="d1">eight</li><li data-t="d2">nine</li><li data-t="d3">ten</li></ol>
+<div class="row"><span class="none" data-t="q1">q</span> <span class="none" data-t="q2">q</span></div>
+<div class="row sep" data-t="x0"><i data-t="x1">1</i><i data-t="x2">2</i></div>
+<div class="row"><span class="hid">h</span><span class="vis" data-t="h1">v</span></div>

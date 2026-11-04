@@ -3,6 +3,7 @@
 // (inline runs inside blocks, flex/grid items, table structure).
 
 #include <layout/box.hpp>
+#include <style/values.hpp>
 #include <render/svg.hpp>
 #include <media/own_media.hpp>
 
@@ -82,6 +83,54 @@ struct Builder {
     }
 
     // ── text and elements ──────────────────────────────────────────────────
+    // ── CSS counters (CSS Lists 3 "inherit counters"): every element has a set of counters, built from its
+    // parent's set plus its preceding sibling's counters whose names the parent's set lacks; values are shared
+    // by identity, so an increment is seen by every set that holds the same counter.
+    struct Counter { std::string name; int value; const dom::Node* scope; };   // scope: parent of the creating element
+    using CSet = std::vector<std::shared_ptr<Counter>>;
+    CSet  cs_root;
+    CSet* cs_parent = &cs_root;   // the set of the element whose children are being built
+    CSet  cs_prev;                // the set of the preceding sibling (a ::before counts as the first child)
+
+    static Counter* last_named(CSet& set, const std::string& n) {
+        for (auto it = set.rbegin(); it != set.rend(); ++it) if ((*it)->name == n) return it->get();
+        return nullptr;
+    }
+    // The set of an element (or pseudo, scope = its originating element) with its own reset/increment/set applied.
+    CSet counters_begin(const ComputedStyle& st, const dom::Node* scope) {
+        CSet mine = *cs_parent;
+        for (const auto& c : cs_prev)
+            if (!last_named(mine, c->name)) mine.push_back(c);
+        auto instantiate = [&](const std::string& n, int v) {
+            for (auto it = mine.rbegin(); it != mine.rend(); ++it)
+                if ((*it)->name == n) { if ((*it)->scope == scope) mine.erase(std::next(it).base()); break; }   // own or a sibling's: replaced
+            mine.push_back(std::make_shared<Counter>(Counter{n, v, scope}));
+        };
+        for (const auto& [n, v] : st.counter_reset) instantiate(n, v);
+        for (const auto& [n, v] : st.counter_inc) {
+            if (!last_named(mine, n)) instantiate(n, 0);
+            last_named(mine, n)->value += v;
+        }
+        for (const auto& [n, v] : st.counter_set) {
+            if (!last_named(mine, n)) instantiate(n, 0);
+            last_named(mine, n)->value = v;
+        }
+        return mine;
+    }
+
+    std::string counters_text(const ComputedStyle& st, CSet& mine, const dom::Node* scope) {
+        std::string out;
+        for (const auto& it : st.content_items) {
+            if (it.kind == style::ContentItem::Kind::Str) { out += it.str; continue; }
+            std::vector<int> vals;
+            for (const auto& c : mine) if (c->name == it.name) vals.push_back(c->value);
+            if (vals.empty()) { mine.push_back(std::make_shared<Counter>(Counter{it.name, 0, scope})); vals.push_back(0); }   // counter() of nothing instantiates it
+            if (it.kind == style::ContentItem::Kind::Counter) out += style::counter_text(vals.back(), it.style);
+            else for (size_t i = 0; i < vals.size(); ++i) { if (i) out += it.sep; out += style::counter_text(vals[i], it.style); }
+        }
+        return out;
+    }
+
     void build_children(const dom::Node& el, const ComputedStyle& st, Box& into, int* list_counter, int list_step) {
         const bool closed_details = el.name == "details" && !el.has_attr("open");
         bool summary_done = false;
@@ -106,11 +155,14 @@ struct Builder {
         ComputedStyle ps = res.compute(el, &st, which);
         if (ps.display == Display::None) return;
         const ComputedStyle* pst = keep(std::move(ps));
+        CSet mine = counters_begin(*pst, &el);   // the pseudo is a child of its element
+        std::string text = pst->content_items.empty() ? pst->content : counters_text(*pst, mine, &el);
+        cs_prev = std::move(mine);
         const bool inl = pst->display == Display::Inline;
         auto b = make(inl ? Box::Kind::Inline : Box::Kind::Block, &el, pst, true);
-        if (!pst->content.empty()) {
+        if (!text.empty()) {
             auto t = make(Box::Kind::Text, nullptr, pst, true);
-            t->text = pst->content;
+            t->text = std::move(text);
             adopt(*b, std::move(t));
         }
         adopt(into, std::move(b));
@@ -244,6 +296,14 @@ struct Builder {
         if (cs.display == Display::None) return;
         const ComputedStyle* st = keep(std::move(cs));
 
+        CSet mine = counters_begin(*st, el.parent);
+        struct CountersCtx {
+            Builder* b; CSet* parent; CSet after_me;
+            ~CountersCtx() { b->cs_parent = parent; b->cs_prev = std::move(after_me); }
+        } counters_ctx{this, cs_parent, mine};
+        cs_parent = &mine;
+        cs_prev.clear();
+
         if (st->display == Display::Contents) {
             build_pseudo(el, *st, into, style::Pseudo::Before);
             build_children(el, *st, into, list_counter, list_step);
@@ -326,26 +386,7 @@ struct Builder {
             case LS::Disc: mk->marker_shape = 1; break;
             case LS::Circle: mk->marker_shape = 2; break;
             case LS::Square: mk->marker_shape = 3; break;
-            case LS::Decimal: mk->text = std::to_string(n) + ". "; break;
-            case LS::LowerAlpha: case LS::UpperAlpha: {
-                std::string a;
-                int v = n;
-                if (v <= 0) a = std::to_string(v);
-                else while (v > 0) { a.insert(a.begin(), char((st->list_style == LS::LowerAlpha ? 'a' : 'A') + (v - 1) % 26)); v = (v - 1) / 26; }
-                mk->text = a + ". ";
-                break;
-            }
-            case LS::LowerRoman: case LS::UpperRoman: {
-                static const std::pair<int, const char*> r[] = {{1000, "m"}, {900, "cm"}, {500, "d"}, {400, "cd"}, {100, "c"}, {90, "xc"},
-                                                              {50, "l"}, {40, "xl"}, {10, "x"}, {9, "ix"}, {5, "v"}, {4, "iv"}, {1, "i"}};
-                std::string out;
-                int v = n;
-                if (v > 0 && v < 4000) for (auto& [val, sym] : r) while (v >= val) { out += sym; v -= val; }
-                else out = std::to_string(n);
-                if (st->list_style == LS::UpperRoman) for (char& c : out) c = char(std::toupper(c));
-                mk->text = out + ". ";
-                break;
-            }
+            default: mk->text = style::counter_text(n, st->list_style) + ". "; break;
             }
             if (mk) adopt(*b, std::move(mk));
         }

@@ -12,6 +12,7 @@ box/t-box-radius-paint
 box/t-box-sizing
 box/t-box-ua-defaults
 box/t-box-width-percent
+box/t-counters
 dyn/t-dyn-append
 dyn/t-dyn-remove
 dyn/t-dyn-restyle

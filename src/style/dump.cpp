@@ -140,7 +140,7 @@ const std::vector<std::pair<std::string, Getter>>& table() {
         add("align-self", [](const ComputedStyle& s, bool&) { return std::string(align_name(s.align_self)); });
         add("list-style-type", [](const ComputedStyle& s, bool&) {
             static const char* n[] = {"disc", "circle", "square", "decimal", "lower-alpha", "upper-alpha",
-                                      "lower-roman", "upper-roman", "none"};
+                                      "lower-roman", "upper-roman", "none", "decimal-leading-zero"};
             return std::string(n[static_cast<int>(s.list_style)]); });
         return v;
     }();

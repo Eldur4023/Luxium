@@ -814,4 +814,33 @@ bool parse_filter_list(const std::string& value, const Env& env, uint32_t curren
     return !out.empty();
 }
 
+std::string counter_text(int n, ListStyle ls) {
+    using LS = ListStyle;
+    switch (ls) {
+    case LS::None: return "";
+    case LS::Disc: return "\xE2\x80\xA2";      // U+2022
+    case LS::Circle: return "\xE2\x97\xA6";    // U+25E6
+    case LS::Square: return "\xE2\x96\xAA";    // U+25AA
+    case LS::DecimalLeadingZero:
+        if (n > -10 && n < 10) return std::string(n < 0 ? "-0" : "0") + std::to_string(std::abs(n));
+        return std::to_string(n);
+    case LS::LowerAlpha: case LS::UpperAlpha: {
+        if (n <= 0) return std::to_string(n);
+        std::string a;
+        for (int v = n; v > 0; v = (v - 1) / 26) a.insert(a.begin(), char((ls == LS::LowerAlpha ? 'a' : 'A') + (v - 1) % 26));
+        return a;
+    }
+    case LS::LowerRoman: case LS::UpperRoman: {
+        static const std::pair<int, const char*> r[] = {{1000, "m"}, {900, "cm"}, {500, "d"}, {400, "cd"}, {100, "c"}, {90, "xc"},
+                                                      {50, "l"}, {40, "xl"}, {10, "x"}, {9, "ix"}, {5, "v"}, {4, "iv"}, {1, "i"}};
+        if (n <= 0 || n >= 4000) return std::to_string(n);
+        std::string out;
+        for (int v = n; auto& [val, sym] : r) while (v >= val) { out += sym; v -= val; }
+        if (ls == LS::UpperRoman) for (char& c : out) c = char(std::toupper(c));
+        return out;
+    }
+    default: return std::to_string(n);
+    }
+}
+
 } // namespace luxium::style

@@ -344,7 +344,8 @@ void set_list_style(ComputedStyle& s, const std::string& v, bool& ok) {
     if (v == "disc") s.list_style = ListStyle::Disc;
     else if (v == "circle") s.list_style = ListStyle::Circle;
     else if (v == "square") s.list_style = ListStyle::Square;
-    else if (v == "decimal" || v == "decimal-leading-zero") s.list_style = ListStyle::Decimal;
+    else if (v == "decimal") s.list_style = ListStyle::Decimal;
+    else if (v == "decimal-leading-zero") s.list_style = ListStyle::DecimalLeadingZero;
     else if (v == "lower-alpha" || v == "lower-latin") s.list_style = ListStyle::LowerAlpha;
     else if (v == "upper-alpha" || v == "upper-latin") s.list_style = ListStyle::UpperAlpha;
     else if (v == "lower-roman") s.list_style = ListStyle::LowerRoman;
@@ -1239,19 +1240,56 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
 
     // ── generated content / misc ───────────────────────────────────────────
     if (name == "content") {
-        if (v == "none" || v == "normal") { s.has_content = false; s.content.clear(); return true; }
+        if (v == "none" || v == "normal") { s.has_content = false; s.content.clear(); s.content_items.clear(); return true; }
         std::string out;
         for (const auto& tk : t) {
             if (tk.size() >= 2 && (tk.front() == '"' || tk.front() == '\'')) {
                 // keep the original case: re-read from raw
             }
         }
-        // strings concatenated (attr(x) unsupported here: resolved by the cascade)
+        // strings and counter()/counters() in order (attr() is resolved by the cascade beforehand)
         size_t i = 0;
-        bool any = false;
+        bool any = false, has_counter = false;
+        std::vector<ContentItem> items;
+        auto close_paren = [&](size_t from) {   // matching ')' of the '(' at `from`, skipping quoted strings
+            int depth = 0;
+            for (size_t k = from; k < raw.size(); ++k) {
+                const char ch = raw[k];
+                if (ch == '"' || ch == '\'') { const size_t e = raw.find(ch, k + 1); if (e == std::string::npos) return std::string::npos; k = e; }
+                else if (ch == '(') ++depth;
+                else if (ch == ')' && --depth == 0) return k;
+            }
+            return std::string::npos;
+        };
         while (i < raw.size()) {
             const char c = raw[i];
-            if (c == '"' || c == '\'') {
+            const bool cs = lower_ascii(raw.substr(i, 9)) == "counters(";
+            if (cs || lower_ascii(raw.substr(i, 8)) == "counter(") {
+                const size_t open = raw.find('(', i), close = close_paren(open);
+                if (close == std::string::npos) return false;
+                const auto args = split_commas(raw.substr(open + 1, close - open - 1));
+                ContentItem ci;
+                ci.kind = cs ? ContentItem::Kind::Counters : ContentItem::Kind::Counter;
+                const size_t nargs = cs ? 3 : 2;
+                if (args.empty() || args.size() > nargs || (cs && args.size() < 2)) return false;
+                ci.name = trim_ws(args[0]);
+                if (ci.name.empty()) return false;
+                if (cs) {
+                    const std::string sp = trim_ws(args[1]);
+                    if (sp.size() < 2 || (sp.front() != '"' && sp.front() != '\'') || sp.back() != sp.front()) return false;
+                    ci.sep = sp.substr(1, sp.size() - 2);
+                }
+                if (args.size() == nargs) {
+                    ComputedStyle tmp;
+                    bool ok = true;
+                    set_list_style(tmp, lower_ascii(trim_ws(args[nargs - 1])), ok);
+                    if (!ok) return false;
+                    ci.style = tmp.list_style;
+                }
+                items.push_back(std::move(ci));
+                has_counter = any = true;
+                i = close + 1;
+            } else if (c == '"' || c == '\'') {
                 const size_t e = raw.find(c, i + 1);
                 if (e == std::string::npos) break;
                 std::string seg = raw.substr(i + 1, e - i - 1);
@@ -1280,12 +1318,37 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
                     dec += seg[k];
                 }
                 out += dec;
+                ContentItem ci; ci.str = dec;
+                items.push_back(std::move(ci));
                 any = true;
                 i = e + 1;
             } else ++i;
         }
+        s.content_items = has_counter ? items : std::vector<ContentItem>{};
         s.has_content = any || v == "\"\"" || v == "''";
         s.content = out;
+        return true;
+    }
+    if (name == "counter-reset" || name == "counter-increment" || name == "counter-set") {
+        std::vector<std::pair<std::string, int>> out;
+        const int def = name == "counter-increment" ? 1 : 0;
+        if (v != "none") {
+            if (t.empty()) return false;
+            for (size_t i = 0; i < t.size(); ++i) {
+                const std::string& id = t[i];
+                if (id.empty() || std::isdigit(static_cast<unsigned char>(id[0])) || id[0] == '-' || id[0] == '+' || id == "none") return false;
+                int n = def;
+                if (i + 1 < t.size() && (std::isdigit(static_cast<unsigned char>(t[i + 1][0])) || t[i + 1][0] == '-' || t[i + 1][0] == '+')) {
+                    char* end = nullptr;
+                    const long l = std::strtol(t[i + 1].c_str(), &end, 10);
+                    if (*end) return false;
+                    n = int(l);
+                    ++i;
+                }
+                out.emplace_back(id, n);
+            }
+        }
+        (name == "counter-reset" ? s.counter_reset : name == "counter-increment" ? s.counter_inc : s.counter_set) = out;
         return true;
     }
     if (name == "cursor") {
@@ -1633,7 +1696,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     if (n == "border-left-color") { d.border_color[3] = src.border_color[3]; d.bc_current[3] = src.bc_current[3]; return true; }
     CP("border-top-left-radius", radius[0]) CP("border-top-right-radius", radius[1]) CP("border-bottom-right-radius", radius[2]) CP("border-bottom-left-radius", radius[3])
     CP("background-color", bg_color) CP("background-image", bg) CP("background-repeat", bg) CP("background-position", bg) CP("background-size", bg)
-    CP("box-shadow", box_shadow) CP("text-shadow", text_shadow) CP("clip-path", clip_path) CP("filter", filter) CP("backdrop-filter", backdrop_filter) CP("mask-image", mask) CP("-webkit-mask-image", mask) CP("object-fit", object_fit)
+    CP("box-shadow", box_shadow) CP("text-shadow", text_shadow) CP("clip-path", clip_path) CP("counter-reset", counter_reset) CP("counter-increment", counter_inc) CP("counter-set", counter_set) CP("filter", filter) CP("backdrop-filter", backdrop_filter) CP("mask-image", mask) CP("-webkit-mask-image", mask) CP("object-fit", object_fit)
     if (n == "display") { d.display = src.display; d.webkit_box = src.webkit_box; return true; }
     CP("-webkit-line-clamp", line_clamp) CP("-webkit-box-orient", box_orient_v)
     if (n == "object-position") { d.object_pos_x = src.object_pos_x; d.object_pos_y = src.object_pos_y; return true; }

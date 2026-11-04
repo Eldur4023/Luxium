@@ -55,7 +55,7 @@ enum class OverflowWrap { Normal, BreakWord, Anywhere };
 enum class WordBreak { Normal, BreakAll, KeepAll, BreakWord };
 enum class VerticalAlign { Baseline, Sub, Super, Top, TextTop, Middle, Bottom, TextBottom, Length };
 enum class FontFamily { Sans, Serif, Mono };
-enum class ListStyle { Disc, Circle, Square, Decimal, LowerAlpha, UpperAlpha, LowerRoman, UpperRoman, None };
+enum class ListStyle { Disc, Circle, Square, Decimal, LowerAlpha, UpperAlpha, LowerRoman, UpperRoman, None, DecimalLeadingZero };
 enum class FlexDirection { Row, RowReverse, Column, ColumnReverse };
 enum class FlexWrap { Nowrap, Wrap, WrapReverse };
 // justify-content / align-content / align-items / align-self / justify-items / justify-self
@@ -103,6 +103,14 @@ struct FilterFn {
     enum class Kind : uint8_t { Blur, Brightness, Contrast, Grayscale, Sepia, Saturate, HueRotate, Invert, Opacity, DropShadow } kind = Kind::Blur;
     float a = 0, dx = 0, dy = 0, blur = 0;
     uint32_t color = 0xFF000000;
+};
+
+// One piece of `content` when it holds counter()/counters(); strings between them are Str.
+struct ContentItem {
+    enum class Kind : uint8_t { Str, Counter, Counters } kind = Kind::Str;
+    std::string str;                       // Str: the text
+    std::string name, sep;                 // Counter/Counters: counter name, separator (Counters)
+    ListStyle   style = ListStyle::Decimal;
 };
 
 // `clip-path` basic shape.  box: reference box 0 border, 1 padding, 2 content, 3 margin.
@@ -262,6 +270,9 @@ struct ComputedStyle {
     // ── generated content / misc ────────────────────────────────────────────
     bool     has_content = false;       // ::before/::after generate a box iff true
     std::string content;
+    std::vector<ContentItem> content_items;   // only when `content` uses counter()/counters()
+    // counter-reset / counter-increment / counter-set (name, integer); not inherited
+    std::vector<std::pair<std::string, int>> counter_reset, counter_inc, counter_set;
     int      cursor = 0;                // 0 auto, 1 pointer, 2 text, 3 default, 4 not-allowed, 5 grab, 6 grabbing
     bool     pointer_events = true;
     uint32_t accent = 0;                // accent-color (0 = auto)

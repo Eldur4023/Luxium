@@ -39,4 +39,7 @@ bool parse_shadow_list(const std::string& value, const Env& env, uint32_t curren
 // `filter` / `backdrop-filter` function list (url() references are not supported: false).
 bool parse_filter_list(const std::string& value, const Env& env, uint32_t current, std::vector<FilterFn>& out);
 
+// A counter value in a list-style-type (decimal, alpha, roman, decimal-leading-zero, disc/circle/square glyphs, none).
+std::string counter_text(int n, ListStyle ls);
+
 } // namespace luxium::style
