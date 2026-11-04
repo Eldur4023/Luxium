@@ -126,6 +126,7 @@ struct Box {
 
     // out-of-flow
     float static_x = 0, static_y = 0;   // static position, relative to parent content origin
+    float static_fx = 0, static_fy = 0; // flex parent: where the static position sits in its content box (0 start .. 1 end)
     Box* cb = nullptr;                  // containing block for abs/fixed (null = initial CB)
     Box* static_parent = nullptr;       // block whose content origin static_x/static_y refer to
     Box* lparent = nullptr;             // layout parent when != parent (inline descendants, table cells)

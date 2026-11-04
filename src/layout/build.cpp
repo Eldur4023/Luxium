@@ -145,6 +145,7 @@ struct Builder {
         if (src.starts_with("file://")) src = src.substr(7);
         // Same resolution as images: "/api/x" and "//host/x" on an http page are relative to the page's origin.
         if (!src.empty()) src = render::resolve_image(base_dir, src);
+        if (src.empty()) b.media_controls = false;   // Chromium: no source, no controls (a blank black box)
         e.local = !(src.starts_with("http://") || src.starts_with("https://"));
         e.src = src;
         e.autoplay = el.has_attr("autoplay");

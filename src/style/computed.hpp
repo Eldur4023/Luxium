@@ -250,6 +250,10 @@ struct ComputedStyle {
     std::vector<TransitionSpec> transitions;
     std::vector<AnimationSpec> animations;
     float    aspect_ratio = 0;          // aspect-ratio (width/height); 0 = auto
+    // container queries: this element as a query container, and the size cq* units resolve against
+    uint8_t  container_type = 0;        // 0 normal, 1 inline-size, 2 size
+    std::string container_name;         // space-separated names
+    float    cq_w = -1, cq_h = -1;      // nearest container's content box (-1: none, units use the viewport)
     // outline: drawn outside the border edge, never affects layout.  `auto` = the focus ring.
     BorderStyle outline_style = BorderStyle::None;
     bool     outline_auto = false;

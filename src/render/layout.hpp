@@ -11,6 +11,7 @@
 #include <dom/node.hpp>
 #include <paint/display_list.hpp>
 #include <render/text.hpp>
+#include <style/cascade.hpp>
 #include <style/stylesheet.hpp>
 
 #include <functional>
@@ -85,6 +86,7 @@ struct LayoutResult {
     std::vector<MediaBox> media;
     bool gutter = false;               // laid out beside a classic page scrollbar (15px narrower)
     std::vector<StickyGroup> sticky;   // painted after `list`, before `fixed`, shifted by the shell
+    std::unordered_map<const dom::Node*, style::Resolver::Container> containers;   // query containers as last measured
 };
 
 LayoutResult layout(const dom::Node& root, Font& font, float viewport_w,

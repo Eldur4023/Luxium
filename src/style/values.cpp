@@ -198,9 +198,15 @@ struct CalcParser {
         else if (unit == "rem") r.px = n * env.root_em;
         else if (unit == "ex") r.px = n * env.em * 0.5f;
         else if (unit == "ch") r.px = n * env.em * 0.636f;   // DejaVu "0"
-        // shortcut: cq* units use the viewport, not the container, until container queries exist
-        else if (unit == "vw" || unit == "dvw" || unit == "svw" || unit == "lvw" || unit == "cqw" || unit == "cqi") r.px = n * env.vw / 100.f;
-        else if (unit == "vh" || unit == "dvh" || unit == "svh" || unit == "lvh" || unit == "cqh" || unit == "cqb") r.px = n * env.vh / 100.f;
+        else if (unit == "vw" || unit == "dvw" || unit == "svw" || unit == "lvw") r.px = n * env.vw / 100.f;
+        else if (unit == "vh" || unit == "dvh" || unit == "svh" || unit == "lvh") r.px = n * env.vh / 100.f;
+        // container units: the nearest query container, or the (small) viewport when there is none
+        else if (unit == "cqw" || unit == "cqi") r.px = n * (env.cqw >= 0 ? env.cqw : env.vw) / 100.f;
+        else if (unit == "cqh" || unit == "cqb") r.px = n * (env.cqh >= 0 ? env.cqh : env.vh) / 100.f;
+        else if (unit == "cqmin" || unit == "cqmax") {
+            const float w = env.cqw >= 0 ? env.cqw : env.vw, h = env.cqh >= 0 ? env.cqh : env.vh;
+            r.px = n * (unit == "cqmin" ? std::min(w, h) : std::max(w, h)) / 100.f;
+        }
         else if (unit == "vmin") r.px = n * std::min(env.vw, env.vh) / 100.f;
         else if (unit == "vmax") r.px = n * std::max(env.vw, env.vh) / 100.f;
         else if (unit == "pt") r.px = n * 96.f / 72.f;

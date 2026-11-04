@@ -1347,6 +1347,27 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         s.appearance_none = v == "none";
         return true;
     }
+    if (name == "container-type") {
+        if (v == "normal") s.container_type = 0;
+        else if (v == "inline-size") s.container_type = 1;
+        else if (v == "size") s.container_type = 2;
+        else return false;
+        return true;
+    }
+    if (name == "container-name") { s.container_name = v == "none" ? "" : v; return true; }
+    if (name == "container") {   // <name> [/ <type>]
+        const size_t slash = v.find('/');
+        const std::string nm = trim_ws(v.substr(0, slash));
+        s.container_name = nm == "none" ? "" : nm;
+        s.container_type = 0;
+        if (slash != std::string::npos) {
+            const std::string ty = trim_ws(v.substr(slash + 1));
+            if (ty == "inline-size") s.container_type = 1;
+            else if (ty == "size") s.container_type = 2;
+            else if (ty != "normal") return false;
+        }
+        return true;
+    }
     if (name == "aspect-ratio") {
         float r = 0;
         for (const auto& tk : t) {
@@ -1456,7 +1477,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("border-collapse", border_collapse) CP("table-layout", table_fixed)
     if (n == "border-spacing") { d.border_spacing_h = src.border_spacing_h; d.border_spacing_v = src.border_spacing_v; return true; }
     CP("cursor", cursor) CP("pointer-events", pointer_events)
-    CP("transition", transitions) CP("accent-color", accent) CP("aspect-ratio", aspect_ratio) CP("outline-offset", outline_offset)
+    CP("transition", transitions) CP("accent-color", accent) CP("aspect-ratio", aspect_ratio) CP("container-type", container_type) CP("container-name", container_name) CP("outline-offset", outline_offset)
     if (n == "transform") { d.translate_x = src.translate_x; d.translate_y = src.translate_y; std::copy(src.tf, src.tf + 4, d.tf); d.tfn = src.tfn; return true; }
     if (n == "transform-origin") { d.origin_x = src.origin_x; d.origin_y = src.origin_y; return true; }
     CP("animation", animations)

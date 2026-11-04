@@ -107,7 +107,7 @@ std::string import_url(const std::string& prelude, std::string* media) {
 }
 
 void parse_rules(const std::string& text, const std::string& media,
-                 std::vector<Rule>& out, const Loader& loader, int depth) {
+                 std::vector<Rule>& out, const Loader& loader, int depth, const std::string& container = "") {
     size_t i = 0;
     while (i < text.size()) {
         while (i < text.size() && (std::isspace(static_cast<unsigned char>(text[i])) || text[i] == ';')) ++i;
@@ -148,9 +148,11 @@ void parse_rules(const std::string& text, const std::string& media,
             const size_t inner_end = (end > stop + 1 && text[end - 1] == '}') ? end - 1 : end;
             const std::string inner = text.substr(stop + 1, inner_end - stop - 1);
             if (name == "media")
-                parse_rules(inner, media.empty() ? prelude : media + " and " + prelude, out, loader, depth);
+                parse_rules(inner, media.empty() ? prelude : media + " and " + prelude, out, loader, depth, container);
             else if (name == "supports" || name == "layer")
-                parse_rules(inner, media, out, loader, depth);
+                parse_rules(inner, media, out, loader, depth, container);
+            else if (name == "container")
+                parse_rules(inner, media, out, loader, depth, container.empty() ? prelude : container + "\n" + prelude);
             else if (name == "keyframes" || name == "-webkit-keyframes") {
                 // one selector-less Rule per keyframe offset; `media` carries "@keyframes|name|offset" (see Rule::keyframe)
                 size_t k = 0;
@@ -191,6 +193,7 @@ void parse_rules(const std::string& text, const std::string& media,
         const size_t end = block_end(text, brace);
         Rule rule;
         rule.media = media;
+        rule.container = container;
         rule.selectors = parse_selector_list(text.substr(i, brace - i));
         const size_t body_end = (end > brace + 1 && text[end - 1] == '}') ? end - 1 : end;
         rule.decls = parse_decls(text.substr(brace + 1, body_end - brace - 1));
@@ -352,6 +355,23 @@ bool eval_one_query(std::string q, float vw, float vh) {
 }
 
 } // namespace
+
+void split_container_prelude(const std::string& prelude, std::string& name, std::string& cond) {
+    const std::string p = trim(prelude);
+    size_t j = 0;
+    while (j < p.size() && !std::isspace(static_cast<unsigned char>(p[j])) && p[j] != '(') ++j;
+    const std::string first = lower(p.substr(0, j));
+    if (j == 0 || first == "not") { name.clear(); cond = p; return; }
+    name = p.substr(0, j);
+    cond = trim(p.substr(j));
+}
+
+bool container_query_matches(const std::string& cond, float w, float h) {
+    std::string c = lower(cond);
+    for (const auto& [from, to] : {std::pair<std::string, std::string>{"inline-size", "width"}, {"block-size", "height"}})
+        for (size_t p = c.find(from); p != std::string::npos; p = c.find(from, p + to.size())) c.replace(p, from.size(), to);
+    return eval_one_query(c, w, h);
+}
 
 bool media_matches(const std::string& media, float vw, float vh) {
     if (trim(media).empty()) return true;

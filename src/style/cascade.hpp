@@ -34,6 +34,9 @@ public:
     void set_author_rules(const std::vector<Rule>* rules) { author_ = rules ? rules : &kNoRules; author_idx_.build(*author_); }
 
     void set_viewport(float w, float h) { vw_ = w; vh_ = h; }
+    // Query containers measured by the previous layout pass (container-type != normal): content-box size.
+    struct Container { float w = 0, h = 0; uint8_t type = 1; std::string names; };
+    void set_containers(std::unordered_map<const dom::Node*, Container> m) { containers_ = std::move(m); cache_.clear(); }
     // Called with every element's (and ::before/::after's: `pseudo` = Pseudo as int) final style; the shell animates through it.
     // Returns true when it changed the style (then the style gets a fresh identity).
     std::function<bool(const dom::Node&, ComputedStyle&, int pseudo)> post_hook;
@@ -56,6 +59,10 @@ private:
     const RuleIndex& ua_idx_;
     float vw_ = 1180, vh_ = 762;
     mutable float root_em_ = 16;
+    std::unordered_map<const dom::Node*, Container> containers_;
+    // nearest query container of `el` (itself only for its ::before/::after) named `name` ("" = any); null if none
+    const Container* container_for(const dom::Node& el, Pseudo pseudo, const std::string& name) const;
+    bool container_rule_ok(const std::string& conds, const dom::Node& el, Pseudo pseudo) const;
 };
 
 } // namespace luxium::style

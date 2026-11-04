@@ -16,6 +16,7 @@ struct Env {
     float em = 16;          // font-size em refers to (own, or parent's for font-size)
     float root_em = 16;
     float vw = 1180, vh = 762;
+    float cqw = -1, cqh = -1;   // query container size for cq* units (-1: none -> viewport)
 };
 
 // Top-level whitespace split ('/' and ',' come out as their own tokens);

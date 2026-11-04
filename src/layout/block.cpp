@@ -588,7 +588,10 @@ void resolve_abs(Env& env, Box* container, size_t from) {
                 else if (a->mar_l_auto) x = l + std::max(0.f, free);
             }
         } else if (R) x = cb_w - r - a->margin.r - a->w;
-        else x = sx + a->margin.l;
+        else {
+            x = sx + a->margin.l;
+            if (a->static_fx > 0 && a->static_parent) x += (a->static_parent->content_w() - a->outer_w()) * a->static_fx;
+        }
         // vertical position
         float y;
         if (T) {
@@ -599,7 +602,10 @@ void resolve_abs(Env& env, Box* container, size_t from) {
                 else if (a->mar_t_auto) y = t + std::max(0.f, free);
             }
         } else if (B) y = cb_h - bt - a->margin.b - a->h;
-        else y = sy + a->margin.t;
+        else {
+            y = sy + a->margin.t;
+            if (a->static_fy > 0 && a->static_parent) y += (a->static_parent->content_h() - a->outer_h()) * a->static_fy;
+        }
         (void)bbx; (void)bp_h; (void)bp_v;
         a->x = x; a->y = y;
         a->cb = cbx;

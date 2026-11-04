@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 namespace luxium::render {
@@ -26,19 +28,44 @@ LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
     const auto T = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
     const bool timing = std::getenv("LUXIUM_TIMING") != nullptr;
     double t0 = T();
-    auto tree = build_tree(doc, res, base_dir);
-    const double t_build = T() - t0; t0 = T();
-    Env env{font, res};
-    env.vw = vw; env.vh = vh; env.base_dir = base_dir;
-
+    std::unique_ptr<Tree> tree;
+    std::optional<Env> env_slot;
+    double t_build = 0, t_layout = 0;
+    // Container queries: styles depend on container sizes that only layout knows. Lay out, measure the query
+    // containers, restyle against them, and repeat until the sizes settle (pages without containers: one pass).
+    std::unordered_map<const dom::Node*, style::Resolver::Container> conts;
+    for (int pass = 0; pass < 4; ++pass) {
+        tree = build_tree(doc, res, base_dir);
+        t_build += T() - t0; t0 = T();
+        env_slot.emplace(font, res);
+        Env& e = *env_slot;
+        e.vw = vw; e.vh = vh; e.base_dir = base_dir;
+        Box& r = *tree->root;
+        Constraint c;
+        c.cb_w = vw; c.cb_h = vh;
+        c.bfc = nullptr;
+        r.x = r.y = 0;
+        layout_box(e, r, c);
+        finalize_positions(e, *tree);
+        t_layout += T() - t0; t0 = T();
+        std::unordered_map<const dom::Node*, style::Resolver::Container> now;
+        for (Box* k : tree->order)
+            if (k->own_style() && k->node && k->st->container_type && !k->anonymous)
+                now[k->node] = {std::max(0.f, k->content_w()), std::max(0.f, k->content_h()), k->st->container_type, k->st->container_name};
+        auto same = [&] {
+            if (now.size() != conts.size()) return false;
+            for (const auto& [n, c2] : now) {
+                auto it = conts.find(n);
+                if (it == conts.end() || std::fabs(it->second.w - c2.w) > 0.01f || std::fabs(it->second.h - c2.h) > 0.01f || it->second.type != c2.type || it->second.names != c2.names) return false;
+            }
+            return true;
+        };
+        if (same()) break;
+        conts = std::move(now);
+        res.set_containers(conts);
+    }
+    Env& env = *env_slot;
     Box& root = *tree->root;
-    Constraint c;
-    c.cb_w = vw; c.cb_h = vh;
-    c.bfc = nullptr;
-    root.x = root.y = 0;
-    layout_box(env, root, c);
-    finalize_positions(env, *tree);
-    const double t_layout = T() - t0; t0 = T();
 
     // document height: the root box and anything that overflows it
     float bottom = root.ay + root.h;
@@ -62,6 +89,7 @@ LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
     }
 
     LayoutResult out;
+    out.containers = conts;
     out.content_height = bottom;
     PaintOutput po;
     paint_tree(env, *tree, vw, std::max(bottom, vh), po);

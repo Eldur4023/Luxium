@@ -71,7 +71,29 @@ float layout_flex(Env& env, Box& b, const Constraint& c, float content_w, float 
     for (auto& up : b.kids) {
         Box& k = *up;
         if (k.kind == Box::Kind::Marker) continue;
-        if (k.is_abs()) { k.static_parent = &b; k.static_x = 0; k.static_y = 0; env.abs_pending.push_back(&k); continue; }
+        if (k.is_abs()) {
+            // static position: as if it were the only flex item (CSS Flexbox 4.1): justify-content on the main axis,
+            // align-self/align-items on the cross axis
+            k.static_parent = &b; k.static_x = 0; k.static_y = 0;
+            auto frac = [](Align a, bool main) {
+                switch (a) {
+                case Align::Center: return 0.5f;
+                case Align::End: case Align::FlexEnd: return 1.f;
+                case Align::SpaceAround: case Align::SpaceEvenly: return main ? 0.5f : 0.f;
+                default: return 0.f;
+                }
+            };
+            float fm = frac(s.justify_content, true);
+            if (rev && (s.justify_content == Align::FlexStart || s.justify_content == Align::FlexEnd || s.justify_content == Align::Normal ||
+                        s.justify_content == Align::SpaceBetween)) fm = 1.f - fm;
+            const Align ca = k.st->align_self == Align::Auto ? s.align_items : k.st->align_self;
+            float fc = frac(ca, false);
+            if (wrap_rev && (ca == Align::FlexStart || ca == Align::FlexEnd)) fc = 1.f - fc;
+            k.static_fx = row ? fm : fc;
+            k.static_fy = row ? fc : fm;
+            env.abs_pending.push_back(&k);
+            continue;
+        }
         resolve_edges(k, content_w);
         Item it;
         it.box = &k;

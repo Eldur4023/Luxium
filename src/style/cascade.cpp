@@ -236,6 +236,33 @@ struct Entry {
 
 } // namespace
 
+const Resolver::Container* Resolver::container_for(const dom::Node& el, Pseudo pseudo, const std::string& name) const {
+    if (containers_.empty()) return nullptr;
+    for (const dom::Node* n = pseudo == Pseudo::None ? el.parent : &el; n; n = n->parent) {
+        auto it = containers_.find(n);
+        if (it == containers_.end()) continue;
+        if (name.empty()) return &it->second;
+        const std::string& ns = it->second.names;   // space-separated
+        for (size_t p = ns.find(name); p != std::string::npos; p = ns.find(name, p + 1))
+            if ((p == 0 || ns[p - 1] == ' ') && (p + name.size() == ns.size() || ns[p + name.size()] == ' ')) return &it->second;
+    }
+    return nullptr;
+}
+
+bool Resolver::container_rule_ok(const std::string& conds, const dom::Node& el, Pseudo pseudo) const {
+    size_t i = 0;
+    while (i <= conds.size()) {
+        const size_t nl = conds.find('\n', i);
+        std::string name, cond;
+        split_container_prelude(conds.substr(i, nl == std::string::npos ? std::string::npos : nl - i), name, cond);
+        const Container* c = container_for(el, pseudo, name);
+        if (!c || !container_query_matches(cond, c->w, c->type == 2 ? c->h : std::nanf(""))) return false;
+        if (nl == std::string::npos) break;
+        i = nl + 1;
+    }
+    return true;
+}
+
 ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent, Pseudo pseudo) const {
     // ── 1. matching declarations ───────────────────────────────────────────
     std::vector<Entry> entries;
@@ -268,6 +295,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
             stamp[size_t(ri)] = gen;
             const Rule& r = rules[size_t(ri)];
             if (!r.media.empty() && !media_matches(r.media, vw_, vh_)) continue;
+            if (!r.container.empty() && !container_rule_ok(r.container, el, pseudo)) continue;
             int best = -1;
             for (const auto& sel : r.selectors) {
                 if (sel.pseudo != pseudo) continue;
@@ -305,6 +333,11 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
 
     // Same matched declarations + same parent style + same tag = same result.  Presentational attributes and
     // inline `style` are per element, so those elements are computed for real.
+    float cqw = -1, cqh = -1;
+    if (const Container* c = container_for(el, pseudo, "")) {
+        cqw = c->w;
+        if (c->type == 2) cqh = c->h;
+    }
     const bool cacheable = hint_decls.empty() && inline_decls.empty();
     std::string ckey;
     if (cacheable) {
@@ -312,6 +345,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
         const uint32_t pid = parent ? parent->cache_id : 0;
         ckey.append(reinterpret_cast<const char*>(&pid), sizeof pid);
         ckey.push_back(char(pseudo));
+        if (cqw >= 0) { ckey.append(reinterpret_cast<const char*>(&cqw), sizeof cqw); ckey.append(reinterpret_cast<const char*>(&cqh), sizeof cqh); }
         ckey += el.name;
         ckey.push_back('\0');
         for (const Entry& e : entries) { const Decl* d = e.decl; ckey.append(reinterpret_cast<const char*>(&d), sizeof d); }
@@ -337,6 +371,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
     env.parent = parent;
     env.root_em = parent ? root_em_ : 16.f;
     env.vw = vw_; env.vh = vh_;
+    env.cqw = cqw; env.cqh = cqh;
     env.em = parent ? parent->font_size : 16.f;
 
     // ── 3. apply: custom props + order-independent basics first, then the rest

@@ -22,6 +22,7 @@ struct Rule {
     std::vector<Selector> selectors;
     std::vector<Decl> decls;
     std::string media;     // "" = always
+    std::string container; // @container conditions ("[name] (query)"), joined by '\n' when nested; "" = none
     int order = 0;         // source order across the whole sheet set
     // @keyframes: no selectors, media = "@keyframes|<name>|<offset 0..1>" (survives the compiled-page codec)
     bool keyframe(std::string* name = nullptr, float* offset = nullptr) const {
@@ -48,5 +49,10 @@ std::vector<Decl> parse_decls(const std::string& text);
 
 // Media query list ("screen and (min-width: 800px), print") against a viewport.
 bool media_matches(const std::string& media, float vw, float vh);
+
+// One @container prelude: "[name] <condition>" -> name ("" = any container) and condition.
+void split_container_prelude(const std::string& prelude, std::string& name, std::string& cond);
+// The condition against a container's content box (h is NaN for an inline-size container: height tests fail).
+bool container_query_matches(const std::string& cond, float w, float h);
 
 } // namespace luxium::style

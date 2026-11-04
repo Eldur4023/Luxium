@@ -169,6 +169,12 @@ int main(int argc, char** argv) {
         luxium::style::Resolver res;
         res.set_viewport(static_cast<float>(win_w), static_cast<float>(win_h - 58));
         res.set_author_rules(&page.rules());
+        // container queries need the sizes a layout measures
+        if (auto font = luxium::render::Font::load_dejavu("/usr/share/fonts/truetype/dejavu")) {
+            const auto lr = luxium::render::layout(*page.page_root(), *font, static_cast<float>(win_w), page.rules(), page.base_dir(),
+                                                   38.f, static_cast<float>(win_h - 20));
+            if (!lr.containers.empty()) res.set_containers(lr.containers);
+        }
         std::ofstream(styles) << luxium::style::dump_styles_json(*page.page_root(), res);
         return 0;
     }
