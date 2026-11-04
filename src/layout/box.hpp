@@ -50,6 +50,7 @@ struct WordSpan { std::string text; float x = 0, w = 0; };   // for text selecti
 struct LineFrag {
     enum class Kind { Text, Atom, Inline, Marker } kind = Kind::Text;
     Box* box = nullptr;
+    const ComputedStyle* st = nullptr;  // Text: the style the run was shaped with (differs from box->st on a ::first-line)
     float x = 0, w = 0;                 // from the block's content-left edge
     float top = 0, bottom = 0;          // Inline: border-box vertical extent, relative to line top
     float baseline = 0;                 // Text/Marker: baseline y relative to line top
@@ -116,6 +117,8 @@ struct Box {
     float baseline = -1;                // distance from border-box top to the (last) baseline; <0 = none
     float ctl_baseline = 0;             // controls: baseline from the content-box top
     std::vector<LineBox> lines;
+    const ComputedStyle* first_line_st = nullptr;   // ::first-line style (inline layout restyles the first line's own text)
+    int mc_n = 0; float mc_w = 0, mc_gap = 0;   // multicol container: columns used, column width, gap (painting the rules)
     Strut bottom_strut;                 // margin sticking out below (collapsed with last child)
     bool has_inline_content = false;
     float scroll_h = 0;                 // in-flow content height

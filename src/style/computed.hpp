@@ -255,6 +255,12 @@ struct ComputedStyle {
     int      order = 0;
     float    flex_grow = 0, flex_shrink = 1;
     Len      flex_basis = Len::Auto();
+    int      column_count = 0;            // multicol: 0 = auto
+    Len      column_width = Len::Auto();  // multicol: auto = from column-count
+    bool     column_gap_set = false;      // column-gap other than `normal` (multicol: normal = 1em)
+    float    column_rule_w = 0; style::BorderStyle column_rule_style = style::BorderStyle::None;
+    uint32_t column_rule_color = 0; bool column_rule_cur = true;
+    bool     multicol() const { return column_count > 0 || !column_width.is_auto; }
     Len      row_gap, column_gap;      // normal == 0 here
 
     // ── grid ────────────────────────────────────────────────────────────────

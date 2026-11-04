@@ -552,6 +552,18 @@ struct Painter {
             for (int i = 0; i < 4; ++i) { it.bw[i] = 1; it.bc[i] = col; it.bs[i] = style::BorderStyle::Solid; }
             dl->push_back(std::move(it));
         } else if (!b.border_collapsed) borders(b, r, rad);
+        // column-rule: a line centred in each gap between columns, as tall as the content box
+        if (b.mc_n > 1 && s.column_rule_w > 0 && s.column_rule_style != style::BorderStyle::None && s.column_rule_style != style::BorderStyle::Hidden) {
+            const uint32_t col = s.column_rule_cur ? s.color : s.column_rule_color;
+            const float cy = b.ay + b.border.t + b.padding.t, ch = b.h - b.border.v() - b.padding.v();
+            for (int i = 1; i < b.mc_n; ++i) {
+                const float cx = b.ax + b.border.l + b.padding.l + float(i) * b.mc_w + float(i - 1) * b.mc_gap + b.mc_gap / 2 - s.column_rule_w / 2;
+                if (!has_alpha(col)) continue;
+                Item it; it.kind = Item::Kind::Border; it.x = sn(cx); it.y = sn(cy); it.w = std::max(1.f, sn(s.column_rule_w)); it.h = sn(cy + ch) - sn(cy);
+                for (int k = 0; k < 4; ++k) { it.bw[k] = k == 3 ? it.w : 0; it.bc[k] = col; it.bs[k] = s.column_rule_style; }
+                dl->push_back(std::move(it));
+            }
+        }
     }
 
     // Unstyled text fields/buttons keep the UA's `2px inset/outset #767676` in the cascade, but Chromium draws
@@ -923,7 +935,7 @@ struct Painter {
                     break;
                 }
                 case LineFrag::Kind::Text: {
-                    const ComputedStyle& ts = f.box ? *f.box->st : *blk.st;
+                    const ComputedStyle& ts = f.st ? *f.st : f.box ? *f.box->st : *blk.st;
                     if (ts.visibility != Visibility::Visible || !f.run) break;
                     Item it; it.kind = Item::Kind::Text;
                     it.x = cx + f.x; it.baseline = cy + line.y + f.baseline;

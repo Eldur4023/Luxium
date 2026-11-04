@@ -72,6 +72,7 @@ bool establishes_bfc(const Box& b) {
     if (b.is_atomic_inline()) return true;
     if (s.overflow_x != Overflow::Visible && s.overflow_x != Overflow::Clip) return true;
     if (s.overflow_y != Overflow::Visible && s.overflow_y != Overflow::Clip) return true;
+    if (s.multicol()) return true;
     switch (s.display) {
     case Display::FlowRoot: case Display::Flex: case Display::Grid: case Display::Table:
     case Display::TableCell: case Display::TableCaption: case Display::InlineBlock:
@@ -286,6 +287,90 @@ Intrinsic intrinsic_widths(Env& env, Box& b) {
 
 // ── block flow ──────────────────────────────────────────────────────────────
 
+static float layout_block_flow(Env& env, Box& b, float content_w, float content_h_spec, Bfc& bfc,
+                               float ox, float oy, bool top_merge, Strut& pending_out);
+
+// Multi-column container (CSS Multi-column 1, column-fill: balance).  The content is laid out once at the column
+// width as a single tall column, then cut into columns between line boxes and between blocks: each piece moves
+// right by its column's offset and up by the column's start.  Limits: a block taller than a column is not split
+// (it stays whole), and a block with its own box decoration that is split across columns keeps its box in the
+// first column.
+static float layout_columns(Env& env, Box& b, float content_w, float spec_h, Bfc& bfc, float ox, float oy) {
+    const ComputedStyle& s = *b.st;
+    const float em = s.font_size;
+    const float gap = s.column_gap_set ? std::max(0.f, s.column_gap.resolve(content_w)) : em;
+    const float want_w = s.column_width.is_auto ? -1.f : std::max(1.f, s.column_width.resolve(content_w));
+    int n;
+    if (want_w > 0 && s.column_count > 0) n = std::max(1, std::min(s.column_count, int((content_w + gap) / (want_w + gap))));
+    else if (want_w > 0) n = std::max(1, int((content_w + gap) / (want_w + gap)));
+    else n = std::max(1, s.column_count);
+    const float col_w = std::max(0.f, (content_w - gap * float(n - 1)) / float(n));
+    b.mc_n = n; b.mc_w = col_w; b.mc_gap = gap;
+
+    Strut pending;
+    const float total = layout_block_flow(env, b, col_w, -1.f, bfc, ox, oy, false, pending) + pending.value();
+    if (n == 1) return spec_h >= 0 ? spec_h : total;
+
+    // the breakable pieces, in column-0 coordinates (y from the container's content top)
+    struct Atom { float top, bottom; Box* box; LineBox* line; };
+    std::vector<Atom> atoms;
+    auto gather = [&](auto& self, Box& p, float py) -> void {
+        // py: p's content top in container coordinates
+        if (p.has_inline_content) {
+            for (LineBox& l : p.lines) atoms.push_back({py + l.y, py + l.y + l.h, &p, &l});
+            return;
+        }
+        for (auto& k : p.kids) {
+            if (k->out_of_flow()) continue;
+            const bool splittable = k->kind == Box::Kind::Block && k->has_inline_content && !k->is_positioned() &&
+                                    k->border.v() == 0 && k->padding.v() == 0;
+            if (splittable) self(self, *k, py + k->y + k->border.t + k->padding.t);
+            else atoms.push_back({py + k->y - k->margin.t, py + k->y + k->h + k->margin.b, k.get(), nullptr});
+        }
+    };
+    gather(gather, b, 0.f);
+    if (atoms.empty()) return spec_h >= 0 ? spec_h : total;
+
+    // column height: the smallest that fits everything in n columns (or the given height)
+    auto pack = [&](float hc, std::vector<int>* col_of) {
+        int col = 0; float start = atoms[0].top;
+        for (size_t i = 0; i < atoms.size(); ++i) {
+            if (atoms[i].bottom - start > hc + 0.01f && i > 0 && atoms[i].top > start) { ++col; start = atoms[i].top; }
+            if (col_of) (*col_of)[i] = col;
+        }
+        return col + 1;
+    };
+    float hc = std::max(1.f, (atoms.back().bottom - atoms[0].top) / float(n));
+    {
+        float step = 1.f;
+        for (const Atom& a : atoms) step = std::max(step, std::min(a.bottom - a.top, 4.f));
+        for (int guard = 0; pack(hc, nullptr) > n && guard < 4096; ++guard) hc += step;
+        if (spec_h >= 0) hc = std::min(hc, spec_h);   // column-fill: balance, but never taller than the given height
+    }
+    std::vector<int> col_of(atoms.size(), 0);
+    pack(hc, &col_of);
+    std::vector<float> start(size_t(n), -1.f);
+    for (size_t i = 0; i < atoms.size(); ++i) {
+        const int c = std::min(col_of[i], n - 1);
+        if (start[size_t(c)] < 0) start[size_t(c)] = atoms[i].top;
+    }
+    float used_h = 0;
+    for (size_t i = 0; i < atoms.size(); ++i) {
+        const int c = std::min(col_of[i], n - 1);
+        const float dx = float(c) * (col_w + gap);
+        const float base = atoms[0].top;
+        const float ndy = c == 0 ? 0.f : -(start[size_t(c)] - base);
+        if (atoms[i].line) {
+            atoms[i].line->y += ndy;
+            for (LineFrag& f : atoms[i].line->frags) f.x += dx;
+        } else {
+            atoms[i].box->x += dx; atoms[i].box->y += ndy;
+        }
+        used_h = std::max(used_h, atoms[i].bottom + ndy - base);
+    }
+    return spec_h >= 0 ? spec_h : used_h + atoms[0].top;
+}
+
 // Lays out the in-flow children of a block container.  Returns the content
 // height WITHOUT the trailing margin strut, which goes to `pending`.
 static float layout_block_flow(Env& env, Box& b, float content_w, float content_h_spec, Bfc& bfc,
@@ -499,6 +584,10 @@ void layout_box(Env& env, Box& b, const Constraint& c) {
         content_h = layout_grid(env, b, c, content_w, spec_h, min_h_c, max_h_c);
         break;
     default: {
+        if (s.multicol() && s.display != Display::Table) {
+            content_h = layout_columns(env, b, content_w, spec_h, bfc, ox, oy);
+            break;
+        }
         const bool top_merge = !new_bfc && merges_first(b);
         content_h = layout_block_flow(env, b, content_w, spec_h, bfc, ox, oy, top_merge, pending);
         merge_last = !new_bfc && merges_last(b) && spec_h < 0;

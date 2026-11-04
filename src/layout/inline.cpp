@@ -138,6 +138,7 @@ struct Ifc {
     bool prev_space = true;             // last emitted char was a collapsible space (or line start)
     std::vector<Deco> deco_stack;       // propagated text-decoration (underline, line-through, overline)
     bool measure = false;
+    size_t fl_k = 0;                    // ::first-line: the first fl_k tokens of the block's own text take its style
 
     Ifc(Env& e, Box& b, float w) : env(e), blk(b), content_w(w) {}
 
@@ -311,8 +312,15 @@ struct Ifc {
         if (specs.empty()) return;
 
         // pass 2: shape once, then emit tokens
-        Seg seg{shape_cached(env, proc, face_of(env, s), s.font_size), proc};
-        for (const Spec& sp : specs) {
+        Seg seg_n{shape_cached(env, proc, face_of(env, s), s.font_size), proc};
+        const ComputedStyle* const fls = (fl_k > 0 && &s == blk.st) ? blk.first_line_st : nullptr;
+        std::unique_ptr<Seg> seg_fl;
+        if (fls) seg_fl = std::make_unique<Seg>(Seg{shape_cached(env, proc, face_of(env, *fls), fls->font_size), proc});
+        for (const Spec& sp0 : specs) {
+            const Spec& sp = sp0;
+            const bool use_fl = fls && toks.size() < fl_k;
+            const ComputedStyle& s = use_fl ? *fls : *tb.st;
+            const Seg& seg = use_fl ? *seg_fl : seg_n;
             switch (sp.kind) {
             case K::Space: {
                 Tok t = slice_tok(&tb, s, seg, sp.b0, sp.b1, K::Space);
@@ -431,6 +439,7 @@ struct LineBuilder {
 
     float y = 0;                    // current line top (relative to the content top)
     bool first_line = true;
+    size_t fl_end = 0;              // tokens up to the end of the first line (::first-line)
     std::vector<Box*> carried;      // inline boxes open across a line break
 
     bool line_started = false;
@@ -606,6 +615,7 @@ struct LineBuilder {
             return;
         }
         ellipsize(clamp > 0 && int(b.lines.size()) + 1 == clamp && !last);
+        if (first_line) for (size_t i : line) fl_end = std::max(fl_end, i + 1);
         LineBox lb;
         // 1. positions along the line
         std::vector<float> xs(line.size());
@@ -766,13 +776,13 @@ struct LineBuilder {
             Tok& t = ifc.toks[line[i]];
             const float x = off + xs[i];
             if (t.k == K::Word || t.k == K::Space) {
-                if (have && (curf.box != t.box || curf.deco != t.deco || curf.deco_color != t.deco_color ||
+                if (have && (curf.box != t.box || curf.st != t.st || curf.deco != t.deco || curf.deco_color != t.deco_color ||
                              curf.baseline != base - shift_of(t.ibox))) flush_text();
                 if (!have) {
                     have = true;
                     curf = LineFrag{};
                     curf.kind = LineFrag::Kind::Text;
-                    curf.box = t.box; curf.x = x;
+                    curf.box = t.box; curf.st = t.st; curf.x = x;
                     curf.baseline = base - shift_of(t.ibox);
                     curf.run = std::make_shared<render::ShapedRun>();
                     curf.face = face_of(env, *t.st); curf.px = t.st->font_size;
@@ -819,13 +829,23 @@ struct LineBuilder {
 } // namespace
 
 float layout_inline_content(Env& env, Box& b, float content_w, Bfc& bfc, float ox, float oy) {
-    Ifc ifc(env, b, content_w);
-    collect_block_deco(ifc, b);
-    ifc.walk(b);
-    b.lines.clear();
-    LineBuilder lbld(env, b, ifc, bfc, ox, oy, content_w);
-    lbld.run();
-    return lbld.y;
+    // ::first-line changes the metrics of the words it covers, which changes where the first line ends: lay out,
+    // restyle the tokens of that line, lay out again until the line holds the same tokens (3 passes at most).
+    const size_t floats0 = bfc.floats.size(), abs0 = env.abs_pending.size();
+    size_t k = 0;
+    for (int pass = 0;; ++pass) {
+        Ifc ifc(env, b, content_w);
+        ifc.fl_k = k;
+        collect_block_deco(ifc, b);
+        ifc.walk(b);
+        b.lines.clear();
+        LineBuilder lbld(env, b, ifc, bfc, ox, oy, content_w);
+        lbld.run();
+        if (!b.first_line_st || pass >= 3 || lbld.fl_end == k) return lbld.y;
+        k = lbld.fl_end;
+        bfc.floats.resize(floats0);
+        env.abs_pending.resize(abs0);
+    }
 }
 
 Intrinsic inline_intrinsic(Env& env, Box& b) {

@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "style/properties.hpp"
 #include "style/stylesheet.hpp"
 
@@ -1267,13 +1268,58 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         if (t[0] == "normal") a = Len::Px(0); else if (!parse_length(t[0], env, a)) return false;
         if (t.size() == 1) b = a;
         else if (t[1] == "normal") b = Len::Px(0); else if (!parse_length(t[1], env, b)) return false;
-        s.row_gap = a; s.column_gap = b;
+        s.row_gap = a; s.column_gap = b; s.column_gap_set = t.size() == 1 ? t[0] != "normal" : t[1] != "normal";
         return true;
     }
     if (name == "row-gap" || name == "column-gap" || name == "grid-row-gap" || name == "grid-column-gap") {
         Len l;
         if (v == "normal") l = Len::Px(0); else if (!parse_length(v, env, l)) return false;
         (name.find("row") != std::string::npos ? s.row_gap : s.column_gap) = l;
+        if (name.find("row") == std::string::npos) s.column_gap_set = v != "normal";
+        return true;
+    }
+    if (name == "column-count") {
+        if (v == "auto") { s.column_count = 0; return true; }
+        char* e = nullptr; const long n = std::strtol(v.c_str(), &e, 10);
+        if (*e || n < 1) return false;
+        s.column_count = int(std::min(n, 1000L));
+        return true;
+    }
+    if (name == "column-width") {
+        if (v == "auto") { s.column_width = Len::Auto(); return true; }
+        Len l; if (!parse_length(v, env, l)) return false;
+        s.column_width = l;
+        return true;
+    }
+    if (name == "columns") {
+        int cnt = 0; Len w = Len::Auto();
+        for (const auto& tk : t) {
+            if (tk == "auto") continue;
+            char* e = nullptr; const long n = std::strtol(tk.c_str(), &e, 10);
+            if (!*e && !tk.empty()) { if (n < 1) return false; cnt = int(std::min(n, 1000L)); }
+            else if (!parse_length(tk, env, w)) return false;
+        }
+        s.column_count = cnt; s.column_width = w;
+        return true;
+    }
+    if (name == "column-rule" || name == "column-rule-width" || name == "column-rule-style" || name == "column-rule-color") {
+        if (name == "column-rule-width") { float w; if (!parse_bwidth(v, env, w)) return false; s.column_rule_w = w; return true; }
+        if (name == "column-rule-style") { BorderStyle b; if (!parse_bstyle(v, b)) return false; s.column_rule_style = b; return true; }
+        auto color = [&](const std::string& tk) {
+            if (tk == "currentcolor") { s.column_rule_cur = true; return true; }
+            uint32_t c; if (!parse_color(tk, c)) return false;
+            s.column_rule_color = c; s.column_rule_cur = false; return true;
+        };
+        if (name == "column-rule-color") return color(v);
+        float w = 3; BorderStyle bs = BorderStyle::None; s.column_rule_cur = true;
+        if (v == "none") { s.column_rule_w = 0; s.column_rule_style = BorderStyle::None; return true; }
+        for (const auto& tk : t) {
+            BorderStyle b2; float w2;
+            if (parse_bstyle(tk, b2)) bs = b2;
+            else if (parse_bwidth(tk, env, w2)) w = w2;
+            else if (!color(tk)) return false;
+        }
+        s.column_rule_w = w; s.column_rule_style = bs;
         return true;
     }
 

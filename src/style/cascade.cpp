@@ -99,6 +99,8 @@ void Resolver::set_author_rules(const std::vector<Rule>* rules) {
     author_ = rules ? rules : &kNoRules;
     author_idx_.build(*author_);
     registered_.clear();
+    pseudo_mask_ = 0;
+    for (const Rule& r : *author_) for (const auto& sel : r.selectors) pseudo_mask_ |= 1u << unsigned(sel.pseudo);
     for (const Rule& r : *author_) {
         if (!r.media.starts_with("@property|")) continue;
         RegisteredProp p;
@@ -287,6 +289,15 @@ bool Resolver::container_rule_ok(const std::string& conds, const dom::Node& el, 
         i = nl + 1;
     }
     return true;
+}
+
+bool Resolver::pseudo_matches(const dom::Node& el, Pseudo p) const {
+    if (!has_pseudo(p)) return false;
+    for (const Rule& r : *author_) {
+        if (!r.media.empty() && !media_matches(r.media, vw_, vh_)) continue;
+        for (const auto& sel : r.selectors) if (sel.pseudo == p && matches(sel, el)) return true;
+    }
+    return false;
 }
 
 ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent, Pseudo pseudo) const {
@@ -499,7 +510,7 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
         if (s.overflow_y == Overflow::Hidden) s.overflow_y = Overflow::Clip;
     }
     if (s.position == Position::Absolute || s.position == Position::Fixed) s.float_ = Float::None;
-    if (pseudo != Pseudo::None && !s.has_content) s.display = Display::None;
+    if (pseudo != Pseudo::None && pseudo != Pseudo::FirstLetter && pseudo != Pseudo::FirstLine && !s.has_content) s.display = Display::None;
     // children of a flex/grid container are blockified
     if (parent && (parent->display == Display::Flex || parent->display == Display::InlineFlex ||
                    parent->display == Display::Grid || parent->display == Display::InlineGrid)) {

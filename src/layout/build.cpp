@@ -554,8 +554,61 @@ struct Builder {
         build_pseudo(el, *st, *b, style::Pseudo::Before);
         build_children(el, *st, *b, my_counter, my_step);
         build_pseudo(el, *st, *b, style::Pseudo::After);
+        if (res.pseudo_matches(el, style::Pseudo::FirstLetter) && st->display != Display::Inline && st->display != Display::None) first_letter(el, *st, *b);
+        if (res.pseudo_matches(el, style::Pseudo::FirstLine) && st->display != Display::Inline && st->display != Display::None) {
+            ComputedStyle fs = res.compute(el, st, style::Pseudo::FirstLine);
+            if (fs.display != Display::None) b->first_line_st = keep(std::move(fs));
+        }
         fix_children(*b);
         adopt(into, std::move(b));
+    }
+
+    // ::first-letter: the first letter of the block's first formatted line (with the punctuation around it) becomes
+    // a box of its own that takes the pseudo-element's style.  A float:left drop cap works the same way.
+    static size_t first_letter_len(const std::string& t) {
+        auto cp_len = [&](size_t i) { const unsigned char c = (unsigned char)t[i]; return c < 0x80 ? 1u : c < 0xE0 ? 2u : c < 0xF0 ? 3u : 4u; };
+        auto cp = [&](size_t i) { size_t n = cp_len(i); uint32_t v = n == 1 ? (unsigned char)t[i] : (unsigned char)t[i] & (0xFF >> (n + 1));
+                                  for (size_t k = 1; k < n && i + k < t.size(); ++k) v = (v << 6) | ((unsigned char)t[i + k] & 0x3F); return v; };
+        auto punct = [](uint32_t c) { return (c < 0x80 && std::ispunct((int)c)) || (c >= 0x2018 && c <= 0x201F) || c == 0xAB || c == 0xBB || c == 0xBF || c == 0xA1; };
+        size_t i = 0;
+        while (i < t.size() && punct(cp(i))) i += cp_len(i);
+        if (i >= t.size()) return 0;
+        i += cp_len(i);
+        while (i < t.size() && punct(cp(i))) i += cp_len(i);
+        return std::min(i, t.size());
+    }
+    bool split_first_letter(Box& parent, const ComputedStyle& fl) {
+        for (size_t i = 0; i < parent.kids.size(); ++i) {
+            Box& k = *parent.kids[i];
+            if (k.kind == Box::Kind::Marker || (k.out_of_flow() && k.kind != Box::Kind::Text)) continue;
+            if (k.kind == Box::Kind::Text) {
+                const size_t a = k.text.find_first_not_of(" \t\r\n");
+                if (a == std::string::npos) continue;
+                const size_t n = first_letter_len(k.text.substr(a));
+                if (n == 0) return true;
+                const bool blk = fl.float_ != style::Float::None || fl.display == Display::Block;
+                auto fb = make(blk ? Box::Kind::Block : Box::Kind::Inline, parent.node, &fl, true);
+                auto lt = make(Box::Kind::Text, nullptr, &fl, true);
+                lt->text = k.text.substr(a, n);
+                adopt(*fb, std::move(lt));
+                k.text = k.text.substr(a + n);
+                fb->parent = &parent;
+                parent.kids.insert(parent.kids.begin() + long(i), std::move(fb));
+                return true;
+            }
+            if (k.kind == Box::Kind::Inline || (k.kind == Box::Kind::Block && !k.is_float())) {
+                if (split_first_letter(k, fl)) return true;
+                if (k.kind == Box::Kind::Block) return true;   // the first line is inside it, even when nothing matched
+                continue;
+            }
+            return true;   // replaced, <br>, float...: no first letter
+        }
+        return false;
+    }
+    void first_letter(const dom::Node& el, const ComputedStyle& st, Box& b) {
+        ComputedStyle fs = res.compute(el, &st, style::Pseudo::FirstLetter);
+        if (fs.display == Display::None) return;
+        split_first_letter(b, *keep(std::move(fs)));
     }
 
     // ── anonymous box fix-ups ──────────────────────────────────────────────

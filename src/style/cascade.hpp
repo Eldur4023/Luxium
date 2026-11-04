@@ -60,6 +60,11 @@ private:
     mutable uint32_t next_id_ = 0;
     const RuleIndex& ua_idx_;
     std::vector<RegisteredProp> registered_;
+    unsigned pseudo_mask_ = 0;   // bit per Pseudo that some author selector uses
+public:
+    bool has_pseudo(Pseudo p) const { return (pseudo_mask_ >> unsigned(p)) & 1u; }
+    bool pseudo_matches(const dom::Node& el, Pseudo p) const;   // some author rule for `el`::p applies
+private:
     float vw_ = 1180, vh_ = 762;
     mutable float root_em_ = 16;
     std::unordered_map<const dom::Node*, Container> containers_;
