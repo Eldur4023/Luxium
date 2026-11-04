@@ -74,6 +74,8 @@ input[type=checkbox], input[type=radio] { box-sizing: border-box; padding: 0; bo
                                           margin: 3px 3px 3px 4px; overflow: visible }
 input[type=radio] { margin: 3px 3px 0 5px }
 input[type=range] { padding: 0; border: none; margin: 2px; overflow: visible; color: rgb(157, 150, 142) }
+input[type=color] { padding: 0; border: none; background-color: transparent; margin: 0 }
+progress, meter { box-sizing: border-box; display: inline-block; vertical-align: -0.2em }
 input[type=search] { box-sizing: border-box }
 input[type=file] { padding: 0; border: none; background-color: transparent; white-space: pre; align-items: baseline }
 input[type=submit], input[type=button], input[type=reset] { box-sizing: border-box; text-align: center; white-space: pre;
@@ -92,6 +94,7 @@ html[data-luxium-scheme=dark] select, html[data-luxium-scheme=dark] button, html
 :focus-visible { outline: auto 1px -webkit-focus-ring-color }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offset: 0 }
 img, video, canvas { overflow: clip }
+iframe { border: 2px solid; border-color: #9a9a9a #eeeeee #eeeeee #9a9a9a; display: inline-block }   /* Blink's 2px inset, as it paints */
 svg:not(:root) { overflow: hidden }
 [hidden] { display: none }
 dialog:not([open]) { display: none }

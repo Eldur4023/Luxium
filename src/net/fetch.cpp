@@ -2,9 +2,13 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <list>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 namespace luxium::net {
 
@@ -24,7 +28,62 @@ struct Sink {
     std::string body;
     bool        luxp_only = false;
     bool        not_luxp  = false;
+    std::string etag;        // of the final response, from its headers
 };
+
+// .luxp pages already fetched, by the URL asked for: a server that sends an ETag answers "304 Not Modified"
+// to If-None-Match when the page has not changed, and the body does not travel again.  Bounded; the least
+// recently used page goes first.
+struct CachedPage {
+    std::string etag, body, content_type, final_url;
+};
+constexpr size_t kCachePages = 24;
+constexpr size_t kCacheBytes = 48u << 20;
+std::mutex g_cache_m;
+std::list<std::pair<std::string, CachedPage>> g_cache_lru;
+std::unordered_map<std::string, decltype(g_cache_lru)::iterator> g_cache_idx;
+size_t g_cache_bytes = 0;
+
+bool cache_find(const std::string& url, CachedPage& out) {
+    std::lock_guard<std::mutex> lk(g_cache_m);
+    const auto it = g_cache_idx.find(url);
+    if (it == g_cache_idx.end()) return false;
+    g_cache_lru.splice(g_cache_lru.begin(), g_cache_lru, it->second);
+    out = it->second->second;
+    return true;
+}
+
+void cache_put(const std::string& url, CachedPage page) {
+    if (page.body.size() > (kCacheBytes / 4)) return;
+    std::lock_guard<std::mutex> lk(g_cache_m);
+    if (const auto it = g_cache_idx.find(url); it != g_cache_idx.end()) {
+        g_cache_bytes -= it->second->second.body.size();
+        g_cache_lru.erase(it->second);
+        g_cache_idx.erase(it);
+    }
+    g_cache_bytes += page.body.size();
+    g_cache_lru.emplace_front(url, std::move(page));
+    g_cache_idx[url] = g_cache_lru.begin();
+    while (g_cache_lru.size() > kCachePages || g_cache_bytes > kCacheBytes) {
+        g_cache_bytes -= g_cache_lru.back().second.body.size();
+        g_cache_idx.erase(g_cache_lru.back().first);
+        g_cache_lru.pop_back();
+    }
+}
+
+size_t header_cb(char* ptr, size_t sz, size_t nm, void* ud) {
+    auto* s = static_cast<Sink*>(ud);
+    const std::string line(ptr, sz * nm);
+    if (line.rfind("HTTP/", 0) == 0) { s->etag.clear(); return sz * nm; }   // a new response (a redirect's, then the final one)
+    if (line.size() > 5 && std::tolower(static_cast<unsigned char>(line[0])) == 'e' &&
+        std::equal(line.begin(), line.begin() + 5, "etag:", [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; })) {
+        size_t b = 5, e = line.size();
+        while (b < e && (line[b] == ' ' || line[b] == '\t')) ++b;
+        while (e > b && (line[e - 1] == '\r' || line[e - 1] == '\n' || line[e - 1] == ' ')) --e;
+        s->etag = line.substr(b, e - b);
+    }
+    return sz * nm;
+}
 
 bool luxp_type(const char* ct) {
     return ct && std::string(ct).find("application/x-luxp") != std::string::npos;
@@ -62,10 +121,15 @@ std::unique_ptr<Fetch> Fetch::start(const std::string& url, bool luxp_only) {
         char errbuf[CURL_ERROR_SIZE] = {0};
         curl_slist* headers = curl_slist_append(nullptr,
             "Accept: application/x-luxp, text/html;q=0.9, */*;q=0.8");
+        CachedPage held;
+        const bool have = cache_find(url, held);
+        if (have) headers = curl_slist_append(headers, ("If-None-Match: " + held.etag).c_str());
         curl_easy_setopt(c, CURLOPT_URL, url.c_str());
         curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
         curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, header_cb);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, &sink);
         curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
         curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);
@@ -77,12 +141,28 @@ std::unique_ptr<Fetch> Fetch::start(const std::string& url, bool luxp_only) {
         char* ct = nullptr;
         curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
         curl_easy_getinfo(c, CURLINFO_CONTENT_TYPE, &ct);
-        const std::string content_type = ct ? ct : "";
+        std::string content_type = ct ? ct : "";
         char* eff = nullptr;
         curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &eff);
-        const std::string final_url = eff ? eff : url;
+        std::string final_url = eff ? eff : url;
         curl_easy_cleanup(c);
         curl_slist_free_all(headers);
+
+        if (rc == CURLE_OK && status == 304 && have) {   // what we hold is current
+            sink.body = held.body;
+            content_type = held.content_type;
+            final_url = held.final_url;
+            status = 200;
+        } else if (rc == CURLE_OK && status == 200 && !sink.not_luxp && !sink.etag.empty() && luxp_type(content_type.c_str())) {
+            cache_put(url, {sink.etag, sink.body, content_type, final_url});
+        } else if (have && rc == CURLE_OK && status != 304) {
+            std::lock_guard<std::mutex> lk(g_cache_m);   // the page is no longer what we hold
+            if (auto it = g_cache_idx.find(url); it != g_cache_idx.end()) {
+                g_cache_bytes -= it->second->second.body.size();
+                g_cache_lru.erase(it->second);
+                g_cache_idx.erase(it);
+            }
+        }
 
         std::lock_guard<std::mutex> lk(st->m);
         st->body = std::move(sink.body);

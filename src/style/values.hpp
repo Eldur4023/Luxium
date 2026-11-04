@@ -33,6 +33,8 @@ bool parse_number(const std::string& tok, float& out);
 bool parse_angle(const std::string& tok, float& deg);
 // `currentcolor` sets *is_current (and returns true with out = 0).
 bool parse_color(const std::string& tok, uint32_t& out, bool* is_current = nullptr);
+// A mix of two ARGB colours in a colour space ("oklch", "lab", "hsl longer hue"...), `t` of the way to b.
+uint32_t mix_in_space(uint32_t a, uint32_t b, float t, const std::string& how);
 bool parse_gradient(const std::string& value, const Env& env, uint32_t current, Gradient& out);
 bool parse_shadow_list(const std::string& value, const Env& env, uint32_t current,
                        std::vector<Shadow>& out);

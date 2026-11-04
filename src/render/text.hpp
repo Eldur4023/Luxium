@@ -11,7 +11,9 @@
 #include <span>
 #include <memory>
 #include <string>
+#include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace luxium::render {
@@ -63,6 +65,14 @@ public:
     // sans-serif = Arial, monospace = the system fixed font).
     FaceKey resolve(const std::string& family_list, int weight, bool italic) const;
 
+    // @font-face: `family` now also names this file's face (WOFF/WOFF2/TrueType/OpenType bytes, copied).  A
+    // family with several faces is matched by weight and style like CSS font matching.  False if the bytes
+    // are not a font.  `key` identifies the source (its URL): adding it twice is a no-op, see has_web_face.
+    bool add_web_face(const std::string& family, int weight, bool italic, const std::string& bytes, const std::string& key);
+    // @font-face { src: local(name) }: `family` also names an installed font.
+    bool add_local_alias(const std::string& family, int weight, bool italic, const std::string& installed);
+    bool has_web_face(const std::string& key) const { return web_keys_.count(key) != 0; }
+
     // Stateless-size API for the layout engine: shape at an explicit em.
     ShapedRun shape_at(std::string_view utf8, FaceKey key, float px) const;
     FaceMetrics metrics(FaceKey key, float px) const;
@@ -95,6 +105,11 @@ private:
     std::unique_ptr<Face> var_[3][2][2];       // family, bold, italic (load_dejavu)
     mutable std::vector<std::unique_ptr<Face>> dyn_;                 // faces chosen by resolve()
     mutable std::unordered_map<std::string, int> resolve_cache_;     // "family|weight|italic" -> id
+    struct WebFace { int weight; bool italic; int id; };
+    std::unordered_map<std::string, std::vector<WebFace>> web_;      // lowercase @font-face family -> its faces
+    std::unordered_set<std::string> web_keys_;                       // sources already added
+    std::deque<std::string> web_bytes_;                              // the font files FreeType reads from
+    int web_match(const std::string& family, int weight, bool italic) const;
     mutable std::unordered_map<std::string, int> file_ids_;          // "path#index#flags" -> id
     mutable std::unordered_map<int, std::vector<int>> chain_;        // face -> the later faces of the family list that resolved to it
     mutable std::unordered_map<uint64_t, int> fallback_cache_;       // (cp, base face) -> id

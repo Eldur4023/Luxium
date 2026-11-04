@@ -31,7 +31,8 @@ public:
 
     // The page's author rules, already parsed (Page owns them; they must
     // outlive the Resolver).  Parsed once per page load, not per layout.
-    void set_author_rules(const std::vector<Rule>* rules) { author_ = rules ? rules : &kNoRules; author_idx_.build(*author_); }
+    void set_author_rules(const std::vector<Rule>* rules);   // also reads the @property registrations
+    struct RegisteredProp { std::string name, initial; bool inherits = true; };
 
     void set_viewport(float w, float h) { vw_ = w; vh_ = h; }
     // Query containers measured by the previous layout pass (container-type != normal): content-box size.
@@ -57,6 +58,7 @@ private:
     mutable std::unordered_map<std::string, ComputedStyle> cache_;
     mutable uint32_t next_id_ = 0;
     const RuleIndex& ua_idx_;
+    std::vector<RegisteredProp> registered_;
     float vw_ = 1180, vh_ = 762;
     mutable float root_em_ = 16;
     std::unordered_map<const dom::Node*, Container> containers_;

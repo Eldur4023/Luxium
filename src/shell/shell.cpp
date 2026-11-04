@@ -35,6 +35,7 @@ using namespace luxium::cef_input;
 
 
 Shell::Shell(page::Page& page, ShellConfig cfg) : page_(page), cfg_(std::move(cfg)) {
+    render::set_image_pixel_ratio(scale_);
     app_ = cfg_.app;
     // Clicks on <a href> come back here from the page, whatever the run mode.
     page_.on_navigate = [this](const std::string& href) { navigate_to(href, true); };
@@ -1289,6 +1290,7 @@ void Shell::frame() {
         }
 #endif
         poll_images();
+        if (render::has_animations() && render::advance_animations(SDL_GetTicks64())) need_paint_ = true;   // GIF frames
         page_.tick();          // timers (page.after) fire here, frame-driven
         form_frame();          // text input on/off, caret, file chooser result
         if (anim_active_) page_.page_mutated();   // a transition is running: re-lay out with the next sample
@@ -1401,6 +1403,7 @@ int Shell::screenshot(const std::string& ppm_path) {
             run_shot_event(shot_events_[next_ev++]);
         poll_fetch();   // an http page lands here, and its scripts run in the frames that follow
         poll_images();
+        if (render::has_animations()) render::advance_animations(SDL_GetTicks64());   // GIF frames
         page_.tick();
         form_frame();
         if (anim_active_) page_.page_mutated();

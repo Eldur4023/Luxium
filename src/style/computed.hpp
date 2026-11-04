@@ -19,6 +19,7 @@ namespace luxium::style {
 struct Len {
     float px = 0, pct = 0;
     bool  is_auto = false;
+    unsigned char kw = 0;       // width/height: 1 fit-content, 2 max-content, 3 min-content (with is_auto: other code sees `auto`)
     bool  pct_unit = false;     // written with %, even if 0% (flex-basis: 0% != 0px)
     // min()/max()/clamp() mixing % and px: fn 1 = min(t1,t2), 2 = max(t1,t2), 3 = clamp(t1,t2,t3), t1 = (px,pct)
     unsigned char fn = 0;
@@ -33,7 +34,7 @@ struct Len {
         const float b = px2 + pct2 * base / 100.f, c = px3 + pct3 * base / 100.f;
         return fn == 1 ? std::min(a, b) : fn == 2 ? std::max(a, b) : std::max(a, std::min(b, c));
     }
-    bool operator==(const Len& o) const { return px == o.px && pct == o.pct && is_auto == o.is_auto && fn == o.fn && px2 == o.px2 && pct2 == o.pct2 && px3 == o.px3 && pct3 == o.pct3; }
+    bool operator==(const Len& o) const { return px == o.px && pct == o.pct && is_auto == o.is_auto && kw == o.kw && fn == o.fn && px2 == o.px2 && pct2 == o.pct2 && px3 == o.px3 && pct3 == o.pct3; }
 };
 
 constexpr uint32_t kTransparent = 0x00000000;
@@ -71,6 +72,8 @@ struct GradStop {
 };
 struct Gradient {
     bool radial = false;
+    bool conic = false;      // conic-gradient: stops run clockwise round (cx, cy), `angle` is `from`
+    std::string interp;      // `in <space> [<hue> hue]` of the gradient ("" = sRGB): see mix_in_space
     float angle = 180.f;     // linear, degrees (CSS: 0 = to top)
     int   corner = 0;        // `to top right` & co: 1 TR, 2 BR, 3 BL, 4 TL (angle depends on the box)
     bool  circle = false;    // radial shape
@@ -234,7 +237,9 @@ struct ComputedStyle {
     VerticalAlign vertical_align = VerticalAlign::Baseline;
     Len      vertical_align_len;
     ListStyle list_style = ListStyle::Disc;
+    bool     bg_clip_text = false;     // background-clip: text -- the background shows through the glyphs only
     bool     list_inside = false;
+    std::string list_image;            // list-style-image: url(...) (inherited)
 
     // ── flex ────────────────────────────────────────────────────────────────
     FlexDirection flex_direction = FlexDirection::Row;

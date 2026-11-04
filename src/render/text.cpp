@@ -412,6 +412,54 @@ int Font::face_from_match(void* fc_pattern, int weight, bool italic) const {
     return id;
 }
 
+bool Font::add_web_face(const std::string& family, int weight, bool italic, const std::string& bytes, const std::string& key) {
+    if (web_keys_.count(key)) return true;
+    if (!ft_lib && FT_Init_FreeType(&ft_lib)) return false;
+    web_bytes_.push_back(bytes);   // a deque: the address FreeType holds stays put
+    const std::string& mem = web_bytes_.back();
+    auto face = std::make_unique<Face>();
+    if (FT_New_Memory_Face(ft_lib, reinterpret_cast<const FT_Byte*>(mem.data()), FT_Long(mem.size()), 0, &face->ft) || !FT_IS_SCALABLE(face->ft)) {
+        web_bytes_.pop_back();
+        return false;
+    }
+    face->hb = hb_ft_font_create(face->ft, nullptr);
+    face->buf = hb_buffer_create();
+    face->init_color();
+    // the declared weight/style name this file: nothing is synthesized from it
+    face->req_weight = weight; face->req_italic = italic;
+    dyn_.push_back(std::move(face));
+    const int id = static_cast<int>(dyn_.size()) - 1;
+    web_[lc(family)].push_back({weight, italic, id});
+    web_keys_.insert(key);
+    resolve_cache_.clear();
+    return true;
+}
+
+bool Font::add_local_alias(const std::string& family, int weight, bool italic, const std::string& installed) {
+    const std::string key = "local:" + lc(family) + ":" + std::to_string(weight) + (italic ? "i" : "n") + ":" + lc(installed);
+    if (web_keys_.count(key)) return true;
+    const int id = match_family(installed, false, weight >= 600 ? 700 : 400, italic);
+    if (id < 0) return false;
+    web_[lc(family)].push_back({weight, italic, id});
+    web_keys_.insert(key);
+    resolve_cache_.clear();
+    return true;
+}
+
+// CSS font matching over the faces a family declared: style first (italic wanted -> italic faces), then the
+// nearest weight (wanting >= 500 prefers heavier faces on ties, below prefers lighter), like css-fonts-4.
+int Font::web_match(const std::string& family, int weight, bool italic) const {
+    const auto it = web_.find(lc(family));
+    if (it == web_.end() || it->second.empty()) return -1;
+    int best = -1, best_score = 1 << 30;
+    for (const WebFace& f : it->second) {
+        int score = (f.italic == italic ? 0 : 100000) + std::abs(f.weight - weight) * 2;
+        if (weight >= 500 ? f.weight < weight : f.weight > weight) score += 1;   // the other direction loses a tie
+        if (score < best_score) { best_score = score; best = f.id; }
+    }
+    return best;
+}
+
 int Font::fallback_for(uint32_t cp, FaceKey base) const {
     const uint64_t k = (static_cast<uint64_t>(cp) << 20) | static_cast<uint64_t>(base.id & 0xFFFFF);
     auto it = fallback_cache_.find(k);
@@ -502,7 +550,7 @@ int Font::match_family(const std::string& name, bool accept_any, int weight, boo
 }
 
 FaceKey Font::resolve(const std::string& family_list, int weight, bool italic) const {
-    const std::string key = family_list + "|" + std::to_string(weight >= 600 ? 700 : weight >= 500 ? 500 : 400) +
+    const std::string key = family_list + "|" + std::to_string(!web_.empty() ? weight : weight >= 600 ? 700 : weight >= 500 ? 500 : 400) +
                             (italic ? "i" : "n");
     auto it = resolve_cache_.find(key);
     if (it != resolve_cache_.end()) return {it->second};
@@ -529,7 +577,8 @@ FaceKey Font::resolve(const std::string& family_list, int weight, bool italic) c
         else if (l == "monospace" || l == "ui-monospace") { q = "Monospace"; any = true; }
         else if (l == "cursive") { q = "Comic Sans MS"; any = true; }
         else if (l == "fantasy") { q = "Impact"; any = true; }
-        const int m = match_family(q, any, w, italic);
+        int m = web_match(name, weight, italic);   // an @font-face of the page wins over an installed font of the same name
+        if (m < 0) m = match_family(q, any, w, italic);
         if (m < 0) continue;
         if (found < 0) found = m;
         else if (m != found && std::find(chain.begin(), chain.end(), m) == chain.end()) chain.push_back(m);

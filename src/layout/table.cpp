@@ -341,7 +341,26 @@ void layout_table(Env& env, Box& b, const Constraint& c) {
         float mw = s.max_width.px; if (s.box_sizing == style::BoxSizing::Content) mw += bp_h;
         table_w = std::max(sum_min + spacing_w + bp_h, std::min(table_w, mw));
     }
-    assign_widths(cols, table_w - bp_h - spacing_w, width_set);
+    if (s.table_fixed && width_set) {
+        // table-layout: fixed -- the first row (or <col>) names the widths, content never moves them; what is
+        // not named is shared out equally, and any extra goes evenly to every column
+        const size_t n = size_t(m.cols);
+        std::vector<float> wv(n, -1);
+        for (size_t i = 0; i < n; ++i) if (m.col_fixed[i] >= 0) wv[i] = m.col_fixed[i];
+        for (const Cell& ce : m.cells)
+            if (ce.r == 0 && ce.cs == 1 && ce.spec >= 0 && wv[ce.c] < 0) wv[ce.c] = ce.spec;
+        const float avail_cols = std::max(0.f, table_w - bp_h - spacing_w);
+        float named = 0; int autos = 0;
+        for (float v : wv) { if (v >= 0) named += v; else ++autos; }
+        cols.w.assign(n, 0);
+        if (autos > 0) {
+            const float each = std::max(0.f, avail_cols - named) / float(autos);
+            for (size_t i = 0; i < n; ++i) cols.w[i] = wv[i] >= 0 ? wv[i] : each;
+        } else {
+            const float extra = n ? std::max(0.f, avail_cols - named) / float(n) : 0.f;
+            for (size_t i = 0; i < n; ++i) cols.w[i] = wv[i] + extra;
+        }
+    } else assign_widths(cols, table_w - bp_h - spacing_w, width_set);
     // the table is exactly as wide as its columns when auto-sized
     if (!width_set) {
         float sum = 0;

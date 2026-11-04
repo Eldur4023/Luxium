@@ -17,6 +17,7 @@ struct ImageBitmap {
     std::vector<uint8_t> rgba;  // 4 bytes por pixel, alfa recta: solo si la imagen trae alfa (PNG/WebP/SVG)
     // SVG: the bitmap is the rasterisation at the intrinsic size (rgba always set); `svg` re-rasterises at any size
     std::shared_ptr<const svg::Doc> svg;
+    bool animated = false;      // GIF with frames: the pixels change under the pointer (see advance_animations)
 };
 
 // A vector image drawn at w x h pixels (cached), or null when `bm` is not an SVG.
@@ -25,6 +26,18 @@ std::shared_ptr<const ImageBitmap> image_at(const ImageBitmap& bm, int w, int h)
 // A page's image reference -> what load_image() takes: an absolute file path, or an http(s) URL when the
 // page itself came over http ("/api/x" resolves against its origin, "x" against its directory).
 std::string resolve_image(const std::string& base_dir, const std::string& src);
+
+// Raw bytes of a resource a page references (a font, say): 1 = in `out`, 0 = on its way over the network
+// (image_generation() changes when it lands), -1 = failed.  Files, data: URLs and http(s) like images.
+int fetch_resource(const std::string& path, std::string& out);
+
+// Animated pictures (GIF): moves each one to the frame due at `now_ms`; true when any changed (the shell repaints).
+bool advance_animations(uint64_t now_ms);
+bool has_animations();
+
+// Device pixels per CSS pixel the page is drawn at (the shell's scale): srcset picks a file for it.
+float image_pixel_ratio();
+void set_image_pixel_ratio(float r);
 
 // Bumped whenever a network image finishes (success or failure): the shell relayouts when it changes.
 uint64_t image_generation();

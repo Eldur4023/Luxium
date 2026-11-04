@@ -431,6 +431,17 @@ void layout_box(Env& env, Box& b, const Constraint& c) {
         if (!w_auto) {
             const float v = resolve_len(s.width, c.cb_w);
             content_w = bb ? std::max(0.f, v - bp_h) : v;
+        } else if (s.width.kw) {   // fit-content / max-content / min-content on a block: sized by its content
+            const Intrinsic in = intrinsic_widths(env, b);
+            const float avail = std::max(0.f, c.cb_w - b.margin.h() - bp_h);
+            content_w = s.width.kw == 2 ? in.max : s.width.kw == 3 ? in.min : std::min(std::max(in.min, avail), in.max);
+            content_w = std::max(0.f, minmax_w(content_w));
+        } else if (s.aspect_ratio > 0 && !s.height.is_auto && !(s.height.has_pct() && c.cb_h < 0) && (c.shrink || s.float_ != style::Float::None)) {
+            // aspect-ratio with a definite height and an auto width that would shrink to fit: width follows the height
+            const float hv = resolve_len(s.height, c.cb_h);
+            const float h_border = bb ? hv : hv + bp_v;
+            content_w = std::max(0.f, h_border * s.aspect_ratio - bp_h);
+            content_w = std::max(0.f, minmax_w(content_w));
         } else if (c.shrink) {
             const Intrinsic in = intrinsic_widths(env, b);
             const float avail = std::max(0.f, (c.avail_w >= 0 ? c.avail_w : c.cb_w) - b.margin.h() - bp_h);
@@ -566,10 +577,13 @@ void resolve_abs(Env& env, Box* container, size_t from) {
 
         Constraint c;
         c.cb_w = cb_w; c.cb_h = cb_h;
-        const bool w_auto = s.width.is_auto;
-        const bool h_auto = s.height.is_auto;
+        const bool w_auto = s.width.is_auto && !s.width.kw;     // fit-content & co: sized by content, so not "stretched"
+        const bool h_auto = s.height.is_auto && !s.height.kw;
         float mar_l = a->margin.l, mar_r = a->margin.r;
-        if (w_auto) {
+        if (s.width.kw) {   // shrink to fit what is left between the insets
+            c.shrink = true;
+            c.avail_w = std::max(0.f, cb_w - (L ? l : 0) - (R ? r : 0) - mar_l - mar_r);
+        } else if (w_auto) {
             if (L && R) c.forced_w = std::max(0.f, cb_w - l - r - mar_l - mar_r);
             else {
                 c.shrink = true;

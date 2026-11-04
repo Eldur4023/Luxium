@@ -73,12 +73,15 @@ struct LineBox {
 // A form control drawn by the engine itself (<input>, <textarea>, <select>): the box is a replaced
 // element whose intrinsic size comes from the font, and the paint pass draws its text/glyphs.
 struct Control {
-    enum class Type { Text, Password, Textarea, Select, Checkbox, Radio, Range, File } type = Type::Text;
+    enum class Type { Text, Password, Textarea, Select, Checkbox, Radio, Range, File, Progress, Meter, Color } type = Type::Text;
     std::string text;                   // value / selected option / file name; "" when empty
     std::string placeholder;
     bool checked = false, disabled = false, readonly = false;
     int size = 20, cols = 20, rows = 2; // text: size attr; textarea: cols/rows
-    float frac = 0;                     // range: position 0..1
+    float frac = 0;                     // range / progress / meter: position 0..1
+    bool  indeterminate = false;        // progress without a value
+    int   meter_state = 0;              // meter: 0 in the optimum region, 1 sub-optimal, 2 far from it
+    uint32_t color = 0xFF000000;        // input type=color
     std::vector<std::string> options;   // select: option labels (popup)
     int selected = 0;                   // select: index into options
     bool multi = false;

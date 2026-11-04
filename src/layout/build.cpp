@@ -168,8 +168,106 @@ struct Builder {
         adopt(into, std::move(b));
     }
 
+    static std::string trim_ws(const std::string& s) {
+        const size_t a = s.find_first_not_of(" \t\r\n"), z = s.find_last_not_of(" \t\r\n");
+        return a == std::string::npos ? std::string() : s.substr(a, z - a + 1);
+    }
+
+    // `sizes` -> the slot's width in CSS px: the first entry whose media condition holds (or the last, bare one).
+    float slot_width(const std::string& sizes) const {
+        const float vw = res.viewport_w();
+        size_t from = 0;
+        while (from <= sizes.size()) {
+            size_t comma = sizes.find(',', from);   // (a lazy split: a comma inside a media condition is rare)
+            if (comma == std::string::npos) comma = sizes.size();
+            std::string ent = trim_ws(sizes.substr(from, comma - from));
+            from = comma + 1;
+            if (ent.empty()) continue;
+            std::string cond;
+            if (ent[0] == '(') {   // (media-condition) <length>
+                int depth = 0; size_t i = 0;
+                for (; i < ent.size(); ++i) { if (ent[i] == '(') ++depth; else if (ent[i] == ')' && --depth == 0) break; }
+                cond = ent.substr(0, i + 1);
+                ent = trim_ws(ent.substr(std::min(i + 1, ent.size())));
+                if (!style::media_matches(cond, vw, res.viewport_h())) continue;
+            }
+            char* end = nullptr;
+            const float n = std::strtof(ent.c_str(), &end);
+            const std::string unit = end ? std::string(end) : "";
+            if (unit == "vw") return n * vw / 100.f;
+            if (unit == "px" || unit.empty()) return n;
+            if (unit == "em" || unit == "rem") return n * 16.f;
+            return vw;   // calc() and friends: the viewport
+        }
+        return vw;
+    }
+
+    // srcset="a.jpg 1x, b.jpg 2x" / "a.jpg 480w, b.jpg 800w" (+ sizes): the file to fetch for this display.
+    std::string pick_srcset(const std::string& srcset, const std::string& sizes) const {
+        struct Cand { std::string url; float density; };
+        std::vector<Cand> cands;
+        const float slot = sizes.empty() ? res.viewport_w() : slot_width(sizes);
+        size_t from = 0;
+        while (from < srcset.size()) {
+            size_t comma = srcset.find(',', from);
+            // a data: URL holds a comma of its own: a candidate ends at a comma followed by whitespace
+            while (comma != std::string::npos && comma + 1 < srcset.size() && !std::isspace(static_cast<unsigned char>(srcset[comma + 1])) &&
+                   srcset.compare(from, 5, "data:") == 0)
+                comma = srcset.find(',', comma + 1);
+            if (comma == std::string::npos) comma = srcset.size();
+            const std::string ent = trim_ws(srcset.substr(from, comma - from));
+            from = comma + 1;
+            if (ent.empty()) continue;
+            const size_t sp = ent.find_last_of(" \t");
+            std::string url = ent, desc;
+            if (sp != std::string::npos && (ent.back() == 'x' || ent.back() == 'w')) { url = trim_ws(ent.substr(0, sp)); desc = ent.substr(sp + 1); }
+            float d = 1.f;
+            if (!desc.empty()) {
+                const float n = std::strtof(desc.c_str(), nullptr);
+                if (n > 0) d = desc.back() == 'w' ? n / std::max(1.f, slot) : n;
+            }
+            cands.push_back({url, d});
+        }
+        if (cands.empty()) return {};
+        const float want = render::image_pixel_ratio();
+        const Cand* best = nullptr;
+        for (const auto& c : cands)   // the smallest file that is sharp enough, else the sharpest there is
+            if (c.density >= want && (!best || c.density < best->density)) best = &c;
+        if (!best) for (const auto& c : cands) if (!best || c.density > best->density) best = &c;
+        return best->url;
+    }
+
+    static bool image_type_known(std::string t) {
+        for (char& c : t) c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (t.empty()) return true;
+        for (const char* k : {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif", "image/svg+xml", "image/bmp", "image/x-icon", "image/vnd.microsoft.icon", "image/avif"})
+            if (t == k) return true;
+        return false;
+    }
+
+    // The URL an <img> draws: the first <picture><source> that matches (media, type), else srcset, else src.
+    std::string image_source(const dom::Node& el) const {
+        const dom::Node* pic = el.parent && el.parent->is_element("picture") ? el.parent : nullptr;
+        if (pic) {
+            for (const auto& c : pic->children) {
+                if (c.get() == &el) break;
+                if (!c->is_element("source")) continue;
+                const std::string media = c->attr_or("media");
+                if (!media.empty() && !style::media_matches(media, res.viewport_w(), res.viewport_h())) continue;
+                if (!image_type_known(c->attr_or("type"))) continue;
+                const std::string url = pick_srcset(c->attr_or("srcset"), c->attr_or("sizes"));
+                if (!url.empty()) return url;
+            }
+        }
+        if (el.has_attr("srcset")) {
+            const std::string url = pick_srcset(el.attr_or("srcset"), el.attr_or("sizes"));
+            if (!url.empty()) return url;
+        }
+        return el.attr_or("src");
+    }
+
     void load_replaced(Box& b, const dom::Node& el) {
-        const std::string src = el.attr_or("src");
+        const std::string src = el.name == "img" ? image_source(el) : el.attr_or("src");
         if (src.empty()) {
             b.broken_img = true;
             return;
@@ -259,6 +357,12 @@ struct Builder {
                 c->frac = hi > lo ? float(std::clamp((v - lo) / (hi - lo), 0.0, 1.0)) : 0.f;
             }
             else if (ty == "file") { c->type = Control::Type::File; c->text = el.attr_or("data-files"); }
+            else if (ty == "color") {
+                c->type = Control::Type::Color;
+                uint32_t col = 0xFF000000u; bool cur = false;
+                if (!style::parse_color(el.has_attr("value") ? el.attr_or("value") : std::string("#000000"), col, &cur)) col = 0xFF000000u;
+                c->color = col | 0xFF000000u;
+            }
             else if (ty == "password") c->type = Control::Type::Password;
         } else if (tag == "textarea") {
             c->type = Control::Type::Textarea;
@@ -328,9 +432,57 @@ struct Builder {
         if (tag == "input" || tag == "textarea" || tag == "select") {
             if (build_control(el, st, into)) return;
         }
+        if (tag == "progress" || tag == "meter") {
+            auto c = std::make_shared<Control>();
+            auto num = [&](const char* k, double def) { return el.has_attr(k) ? std::atof(el.attr_or(k).c_str()) : def; };
+            if (tag == "progress") {
+                c->type = Control::Type::Progress;
+                const double mx = std::max(1e-9, num("max", 1));
+                c->indeterminate = !el.has_attr("value");
+                c->frac = float(std::clamp(num("value", 0) / mx, 0.0, 1.0));
+            } else {
+                c->type = Control::Type::Meter;
+                const double lo = num("min", 0), hi = std::max(lo, num("max", 1)), v = std::clamp(num("value", 0), lo, hi);
+                const double low = std::clamp(num("low", lo), lo, hi), high = std::clamp(num("high", hi), lo, hi);
+                const double opt = std::clamp(num("optimum", (lo + hi) / 2), lo, hi);
+                c->frac = hi > lo ? float((v - lo) / (hi - lo)) : 0.f;
+                // optimum in the low / middle / high third decides which end is "good"
+                const int region_v = v < low ? 0 : v > high ? 2 : 1, region_o = opt < low ? 0 : opt > high ? 2 : 1;
+                c->meter_state = region_v == region_o ? 0 : std::abs(region_v - region_o) == 1 ? 1 : 2;
+            }
+            auto b = make(Box::Kind::Replaced, &el, st);
+            b->ctl = std::move(c);
+            adopt(into, std::move(b));
+            return;
+        }
         if (tag == "img") {
             b = make(Box::Kind::Replaced, &el, st);
             load_replaced(*b, el);
+            adopt(into, std::move(b));
+            return;
+        }
+        if (tag == "object" || tag == "embed") {   // a picture: like <img>; anything else shows the element's fallback content
+            std::string src = el.attr_or(tag == "object" ? "data" : "src");
+            std::string type = lower_attr(el, "type");
+            std::string path = src.substr(0, src.find_first_of("?#"));
+            for (char& c : path) c = char(std::tolower(static_cast<unsigned char>(c)));
+            auto ends = [&](const char* e) { const std::string x = e; return path.size() >= x.size() && path.compare(path.size() - x.size(), x.size(), x) == 0; };
+            const bool image = type.starts_with("image/") || ends(".png") || ends(".jpg") || ends(".jpeg") || ends(".gif") ||
+                               ends(".webp") || ends(".svg") || ends(".bmp") || ends(".ico") || ends(".avif");
+            if (image && !src.empty()) {
+                b = make(Box::Kind::Replaced, &el, st);
+                const render::ImageBitmap* bm = render::load_image(render::resolve_image(base_dir, src));
+                if (bm) {
+                    b->img = std::shared_ptr<const render::ImageBitmap>(bm, [](const render::ImageBitmap*) {});
+                    b->nat_w = float(bm->w); b->nat_h = float(bm->h);
+                } else b->broken_img = true;
+                adopt(into, std::move(b));
+                return;
+            }
+        }
+        if (tag == "iframe") {   // no browsing context: the frame's box (300x150 unless sized), empty
+            b = make(Box::Kind::Replaced, &el, st);
+            b->nat_w = 300; b->nat_h = 150; b->no_ratio = true;
             adopt(into, std::move(b));
             return;
         }
@@ -387,6 +539,14 @@ struct Builder {
             case LS::Circle: mk->marker_shape = 2; break;
             case LS::Square: mk->marker_shape = 3; break;
             default: mk->text = style::counter_text(n, st->list_style) + ". "; break;
+            }
+            if (mk && !st->list_image.empty()) {   // list-style-image: the picture instead of the bullet (or the number)
+                if (const render::ImageBitmap* bm = render::load_image(render::resolve_image(base_dir, st->list_image))) {
+                    mk->marker_shape = 0;
+                    mk->text.clear();
+                    mk->img = std::shared_ptr<const render::ImageBitmap>(bm, [](const render::ImageBitmap*) {});
+                    mk->nat_w = float(bm->w); mk->nat_h = float(bm->h);
+                }
             }
             if (mk) adopt(*b, std::move(mk));
         }

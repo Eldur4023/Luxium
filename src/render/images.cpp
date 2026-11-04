@@ -3,6 +3,7 @@
 // cotidiana; lo exotico (16 bits, entrelazado) falla con elegancia.
 #include "render/images.hpp"
 #include "render/svg.hpp"
+#include "media/image_decode.hpp"
 
 #include <page/bundle.hpp>
 
@@ -139,6 +140,62 @@ ImageBitmap* decode_webp(const std::vector<uint8_t>& data, bool want_rgba) {
     }
     if (want_rgba && alpha) bm->rgba.assign(px, px + size_t(w) * h * 4);
     WebPFree(px);
+    return bm;
+}
+
+// Anything else FFmpeg knows as a still picture (GIF, BMP, ICO, TIFF, AVIF...): the first frame.
+struct Anim {
+    ImageBitmap* bm = nullptr;
+    std::vector<std::vector<uint8_t>> frames;   // RGBA
+    std::vector<int> delays;                     // ms
+    size_t cur = 0;
+    uint64_t next_ms = 0;
+    bool alpha = false;
+};
+std::mutex g_anim_m;
+std::vector<Anim> g_anims;
+
+// Puts frame `i` of the animation into its bitmap (rgb composed over white; rgba too when the picture has holes).
+void show_frame(Anim& a, size_t i) {
+    const auto& px = a.frames[i];
+    const size_t n = size_t(a.bm->w) * a.bm->h;
+    a.bm->rgb.resize(n * 3);
+    for (size_t k = 0; k < n; ++k) {
+        const int al = px[k * 4 + 3];
+        for (int c = 0; c < 3; ++c) a.bm->rgb[k * 3 + c] = uint8_t((px[k * 4 + c] * al + 255 * (255 - al)) / 255);
+    }
+    if (a.alpha) a.bm->rgba = px; else a.bm->rgba.clear();
+}
+
+ImageBitmap* decode_ffmpeg(const std::vector<uint8_t>& data) {
+    int w = 0, h = 0;
+    if (data.size() > 6 && std::memcmp(data.data(), "GIF8", 4) == 0) {   // an animated GIF keeps all its frames
+        Anim a;
+        if (media::decode_animation(data.data(), data.size(), w, h, a.frames, a.delays)) {
+            a.bm = new ImageBitmap();
+            a.bm->w = w; a.bm->h = h; a.bm->animated = true;
+            for (const auto& f : a.frames) { for (size_t k = 3; k < f.size() && !a.alpha; k += 4) a.alpha = f[k] != 255; if (a.alpha) break; }
+            show_frame(a, 0);
+            a.next_ms = a.delays[0];
+            ImageBitmap* bm = a.bm;
+            std::lock_guard<std::mutex> lk(g_anim_m);
+            g_anims.push_back(std::move(a));
+            return bm;
+        }
+    }
+    std::vector<uint8_t> rgb, rgba;
+    if (!media::decode_still_image(data.data(), data.size(), w, h, rgb, rgba)) return nullptr;
+    auto* bm = new ImageBitmap();
+    bm->w = w; bm->h = h;
+    if (rgba.empty()) { bm->rgb = std::move(rgb); return bm; }
+    bm->rgb.resize(size_t(w) * h * 3);
+    bool alpha = false;
+    for (size_t i = 0; i < size_t(w) * h; ++i) {
+        const int a = rgba[i * 4 + 3];
+        alpha |= a != 255;
+        for (int c = 0; c < 3; ++c) bm->rgb[i * 3 + c] = uint8_t((rgba[i * 4 + c] * a + 255 * (255 - a)) / 255);
+    }
+    if (alpha) bm->rgba = std::move(rgba);
     return bm;
 }
 
@@ -287,7 +344,7 @@ const ImageBitmap* decode(const std::string& path, bool want_rgba = false, bool*
         return decode_webp(data, want_rgba);
 
     static const uint8_t kSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
-    if (data.size() < 57 || std::memcmp(data.data(), kSig, 8) != 0) return nullptr;
+    if (data.size() < 57 || std::memcmp(data.data(), kSig, 8) != 0) return decode_ffmpeg(data);
 
     uint32_t w = 0, h = 0;
     int channels = 0, depth = 0, interlace = 0;
@@ -383,6 +440,45 @@ uint64_t image_generation() { return g_generation.load(); }
 
 std::shared_ptr<const ImageBitmap> image_at(const ImageBitmap& bm, int w, int h) {
     return bm.svg ? svg::raster(bm.svg, w, h) : nullptr;
+}
+
+static std::atomic<float> g_pixel_ratio{1.f};
+float image_pixel_ratio() { return g_pixel_ratio.load(); }
+void set_image_pixel_ratio(float r) { g_pixel_ratio.store(r > 0 ? r : 1.f); }
+
+bool advance_animations(uint64_t now_ms) {
+    std::lock_guard<std::mutex> lk(g_anim_m);
+    bool changed = false;
+    for (Anim& a : g_anims) {
+        if (a.next_ms == 0) a.next_ms = now_ms + a.delays[a.cur];
+        size_t guard = 0;
+        while (now_ms >= a.next_ms && guard++ < a.frames.size()) {
+            a.cur = (a.cur + 1) % a.frames.size();
+            a.next_ms += uint64_t(a.delays[a.cur]);
+            changed = true;
+        }
+        if (changed && guard) show_frame(a, a.cur);
+        if (now_ms >= a.next_ms) a.next_ms = now_ms + uint64_t(a.delays[a.cur]);   // a long stall: do not catch up frame by frame
+    }
+    return changed;
+}
+
+bool has_animations() {
+    std::lock_guard<std::mutex> lk(g_anim_m);
+    return !g_anims.empty();
+}
+
+int fetch_resource(const std::string& path, std::string& out) {
+    if (is_http(path)) {
+        std::string got;
+        const int st = net_bytes(path, got);
+        if (st == 1) out = std::move(got);
+        return st;
+    }
+    std::optional<std::string> bytes = path.starts_with("data:") ? data_url_bytes(path) : bundle::read_file(path);
+    if (!bytes) return -1;
+    out = std::move(*bytes);
+    return 1;
 }
 
 std::string resolve_image(const std::string& base_dir, const std::string& src) {

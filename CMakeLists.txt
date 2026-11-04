@@ -79,13 +79,13 @@ target_compile_options(lux_script PRIVATE -w)   # vendored code: Lux owns its wa
 
 # The engine (src/media) is a static lib shared by the browser and the self-test.
 if(LUXIUM_MEDIA)
-    add_library(luxium_media STATIC src/media/player.cpp src/media/own_media.cpp)
+    add_library(luxium_media STATIC src/media/player.cpp src/media/own_media.cpp src/media/image_decode.cpp)
     set_target_properties(luxium_media PROPERTIES POSITION_INDEPENDENT_CODE ON)   # also linked into the Chromium plugin
     target_include_directories(luxium_media PUBLIC src ${FFMPEG_INCLUDE_DIR} ${SDL2_INCLUDE_DIRS})
     target_link_libraries(luxium_media PUBLIC ${FFMPEG_LIBS} ${SDL2_LIBRARIES} pthread)
     target_compile_options(luxium_media PRIVATE -Wall -Wextra)
 else()
-    add_library(luxium_media STATIC src/media/player_stub.cpp src/media/own_media_stub.cpp)
+    add_library(luxium_media STATIC src/media/player_stub.cpp src/media/own_media_stub.cpp src/media/image_decode_stub.cpp)
     target_include_directories(luxium_media PUBLIC src)
 endif()
 add_executable(luxium_mediatest src/media/mediatest.cpp)
@@ -123,6 +123,7 @@ add_executable(luxium
     src/layout/table.cpp
     src/layout/paint.cpp
     src/layout/layout.cpp
+    src/layout/frame.cpp
     src/layout/media_ui.cpp
     src/layout/controls.cpp
     src/paint/raster.cpp
@@ -201,6 +202,6 @@ add_executable(luxium_headless
     src/page/luxp.cpp
 )
 target_include_directories(luxium_headless PRIVATE src)
-target_link_libraries(luxium_headless PRIVATE lux_script ZLIB::ZLIB ${CURL_LIBRARIES})
+target_link_libraries(luxium_headless PRIVATE lux_script luxium_media ZLIB::ZLIB ${CURL_LIBRARIES})
 target_include_directories(luxium_headless PRIVATE ${CURL_INCLUDE_DIRS})
 target_compile_definitions(luxium_headless PRIVATE LUXP_ZLIB=1)

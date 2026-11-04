@@ -1,4 +1,5 @@
 #include "style/properties.hpp"
+#include "style/stylesheet.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -6,6 +7,8 @@
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
+
+namespace luxium::render { float image_pixel_ratio(); }
 
 namespace luxium::style {
 
@@ -380,6 +383,35 @@ bool parse_bg_layer(const Tokens& t, const Env& env, uint32_t current, BgLayer& 
             if (!u.empty() && (u.front() == '"' || u.front() == '\'')) u = u.substr(1);
             if (!u.empty() && (u.back() == '"' || u.back() == '\'')) u.pop_back();
             L.kind = BgLayer::Kind::Url; L.url = u;
+        } else if (w.starts_with("image-set(") || w.starts_with("-webkit-image-set(")) {
+            // image-set(url(a.png) 1x, "b.png" 2x): the smallest candidate sharp enough for this display
+            const size_t open = t[i].find('(');
+            const size_t close = t[i].rfind(')');
+            if (close == std::string::npos || close <= open) return false;
+            const float want = luxium::render::image_pixel_ratio();
+            std::string best; float best_d = 0;
+            for (const std::string& cand : split_commas(t[i].substr(open + 1, close - open - 1))) {
+                std::string c = trim_ws(cand), u; float d = 1.f;
+                if (c.starts_with("url(")) {
+                    const size_t e = c.find(')');
+                    if (e == std::string::npos) continue;
+                    u = trim_ws(c.substr(4, e - 4));
+                    c = trim_ws(c.substr(e + 1));
+                } else if (!c.empty() && (c[0] == '"' || c[0] == '\'')) {
+                    const size_t e = c.find(c[0], 1);
+                    if (e == std::string::npos) continue;
+                    u = c.substr(0, e + 1);
+                    c = trim_ws(c.substr(e + 1));
+                } else continue;
+                if (!u.empty() && (u.front() == '"' || u.front() == '\'')) u = u.substr(1);
+                if (!u.empty() && (u.back() == '"' || u.back() == '\'')) u.pop_back();
+                if (!c.empty() && c.back() == 'x') d = std::strtof(c.c_str(), nullptr);
+                if (d <= 0) d = 1.f;
+                const bool sharp = d >= want, best_sharp = best_d >= want;
+                if (best.empty() || (sharp && (!best_sharp || d < best_d)) || (!sharp && !best_sharp && d > best_d)) { best = u; best_d = d; }
+            }
+            if (best.empty()) return false;
+            L.kind = BgLayer::Kind::Url; L.url = best;
         } else if (w.find("gradient(") != std::string::npos) {
             L.kind = BgLayer::Kind::Gradient;
             if (!parse_gradient(t[i], env, current, L.grad)) return false;
@@ -491,12 +523,79 @@ bool property_inherits(const std::string& n) {
     static const std::unordered_set<std::string> inh = {
         "color", "font-size", "font-weight", "font-style", "font-family", "font", "line-height",
         "text-align", "text-transform", "letter-spacing", "word-spacing", "text-indent", "white-space",
-        "visibility", "cursor", "list-style", "list-style-type", "list-style-position", "border-collapse",
+        "visibility", "cursor", "list-style", "list-style-type", "list-style-position", "list-style-image", "border-collapse",
         "border-spacing", "overflow-wrap", "word-wrap", "word-break", "pointer-events", "text-decoration-color", "accent-color", "text-shadow"};
     return inh.count(n) > 0;
 }
 
+namespace {
+
+// Logical properties for horizontal-tb / ltr: inline = left/right, block = top/bottom.  Returns true (and the
+// physical declarations) when `name` is one of them.
+bool expand_logical(const std::string& name, const std::string& value, std::vector<std::pair<std::string, std::string>>& out) {
+    struct Ax { const char* inline_start; const char* inline_end; const char* block_start; const char* block_end; };
+    auto two = [&](const char* a, const char* b) {   // "x" or "x y" -> a gets x, b gets y (or x)
+        const auto t = tokens(value);
+        if (t.empty() || t.size() > 2) return false;
+        out.emplace_back(a, t[0]);
+        out.emplace_back(b, t.size() == 2 ? t[1] : t[0]);
+        return true;
+    };
+    static const std::vector<std::pair<std::string, std::string>> kSize = {
+        {"inline-size", "width"}, {"block-size", "height"}, {"min-inline-size", "min-width"}, {"min-block-size", "min-height"},
+        {"max-inline-size", "max-width"}, {"max-block-size", "max-height"}};
+    for (const auto& [l, p] : kSize) if (name == l) { out.emplace_back(p, value); return true; }
+    if (name == "overflow-inline") { out.emplace_back("overflow-x", value); return true; }
+    if (name == "overflow-block") { out.emplace_back("overflow-y", value); return true; }
+    static const std::pair<const char*, const char*> kCorner[] = {
+        {"border-start-start-radius", "border-top-left-radius"}, {"border-start-end-radius", "border-top-right-radius"},
+        {"border-end-start-radius", "border-bottom-left-radius"}, {"border-end-end-radius", "border-bottom-right-radius"}};
+    for (const auto& [l, p] : kCorner) if (name == l) { out.emplace_back(p, value); return true; }
+
+    // <prefix>-(inline|block)[-start|-end][-<suffix>]
+    for (const std::string prefix : {"margin", "padding", "inset", "border", "scroll-margin", "scroll-padding"}) {
+        if (!name.starts_with(prefix + "-inline") && !name.starts_with(prefix + "-block")) continue;
+        const bool inl = name.compare(prefix.size() + 1, 6, "inline") == 0;
+        std::string rest = name.substr(prefix.size() + 1 + (inl ? 6 : 5));   // "", "-start", "-end", "-width", "-start-width"...
+        std::string edge;                                                      // "", start, end
+        if (rest.starts_with("-start")) { edge = "start"; rest = rest.substr(6); }
+        else if (rest.starts_with("-end")) { edge = "end"; rest = rest.substr(4); }
+        const char* first = inl ? "left" : "top";
+        const char* last = inl ? "right" : "bottom";
+        auto phys = [&](const char* side) {
+            if (prefix == "inset") return std::string(side);
+            if (prefix == "border") return "border-" + std::string(side) + rest;           // border-left, border-left-width
+            return prefix + "-" + side;
+        };
+        if (prefix == "inset" && !rest.empty()) return false;
+        if (prefix != "border" && !rest.empty()) return false;
+        if (edge.empty()) {   // both edges: one value or two
+            if (prefix == "border" && rest.empty()) {   // border-inline: width style color -> both sides
+                out.emplace_back(phys(first), value);
+                out.emplace_back(phys(last), value);
+                return true;
+            }
+            return two(phys(first).c_str(), phys(last).c_str()) ? true : false;
+        }
+        out.emplace_back(phys(edge == "start" ? first : last), value);
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
 bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, const std::string& raw0) {
+    if (name == "-webkit-background-clip") return apply_property(s, env, "background-clip", raw0);
+    if (name.find("-inline") != std::string::npos || name.find("-block") != std::string::npos ||
+        name.ends_with("-size") || name.starts_with("border-start-") || name.starts_with("border-end-") || name.starts_with("overflow-in") || name.starts_with("overflow-bl")) {
+        std::vector<std::pair<std::string, std::string>> phys;
+        if (expand_logical(name, raw0, phys)) {
+            bool any = false;
+            for (const auto& [n, v] : phys) any = apply_property(s, env, n, v) || any;
+            return any;
+        }
+    }
     // color-mix(... currentColor ...): the mix needs the value, so it is spelled out (for `color` itself this is
     // still the inherited colour, as the spec wants)
     std::string mixed;
@@ -622,6 +721,7 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
             v == "-webkit-fill-available" || v == "stretch") {
             if (is_min) l = Len::Px(0); else l = Len::Auto();
             if (is_max && v != "none") l = Len::Auto();
+            if (name == "width" || name == "height") l.kw = v == "fit-content" ? 1 : v == "max-content" ? 2 : v == "min-content" ? 3 : 0;   // sized by content
         } else {
             if (!parse_length(v, env, l)) return false;
             if (l.px < 0 && !l.has_pct()) return false;
@@ -781,7 +881,10 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
     if (name == "background-repeat" || name == "background-position" || name == "background-size" ||
         name == "background-clip" || name == "background-origin" || name == "background-attachment") {
         if (name == "background-clip" || name == "background-origin" || name == "background-attachment") {
-            if (name == "background-clip") for (auto& L : s.bg) L.clip_padding = v.find("padding-box") != std::string::npos;
+            if (name == "background-clip") {
+                s.bg_clip_text = v.find("text") != std::string::npos;
+                for (auto& L : s.bg) L.clip_padding = v.find("padding-box") != std::string::npos;
+            }
             return true;
         }
         const auto items = split_commas(v);
@@ -1061,10 +1164,25 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         s.vertical_align = VerticalAlign::Length; s.vertical_align_len = l;
         return true;
     }
+    if (name == "list-style-image") {
+        if (v == "none") { s.list_image.clear(); return true; }
+        if (!v.starts_with("url(")) return false;
+        std::string u = trim_ws(raw.substr(raw.find('(') + 1, raw.rfind(')') - raw.find('(') - 1));
+        if (!u.empty() && (u.front() == '"' || u.front() == '\'')) u = u.substr(1);
+        if (!u.empty() && (u.back() == '"' || u.back() == '\'')) u.pop_back();
+        s.list_image = u;
+        return true;
+    }
     if (name == "list-style" || name == "list-style-type" || name == "list-style-position") {
         for (const auto& tk : t) {
             if (tk == "inside") s.list_inside = true;
             else if (tk == "outside") s.list_inside = false;
+            else if (tk.starts_with("url(") && name == "list-style") {
+                std::string u = trim_ws(tk.substr(4, tk.size() - 5));
+                if (!u.empty() && (u.front() == '"' || u.front() == '\'')) u = u.substr(1);
+                if (!u.empty() && (u.back() == '"' || u.back() == '\'')) u.pop_back();
+                s.list_image = u;
+            }
             else if (name != "list-style-position" && !tk.starts_with("url(")) set_list_style(s, tk, ok);
         }
         return ok;
@@ -1180,9 +1298,9 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         if (v == "none") return true;
         size_t i = 0;
         while (i < raw.size()) {
-            const size_t a = raw.find('"', i);
+            const size_t a = raw.find_first_of("\"'", i);
             if (a == std::string::npos) break;
-            const size_t b = raw.find('"', a + 1);
+            const size_t b = raw.find(raw[a], a + 1);
             if (b == std::string::npos) return false;
             s.grid_template_areas.push_back(tokens(raw.substr(a + 1, b - a - 1)));
             i = b + 1;
@@ -1669,7 +1787,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
         {"flex-flow", {"flex-direction", "flex-wrap"}},
         {"gap", {"row-gap", "column-gap"}}, {"grid-gap", {"row-gap", "column-gap"}},
         {"overflow", {"overflow-x", "overflow-y"}},
-        {"list-style", {"list-style-type", "list-style-position"}},
+        {"list-style", {"list-style-type", "list-style-position", "list-style-image"}},
         {"text-decoration", {"text-decoration-line", "text-decoration-color"}},
         {"place-items", {"align-items", "justify-items"}},
         {"grid-column", {"grid-column-start", "grid-column-end"}},
@@ -1710,7 +1828,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     CP("text-indent", text_indent) CP("white-space", white_space) CP("text-overflow", text_overflow_ellipsis)
     CP("overflow-wrap", overflow_wrap) CP("word-wrap", overflow_wrap) CP("word-break", word_break)
     if (n == "vertical-align") { d.vertical_align = src.vertical_align; d.vertical_align_len = src.vertical_align_len; return true; }
-    CP("list-style-type", list_style) CP("list-style-position", list_inside)
+    CP("list-style-type", list_style) CP("list-style-position", list_inside) CP("list-style-image", list_image)
     CP("flex-direction", flex_direction) CP("flex-wrap", flex_wrap) CP("order", order)
     CP("flex-grow", flex_grow) CP("flex-shrink", flex_shrink) CP("flex-basis", flex_basis)
     CP("justify-content", justify_content) CP("align-content", align_content) CP("align-items", align_items)
@@ -1756,5 +1874,17 @@ void ComputedStyle::rebuild_transform() {
     translate_x = tx; translate_y = ty;
     std::copy(L, L + 4, tf);
 }
+
+namespace {
+// @supports (property: value): the property table says whether it takes the value
+const bool kSupportsHookSet = [] {
+    set_supports_hook([](const std::string& name, const std::string& value) {
+        ComputedStyle s;
+        Env env;
+        return apply_property(s, env, name, value);
+    });
+    return true;
+}();
+} // namespace
 
 } // namespace luxium::style

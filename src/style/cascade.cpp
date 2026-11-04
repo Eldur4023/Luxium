@@ -34,7 +34,7 @@ ComputedStyle inherited_style(const ComputedStyle& p) {
     s.letter_spacing = p.letter_spacing; s.word_spacing = p.word_spacing;
     s.text_indent = p.text_indent; s.white_space = p.white_space;
     s.visibility = p.visibility; s.cursor = p.cursor;
-    s.list_style = p.list_style; s.list_inside = p.list_inside;
+    s.list_style = p.list_style; s.list_inside = p.list_inside; s.list_image = p.list_image;
     s.border_collapse = p.border_collapse;
     s.border_spacing_h = p.border_spacing_h; s.border_spacing_v = p.border_spacing_v;
     s.overflow_wrap = p.overflow_wrap; s.word_break = p.word_break;
@@ -86,6 +86,23 @@ void RuleIndex::build(const std::vector<Rule>& rules) {
             if (v.empty() || v.back() != int(i)) v.push_back(int(i));
         }
     }
+}
+
+void Resolver::set_author_rules(const std::vector<Rule>* rules) {
+    author_ = rules ? rules : &kNoRules;
+    author_idx_.build(*author_);
+    registered_.clear();
+    for (const Rule& r : *author_) {
+        if (!r.media.starts_with("@property|")) continue;
+        RegisteredProp p;
+        p.name = trim_ws(r.media.substr(10));
+        for (const auto& d : r.decls) {
+            if (d.name == "initial-value") p.initial = d.value;
+            else if (d.name == "inherits") p.inherits = lower_ascii(trim_ws(d.value)) != "false";
+        }
+        if (p.name.starts_with("--")) registered_.push_back(std::move(p));
+    }
+    cache_.clear();
 }
 
 namespace {
@@ -212,7 +229,7 @@ std::vector<Decl> presentational_hints(const dom::Node& el) {
         if (al == "left" || al == "right" || al == "center") add("text-align", al);
         const std::string va = lower_ascii(el.attr_or("valign"));
         if (va == "top" || va == "middle" || va == "bottom" || va == "baseline") add("vertical-align", va);
-    } else if (tag == "img" || tag == "video") {
+    } else if (tag == "img" || tag == "video" || tag == "iframe" || tag == "object" || tag == "embed" || tag == "canvas") {
         if (el.has_attr("width")) { const auto d = dim(el.attr_or("width")); if (!d.empty()) add("width", d); }
         if (el.has_attr("height")) { const auto d = dim(el.attr_or("height")); if (!d.empty()) add("height", d); }
     } else if (tag == "div" || tag == "p" || tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" ||
@@ -365,6 +382,10 @@ ComputedStyle Resolver::compute(const dom::Node& el, const ComputedStyle* parent
     ComputedStyle s;
     ComputedStyle defaults;
     if (parent) s = inherited_style(*parent);
+    for (const auto& rp : registered_) {   // @property: not inherited unless asked, and the initial value when nothing sets it
+        if (!rp.inherits) s.custom.erase(rp.name);
+        if (!rp.initial.empty() && !s.custom.count(rp.name)) s.custom[rp.name] = rp.initial;
+    }
     // table sections inherit border-color from the table in Blink; border-color
     // here is not inherited, so `border-color: inherit` is honoured below.
 

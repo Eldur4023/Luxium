@@ -48,6 +48,9 @@ void ctl_metrics(Env& env, Box& b) {
         break;
     case T::Checkbox: case T::Radio: b.nat_w = b.nat_h = 13; b.ctl_baseline = 13; break;
     case T::Range: b.nat_w = 129; b.nat_h = 16; b.ctl_baseline = 16; break;
+    case T::Progress: b.nat_w = 160; b.nat_h = 16; b.ctl_baseline = 13; break;   // Blink: 10em x 1em, 0.2em below the baseline
+    case T::Meter: b.nat_w = 80; b.nat_h = 16; b.ctl_baseline = 13; break;
+    case T::Color: b.nat_w = 50; b.nat_h = 27; b.ctl_baseline = 18; break;
     case T::File: {
         b.nat_w = std::round(fs * 23.025f);   // Chromium: button + label in a ~23em box
         b.nat_h = line + 6;

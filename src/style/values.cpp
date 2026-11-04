@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
+#include <optional>
 #include <cmath>
 #include <string_view>
 #include <utility>
@@ -141,6 +143,74 @@ struct CalcParser {
             size_t j = i;
             while (j < s.size() && (std::isalpha(static_cast<unsigned char>(s[j])) || s[j] == '-')) ++j;
             const std::string fn = lower_ascii(s.substr(i, j - i));
+            static const char* const kMath[] = {"sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sqrt", "pow", "hypot",
+                                                "log", "exp", "abs", "sign", "mod", "rem", "round"};
+            const bool is_math = j < s.size() && s[j] == '(' && std::any_of(std::begin(kMath), std::end(kMath), [&](const char* m) { return fn == m; });
+            if (is_math) {   // CSS Values 4 math: trig/exp on numbers (angles count as radians), abs/sign/mod/rem/round/hypot on numbers or lengths
+                i = j + 1;
+                std::vector<CV> args;
+                std::string strategy;
+                if (fn == "round") {   // round(<strategy>?, A, B)
+                    ws();
+                    size_t k = i;
+                    while (k < s.size() && (std::isalpha(static_cast<unsigned char>(s[k])) || s[k] == '-')) ++k;
+                    const std::string w = lower_ascii(s.substr(i, k - i));
+                    if (w == "nearest" || w == "up" || w == "down" || w == "to-zero") {
+                        strategy = w; i = k; ws();
+                        if (i < s.size() && s[i] == ',') ++i;
+                    }
+                }
+                while (ok) {
+                    args.push_back(expr());
+                    ws();
+                    if (i < s.size() && s[i] == ',') { ++i; continue; }
+                    break;
+                }
+                ws();
+                if (i < s.size() && s[i] == ')') ++i; else ok = false;
+                if (!ok || args.empty()) { ok = false; return r; }
+                for (const auto& a : args) if (a.fn || a.pct != 0.f) { ok = false; return r; }   // % needs the containing block: not here
+                const bool num = args[0].is_num;
+                for (const auto& a : args) if (a.is_num != num) { ok = false; return r; }
+                auto v = [&](size_t k) { return k < args.size() ? (args[k].is_num ? args[k].num : args[k].px) : 0.f; };
+                float out = 0;
+                bool keep_unit = false;   // result is a length when the inputs were
+                if (fn == "sin") out = std::sin(v(0));
+                else if (fn == "cos") out = std::cos(v(0));
+                else if (fn == "tan") out = std::tan(v(0));
+                else if (fn == "asin") out = std::asin(v(0));
+                else if (fn == "acos") out = std::acos(v(0));
+                else if (fn == "atan") out = std::atan(v(0));
+                else if (fn == "atan2") out = std::atan2(v(0), v(1));
+                else if (fn == "sqrt") out = std::sqrt(v(0));
+                else if (fn == "pow") out = std::pow(v(0), v(1));
+                else if (fn == "log") out = args.size() > 1 ? std::log(v(0)) / std::log(v(1)) : std::log(v(0));
+                else if (fn == "exp") out = std::exp(v(0));
+                else if (fn == "sign") out = v(0) > 0 ? 1.f : v(0) < 0 ? -1.f : 0.f;
+                else if (fn == "abs") { out = std::fabs(v(0)); keep_unit = true; }
+                else if (fn == "hypot") { float q = 0; for (size_t k = 0; k < args.size(); ++k) q += v(k) * v(k); out = std::sqrt(q); keep_unit = true; }
+                else if (fn == "mod" || fn == "rem") {
+                    const float b = v(1);
+                    if (b == 0) { ok = false; return r; }
+                    out = fn == "mod" ? v(0) - b * std::floor(v(0) / b) : std::fmod(v(0), b);
+                    keep_unit = true;
+                } else {   // round
+                    const float step = args.size() > 1 ? v(1) : 1.f;
+                    if (step == 0) { ok = false; return r; }
+                    const float q = v(0) / step;
+                    out = (strategy == "up" ? std::ceil(q) : strategy == "down" ? std::floor(q) : strategy == "to-zero" ? std::trunc(q) : std::round(q)) * step;
+                    keep_unit = true;
+                }
+                if (!std::isfinite(out)) { ok = false; return r; }
+                r.is_num = !(keep_unit && !num);
+                r.num = r.is_num ? out : 0;
+                r.px = r.is_num ? 0 : out;
+                return r;
+            }
+            if (j >= s.size() || s[j] != '(') {   // constants
+                if (fn == "pi") { i = j; r.is_num = true; r.num = 3.14159265358979f; return r; }
+                if (fn == "e") { i = j; r.is_num = true; r.num = 2.71828182845905f; return r; }
+            }
             if (j < s.size() && s[j] == '(' && (fn == "calc" || fn == "min" || fn == "max" || fn == "clamp")) {
                 i = j + 1;
                 std::vector<CV> args;
@@ -191,6 +261,11 @@ struct CalcParser {
         const std::string unit = lower_ascii(s.substr(j, k - j));
         i = k;
         if (unit.empty()) { r.is_num = true; r.num = n; return r; }
+        // angles are plain numbers of radians inside math functions
+        if (unit == "deg") { r.is_num = true; r.num = n * 3.14159265f / 180.f; return r; }
+        if (unit == "rad") { r.is_num = true; r.num = n; return r; }
+        if (unit == "turn") { r.is_num = true; r.num = n * 6.28318531f; return r; }
+        if (unit == "grad") { r.is_num = true; r.num = n * 3.14159265f / 200.f; return r; }
         r.is_num = false;
         if (unit == "%") r.pct = n;
         else if (unit == "px") r.px = n;
@@ -563,6 +638,16 @@ bool parse_color_mix(const std::string& inner, uint32_t& out) {
 
 } // namespace
 
+uint32_t mix_in_space(uint32_t a, uint32_t b, float t, const std::string& how) {
+    char buf[200];
+    auto hex = [](uint32_t c) { char h[12]; std::snprintf(h, sizeof h, "#%02x%02x%02x%02x", (c >> 16) & 255, (c >> 8) & 255, c & 255, c >> 24); return std::string(h); };
+    const float pb = std::clamp(t, 0.f, 1.f) * 100.f;
+    std::snprintf(buf, sizeof buf, "in %s, %s %g%%, %s %g%%", how.c_str(), hex(a).c_str(), 100.f - pb, hex(b).c_str(), pb);
+    uint32_t out = 0;
+    if (!parse_color_mix(buf, out)) return t < 0.5f ? a : b;
+    return out;
+}
+
 bool parse_color(const std::string& raw, uint32_t& out, bool* is_current) {
     {
         const std::string t = trim_ws(raw);
@@ -570,6 +655,65 @@ bool parse_color(const std::string& raw, uint32_t& out, bool* is_current) {
         if (open != std::string::npos && open > 0 && t.back() == ')') {
             const std::string fn = lower_ascii(t.substr(0, open));
             const std::string inner = t.substr(open + 1, t.size() - open - 2);
+            if (fn == "light-dark") {   // the page is drawn with the light scheme
+                const auto args = split_commas(inner);
+                if (args.size() != 2) return false;
+                return parse_color(args[0], out, is_current);
+            }
+            if ((fn == "rgb" || fn == "rgba" || fn == "hsl" || fn == "hsla") && trim_ws(inner).starts_with("from ")) {
+                // relative color: rgb(from <color> r g b [/ alpha]), channels by keyword or calc()
+                const auto tk = tokens(trim_ws(inner).substr(5));
+                if (tk.size() < 4) return false;
+                uint32_t base; bool cur = false;
+                if (!parse_color(tk[0], base, &cur) || cur) return false;
+                const bool rgb = fn[0] == 'r';
+                const float R = float((base >> 16) & 255), G = float((base >> 8) & 255), B = float(base & 255), A = float(base >> 24) / 255.f;
+                float c1 = R, c2 = G, c3 = B;
+                if (!rgb) {   // origin as hsl: h in degrees, s and l in 0..100
+                    const float mx = std::max({R, G, B}) / 255.f, mn = std::min({R, G, B}) / 255.f, d = mx - mn, l = (mx + mn) / 2;
+                    float h = 0, sat = 0;
+                    if (d > 0) {
+                        sat = l > 0 && l < 1 ? d / (1 - std::fabs(2 * l - 1)) : 0;
+                        const float r = R / 255.f, g = G / 255.f, b = B / 255.f;
+                        h = mx == r ? std::fmod((g - b) / d, 6.f) : mx == g ? (b - r) / d + 2 : (r - g) / d + 4;
+                        h *= 60; if (h < 0) h += 360;
+                    }
+                    c1 = h; c2 = sat * 100; c3 = l * 100;
+                }
+                const char* names = rgb ? "rgb" : "hsl";
+                auto eval = [&](std::string e) -> std::optional<float> {
+                    if (e == "none") return 0.f;
+                    // keywords -> numbers, then calc() or a plain number/percentage
+                    std::string out_e; size_t i = 0;
+                    while (i < e.size()) {
+                        if (std::isalpha(static_cast<unsigned char>(e[i]))) {
+                            size_t j = i; while (j < e.size() && std::isalpha(static_cast<unsigned char>(e[j]))) ++j;
+                            const std::string w = e.substr(i, j - i);
+                            const bool call = j < e.size() && e[j] == '(';
+                            if (!call && w == "alpha") out_e += std::to_string(A);
+                            else if (!call && w.size() == 1 && w[0] == names[0]) out_e += std::to_string(c1);
+                            else if (!call && w.size() == 1 && w[0] == names[1]) out_e += std::to_string(c2);
+                            else if (!call && w.size() == 1 && w[0] == names[2]) out_e += std::to_string(c3);
+                            else out_e += w;
+                            i = j;
+                        } else out_e += e[i++];
+                    }
+                    const bool pct = !out_e.empty() && out_e.back() == '%';
+                    if (pct) out_e.pop_back();
+                    CalcParser cp(out_e, Env{});
+                    CV v = cp.expr(); cp.ws();
+                    if (!cp.ok || cp.i != out_e.size() || !v.is_num) return std::nullopt;
+                    return pct ? v.num : v.num;
+                };
+                const auto a1 = eval(lower_ascii(tk[1])), a2 = eval(lower_ascii(tk[2])), a3 = eval(lower_ascii(tk[3]));
+                if (!a1 || !a2 || !a3) return false;
+                float alpha = A;
+                if (tk.size() >= 6 && tk[4] == "/") { const auto aa = eval(lower_ascii(tk[5])); if (!aa) return false; alpha = lower_ascii(tk[5]).back() == '%' ? *aa / 100.f : *aa; }
+                char buf[160];
+                if (rgb) std::snprintf(buf, sizeof buf, "rgb(%g %g %g / %g)", *a1, *a2, *a3, alpha);
+                else std::snprintf(buf, sizeof buf, "hsl(%g %g%% %g%% / %g)", *a1, *a2, *a3, alpha);
+                return parse_color(buf, out, is_current);
+            }
             if (fn == "color-mix" || fn == "hwb" || fn == "lab" || fn == "lch" || fn == "oklab" || fn == "oklch" || fn == "color") {
                 if (is_current) *is_current = false;
                 return fn == "color-mix" ? parse_color_mix(inner, out) : parse_modern_fn(fn, inner, out);
@@ -609,8 +753,10 @@ bool parse_color(const std::string& raw, uint32_t& out, bool* is_current) {
             try { nums.push_back({std::stof(cur), pct}); } catch (...) {}
             cur.clear();
         };
-        for (size_t i = s.find('(') + 1; i < s.size(); ++i) {
-            const char ch = s[i];
+        std::string sp;   // as written (spaces kept: "rgb(10 20 30 / 50%)" is the modern syntax)
+        for (char ch : trim_ws(raw)) sp += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        for (size_t i = sp.find('(') + 1; i < sp.size(); ++i) {
+            const char ch = sp[i];
             if (std::isdigit(static_cast<unsigned char>(ch)) || ch == '.' || ch == '-' || ch == '+') cur += ch;
             else if (ch == '%') push(true);
             else push(false);   // separators and unit suffixes (deg, turn...)
@@ -656,13 +802,67 @@ bool parse_gradient(const std::string& value, const Env& env, uint32_t current, 
     g.repeating = fn.starts_with("repeating-");
     if (fn == "linear-gradient" || fn == "repeating-linear-gradient") g.radial = false;
     else if (fn == "radial-gradient" || fn == "repeating-radial-gradient") g.radial = true;
+    else if (fn == "conic-gradient" || fn == "repeating-conic-gradient") g.conic = true;
     else return false;
 
     auto args = split_commas(v.substr(open + 1, v.size() - open - 2));
     if (args.empty()) return false;
     size_t first_stop = 0;
 
-    if (!g.radial) {
+    // `in <space> [<method> hue]` anywhere in the first argument: the interpolation space (and the rest stays the prelude)
+    {
+        std::string a0 = lower_ascii(args[0]);
+        const size_t in = a0.find("in ") == 0 ? 0 : a0.find(" in ");
+        if (in != std::string::npos) {
+            const size_t from = in == 0 ? 0 : in + 1;
+            const auto tk = tokens(a0.substr(from + 3));
+            size_t used = 0;
+            std::string how;
+            if (!tk.empty() && (tk[0] == "srgb" || tk[0] == "srgb-linear" || tk[0] == "lab" || tk[0] == "oklab" || tk[0] == "lch" || tk[0] == "oklch" ||
+                                tk[0] == "hsl" || tk[0] == "hwb" || tk[0] == "xyz" || tk[0] == "display-p3")) {
+                how = tk[0]; used = 1;
+                if (tk.size() >= 3 && tk[2] == "hue") { how += " " + tk[1] + " hue"; used = 3; }
+                g.interp = how == "srgb" ? "" : how;
+                std::string rest;   // the prelude without the `in ...` words
+                std::string tail = a0.substr(from + 3);
+                size_t pos = 0;
+                for (size_t k = 0; k < used; ++k) { pos = tail.find(tk[k], pos) + tk[k].size(); }
+                rest = trim_ws(a0.substr(0, from) + " " + tail.substr(pos));
+                args[0] = rest;
+                if (rest.empty()) { args.erase(args.begin()); if (args.empty()) return false; }
+            }
+        }
+    }
+
+    if (g.conic) {   // [from <angle>] [at <position>]
+        std::string a0 = lower_ascii(args[0]);
+        const bool is_prelude = a0.starts_with("from ") || a0.starts_with("at ");
+        if (is_prelude) {
+            first_stop = 1;
+            float deg = 0;
+            if (a0.starts_with("from ")) {
+                const auto t = tokens(a0.substr(5));
+                if (!t.empty() && parse_angle(t[0], deg)) g.angle = deg;
+            }
+            const size_t at = a0.find("at ");
+            if (at != std::string::npos) {
+                const auto t = tokens(a0.substr(at + 3));
+                auto pos1 = [&](const std::string& w, Len& out) {
+                    if (w == "left" || w == "top") out = Len::Pct(0);
+                    else if (w == "right" || w == "bottom") out = Len::Pct(100);
+                    else if (w == "center") out = Len::Pct(50);
+                    else { Len l; if (parse_length(w, env, l)) out = l; }
+                };
+                if (t.size() == 1) {
+                    if (t[0] == "top" || t[0] == "bottom") { pos1("center", g.cx); pos1(t[0], g.cy); }
+                    else { pos1(t[0], g.cx); pos1("center", g.cy); }
+                } else if (t.size() >= 2) {
+                    if (t[0] == "top" || t[0] == "bottom") { pos1(t[1], g.cx); pos1(t[0], g.cy); }
+                    else { pos1(t[0], g.cx); pos1(t[1], g.cy); }
+                }
+            }
+        } else g.angle = 0;
+    } else if (!g.radial) {
         g.angle = 180.f;
         const std::string a0 = lower_ascii(args[0]);
         float deg;
@@ -737,7 +937,9 @@ bool parse_gradient(const std::string& value, const Env& env, uint32_t current, 
         for (size_t q = pi; q < t.size(); ++q) {
             if (t[q] == colortok) continue;
             Len l;
-            if (parse_length(t[q], env, l)) ps.push_back(l);
+            float deg = 0;
+            if (g.conic && parse_angle(t[q], deg)) ps.push_back(Len::Pct(deg / 3.6f));   // an angle position: a share of the turn
+            else if (parse_length(t[q], env, l)) ps.push_back(l);
         }
         if (!ps.empty()) { st.pos = ps[0]; }
         g.stops.push_back(st);

@@ -295,7 +295,11 @@ void fill_gradient(State& s, const Item& it) {
             if (rcl) cov *= clip_cov(s, x + 0.5f, y + 0.5f);
             if (cov <= 0) continue;
             float tt;
-            if (it.radial) {
+            if (it.conic) {   // clockwise from `from` (gdx), 0 at the top
+                const float ang = std::atan2(px - it.gcx, -(py - it.gcy)) - it.gdx;
+                tt = ang / 6.28318531f;
+                tt -= std::floor(tt);
+            } else if (it.radial) {
                 const float dx = (px - it.gcx) / it.grx, dy = (py - it.gcy) / it.gry;
                 tt = std::sqrt(dx * dx + dy * dy);
             } else {
@@ -342,7 +346,7 @@ void draw_image(State& s, const Item& it0) {
     Item it = it0;   // a copy: the source rect is rewritten when the bitmap is reduced
     const render::ImageBitmap* bm = it.img.get();
     if (!bm || it.w <= 0 || it.h <= 0 || it.sw <= 0 || it.sh <= 0) return;
-    if (const int n = int(std::min(it.sw / it.w, it.sh / it.h)); n >= 2 && bm->w > 1 && bm->h > 1) {
+    if (const int n = int(std::min(it.sw / it.w, it.sh / it.h)); n >= 2 && bm->w > 1 && bm->h > 1 && !bm->animated) {
         it.img = reduced(*bm, n);
         bm = it.img.get();
         it.sx /= n; it.sy /= n; it.sw /= n; it.sh /= n;

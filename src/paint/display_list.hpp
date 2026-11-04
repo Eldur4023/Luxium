@@ -48,7 +48,7 @@ struct Item {
                                 style::BorderStyle::None, style::BorderStyle::None};
 
     // Gradient: linear (dx,dy unit vector, len) or radial (center + radii)
-    bool radial = false, repeating = false;
+    bool radial = false, repeating = false, conic = false;   // conic: angle `from` (radians) in gdx, centre in gcx/gcy
     float gdx = 0, gdy = 1, glen = 1;
     float gcx = 0, gcy = 0, grx = 1, gry = 1;
     std::vector<Stop> stops;

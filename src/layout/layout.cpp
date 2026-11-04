@@ -3,6 +3,7 @@
 #include <layout/box.hpp>
 
 #include <render/layout.hpp>
+#include <render/images.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -17,10 +18,92 @@ namespace luxium::render {
 
 namespace {
 
+std::string trim_ws(const std::string& s) {
+    const size_t a = s.find_first_not_of(" \t\r\n"), z = s.find_last_not_of(" \t\r\n");
+    return a == std::string::npos ? std::string() : s.substr(a, z - a + 1);
+}
+std::string unquote(std::string s) {
+    s = trim_ws(s);
+    if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front()) s = s.substr(1, s.size() - 2);
+    return s;
+}
+// "a, b(c, d), e" -> ["a", "b(c, d)", "e"]
+std::vector<std::string> split_top(const std::string& s) {
+    std::vector<std::string> out;
+    int depth = 0; char q = 0; size_t from = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (q) { if (c == q) q = 0; continue; }
+        if (c == '"' || c == '\'') q = c;
+        else if (c == '(') ++depth;
+        else if (c == ')') --depth;
+        else if (c == ',' && depth == 0) { out.push_back(s.substr(from, i - from)); from = i + 1; }
+    }
+    out.push_back(s.substr(from));
+    return out;
+}
+
+// @font-face rules -> faces of `font`.  Sources are tried in order (like a browser): local() names an installed
+// font, url() a WOFF2/WOFF/TrueType/OpenType file (a format() hint rules out the rest).  A file still on its way
+// over the network is asked for again at the next layout (the shell relayouts when it lands).
+void load_web_fonts(Font& font, const std::vector<style::Rule>& rules, const std::string& base_dir) {
+    for (const style::Rule& r : rules) {
+        if (!r.font_face()) continue;
+        std::string family, src, weight = "400", fstyle = "normal";
+        for (const auto& d : r.decls) {
+            if (d.name == "font-family") family = unquote(d.value);
+            else if (d.name == "src") src = d.value;
+            else if (d.name == "font-weight") weight = trim_ws(d.value);
+            else if (d.name == "font-style") fstyle = trim_ws(d.value);
+        }
+        if (family.empty() || src.empty()) continue;
+        int w = 400;
+        if (weight == "bold") w = 700;
+        else if (weight != "normal") {
+            try { w = std::stoi(weight); } catch (...) {}
+            const size_t sp = weight.find(' ');   // a range (variable font): the middle of it names the face
+            if (sp != std::string::npos) { try { w = (w + std::stoi(weight.substr(sp + 1))) / 2; } catch (...) {} }
+        }
+        const bool italic = fstyle.starts_with("italic") || fstyle.starts_with("oblique");
+        for (const std::string& entry0 : split_top(src)) {
+            const std::string entry = trim_ws(entry0);
+            if (entry.starts_with("local(")) {
+                const size_t e = entry.rfind(')');
+                if (e != std::string::npos && font.add_local_alias(family, w, italic, unquote(entry.substr(6, e - 6)))) break;
+                continue;
+            }
+            if (!entry.starts_with("url(")) continue;
+            size_t close = std::string::npos;
+            int depth = 0; char q = 0;
+            for (size_t i = 3; i < entry.size(); ++i) {
+                const char c = entry[i];
+                if (q) { if (c == q) q = 0; continue; }
+                if (c == '"' || c == '\'') q = c;
+                else if (c == '(') ++depth;
+                else if (c == ')' && --depth == 0) { close = i; break; }
+            }
+            if (close == std::string::npos) continue;
+            const std::string url = unquote(entry.substr(4, close - 4));
+            const std::string rest = entry.substr(close + 1);
+            if (rest.find("format(") != std::string::npos &&
+                rest.find("woff2") == std::string::npos && rest.find("woff") == std::string::npos &&
+                rest.find("truetype") == std::string::npos && rest.find("opentype") == std::string::npos) continue;   // eot, svg...
+            const std::string path = render::resolve_image(base_dir, url);
+            const std::string key = path + "#" + family + "#" + std::to_string(w) + (italic ? "i" : "n");
+            if (font.has_web_face(key)) break;
+            std::string bytes;
+            const int st = render::fetch_resource(path, bytes);
+            if (st == 0) break;   // on its way: not this source's turn to fail over
+            if (st > 0 && font.add_web_face(family, w, italic, bytes, key)) break;
+        }
+    }
+}
+
 LayoutResult layout_once(const dom::Node& doc, Font& font, float vw, float vh,
                          const std::vector<style::Rule>& rules, const std::string& base_dir,
                          const std::function<bool(const dom::Node&, style::ComputedStyle&, int)>& hook) {
     using namespace luxium::layout;
+    load_web_fonts(font, rules, base_dir);
     style::Resolver res;
     res.set_viewport(vw, vh);
     res.set_author_rules(&rules);

@@ -3,6 +3,8 @@
 // shadows, text and decorations.
 
 #include <layout/box.hpp>
+#include <layout/frame.hpp>
+#include <style/values.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -184,7 +186,7 @@ struct Painter {
         if (s.position == Position::Fixed) return true;
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
-        if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None) return true;
+        if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None || s.bg_clip_text) return true;
         if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear()) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
@@ -321,7 +323,12 @@ struct Painter {
         Item it; it.kind = Item::Kind::Gradient; it.x = x; it.y = y; it.w = w; it.h = h; it.radii = r;
         it.repeating = g.repeating;
         float line_len;
-        if (!g.radial) {
+        if (g.conic) {
+            it.conic = true;
+            it.gcx = x + g.cx.resolve(w); it.gcy = y + g.cy.resolve(h);
+            it.gdx = g.angle * 3.14159265f / 180.f;   // `from`
+            line_len = 100.f;                          // stop positions are percentages of the turn
+        } else if (!g.radial) {
             float ang = g.angle;
             if (g.corner) {
                 const float a = std::atan2(h, w) * 180.f / 3.14159265f;
@@ -376,7 +383,16 @@ struct Painter {
             for (size_t k = i; k < j; ++k) t[k] = t[i - 1] + (t[j] - t[i - 1]) * float(k - i + 1) / float(j - i + 1);
             i = j;
         }
-        for (size_t i = 0; i < g.stops.size(); ++i) it.stops.push_back({g.stops[i].color, t[i]});
+        for (size_t i = 0; i < g.stops.size(); ++i) {
+            if (i > 0 && !g.interp.empty() && t[i] > t[i - 1]) {   // a colour space other than sRGB: sampled between the stops
+                constexpr int kSteps = 16;
+                for (int k = 1; k < kSteps; ++k) {
+                    const float f = float(k) / kSteps;
+                    it.stops.push_back({style::mix_in_space(g.stops[i - 1].color, g.stops[i].color, f, g.interp), t[i - 1] + (t[i] - t[i - 1]) * f});
+                }
+            }
+            it.stops.push_back({g.stops[i].color, t[i]});
+        }
         dl->push_back(std::move(it));
     }
 
@@ -561,7 +577,14 @@ struct Painter {
     void replaced(Box& b) {
         const ComputedStyle& s = *b.st;
         if (b.ctl) { if (s.visibility == Visibility::Visible) paint_control(b); return; }
-        if (s.visibility != Visibility::Visible || (!b.img && !b.media)) return;
+        if (s.visibility != Visibility::Visible) return;
+        if (!b.img && !b.media && b.node && b.node->is_element("iframe")) {   // the framed document, drawn into a picture
+            const float fw = std::round(b.w - b.border.h() - b.padding.h()), fh = std::round(b.h - b.border.v() - b.padding.v());
+            if (auto pic = render_frame(env.font, *b.node, env.base_dir, int(fw), int(fh))) {
+                b.img = pic; b.nat_w = float(pic->w); b.nat_h = float(pic->h);
+            }
+        }
+        if (!b.img && !b.media) return;
         const float cx = sn(b.ax + b.border.l + b.padding.l), cy = sn(b.ay + b.border.t + b.padding.t);
         const float cw = sn(b.ax + b.w - b.border.r - b.padding.r) - cx, ch = sn(b.ay + b.h - b.border.b - b.padding.b) - cy;
         if (cw <= 0 || ch <= 0 || b.nat_w <= 0 || b.nat_h <= 0) return;
@@ -733,6 +756,28 @@ struct Painter {
             rect(tx, ty, tw, 4, fade(0xFFB9B9B9, dim), {2, 2, 2, 2});
             rect(tx, ty, tf - tx, 4, fade(accent, dim), {2, 0, 0, 2});
             circle(tf - 8, cy, 16, fade(accent, dim));
+            break;
+        }
+        case T::Progress: case T::Meter: {
+            if (s.appearance_none) break;
+            const bool prog = c.type == T::Progress;
+            const float tx = cx, tw = cw, th = std::min(ch, 8.f), ty = cy + (ch - th) / 2;   // Blink paints an 8px track in the 16px box
+            rect(tx, ty, tw, th, fade(0xFFB2B2B2, dim), {th / 2, th / 2, th / 2, th / 2});
+            rect(tx + 1, ty + 1, tw - 2, th - 2, fade(0xFFEEEEEE, dim), {th / 2 - 1, th / 2 - 1, th / 2 - 1, th / 2 - 1});
+            const float fw = (tw - 2) * c.frac;
+            if (fw > 0 && !(prog && c.indeterminate)) {
+                const uint32_t col = prog ? fade(0xFF0075FF, dim) : fade(c.meter_state == 0 ? 0xFF118811 : c.meter_state == 1 ? 0xFFFFCC00 : 0xFFDD2222, dim);
+                const float r = th / 2 - 1;
+                rect(tx + 1, ty + 1, fw, th - 2, col, {r, fw >= tw - 2 ? r : 0.f, fw >= tw - 2 ? r : 0.f, r});
+            }
+            break;
+        }
+        case T::Color: {
+            if (s.appearance_none) break;
+            rect(cx, cy, cw, ch, fade(0xFF767676, dim), {2, 2, 2, 2});
+            rect(cx + 1, cy + 1, cw - 2, ch - 2, fade(0xFFEFEFEF, dim), {1, 1, 1, 1});
+            rect(cx + 4, cy + 4, cw - 8, ch - 8, fade(0xFF777777, dim));
+            rect(cx + 5, cy + 5, cw - 10, ch - 10, fade(c.color, dim));
             break;
         }
         case T::File: {
@@ -920,7 +965,12 @@ struct Painter {
             baseline = li.ay + li.border.t + li.padding.t + fm.ascent;
             left = li.ax + li.border.l + li.padding.l;
         }
-        if (mk->marker_shape) {
+        if (mk->img) {
+            Item it; it.kind = Item::Kind::Image; it.img = mk->img;
+            it.w = mk->nat_w; it.h = mk->nat_h; it.x = sn(left - it.w - 8.f); it.y = sn(baseline - it.h);
+            it.sx = 0; it.sy = 0; it.sw = float(mk->img->w); it.sh = float(mk->img->h);
+            dl->push_back(std::move(it));
+        } else if (mk->marker_shape) {
             // Blink: bullet diameter = (ascent*2/3 + 1)/2, 3/4 of the free ascent above the baseline
             const float asc = fm.ascent;
             const float d = std::floor((std::floor(asc * 2.f / 3.f) + 1.f) / 2.f);
@@ -1073,7 +1123,7 @@ struct Painter {
             }
         } unshift{this, moved, general, tf_at, saved_cur};
         size_t layer = 0;
-        const bool lay = s.opacity < 1.f || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None;
+        const bool lay = s.opacity < 1.f || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty() || s.clip_path.kind != style::ClipPath::Kind::None || s.bg_clip_text;
         if (lay) {
             layer = layer_push(s.opacity);
             const float x0 = sn(sc.ax), y0 = sn(sc.ay), x1 = sn(sc.ax + sc.w), y1 = sn(sc.ay + sc.h);
@@ -1093,6 +1143,17 @@ struct Painter {
                 (*dl)[layer].mask = std::move(m);
             }
             if (s.clip_path.kind != style::ClipPath::Kind::None) (*dl)[layer].clip = clip_shape(sc, s.clip_path);
+            if (s.bg_clip_text) {   // background-clip: text: the mask is the element's own glyphs, drawn opaque
+                auto m = std::make_shared<paint::DisplayList>();
+                paint::DisplayList* saved = dl;
+                dl = m.get();
+                content(sc);
+                dl = saved;
+                paint::DisplayList glyphs;
+                for (auto& it : *m)
+                    if (it.kind == Item::Kind::Text || it.kind == Item::Kind::Line) { it.color = 0xFF000000u; glyphs.push_back(std::move(it)); }
+                (*dl)[layer].mask = std::make_shared<paint::DisplayList>(std::move(glyphs));
+            }
         }
         self(sc, bg);
         const bool cl = clips(sc);
