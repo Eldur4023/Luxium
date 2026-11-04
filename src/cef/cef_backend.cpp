@@ -344,7 +344,8 @@ public:
     void OnLoadEnd(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame>, int) override {
         // OSR ignores GetScreenInfo's device_scale_factor in this CEF (devicePixelRatio stays 1),
         // so HiDPI is page zoom: log(scale)/log(1.2) is Chromium's zoom-level unit.
-        if (g_scale != 1.0f && b) b->GetHost()->SetZoomLevel(std::log(g_scale) / std::log(1.2));
+        // Always set (also 0 at 1x): Chromium remembers zoom per host, and file:// pages would inherit a HiDPI session's.
+        if (b) b->GetHost()->SetZoomLevel(g_scale != 1.0f ? std::log(g_scale) / std::log(1.2) : 0.0);
         {
             std::lock_guard<std::mutex> lk(w_->m);
             w_->loaded = true;

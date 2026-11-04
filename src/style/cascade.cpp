@@ -39,6 +39,7 @@ ComputedStyle inherited_style(const ComputedStyle& p) {
     s.border_spacing_h = p.border_spacing_h; s.border_spacing_v = p.border_spacing_v;
     s.overflow_wrap = p.overflow_wrap; s.word_break = p.word_break;
     s.pointer_events = p.pointer_events; s.accent = p.accent;
+    s.text_shadow = p.text_shadow;
     s.text_overflow_ellipsis = false;
     s.custom = p.custom;
     for (float& w : s.border_w) w = 0;   // style none: computes to 0 (the struct default is `medium`)

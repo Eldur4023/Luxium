@@ -773,4 +773,45 @@ bool parse_shadow_list(const std::string& value, const Env& env, uint32_t curren
     return true;
 }
 
+bool parse_filter_list(const std::string& value, const Env& env, uint32_t current, std::vector<FilterFn>& out) {
+    out.clear();
+    for (const auto& tk : tokens(value)) {
+        const size_t open = tk.find('(');
+        if (open == std::string::npos || tk.back() != ')') return false;
+        const std::string fn = lower_ascii(tk.substr(0, open));
+        const std::string arg = trim_ws(tk.substr(open + 1, tk.size() - open - 2));
+        FilterFn f;
+        // amount: number or percentage; `def` when empty
+        auto amount = [&](float def, float& a) {
+            if (arg.empty()) { a = def; return true; }
+            const std::string l = lower_ascii(arg);
+            if (l.ends_with('%')) { if (!parse_number(l.substr(0, l.size() - 1), a)) return false; a /= 100.f; }
+            else if (!parse_number(l, a)) return false;
+            return a >= 0;
+        };
+        using K = FilterFn::Kind;
+        if (fn == "blur") {
+            f.kind = K::Blur;
+            Len l;
+            if (!arg.empty()) { if (!parse_length(arg, env, l) || l.pct != 0 || l.px < 0) return false; f.a = l.px; }
+        } else if (fn == "brightness") { f.kind = K::Brightness; if (!amount(1, f.a)) return false; }
+        else if (fn == "contrast") { f.kind = K::Contrast; if (!amount(1, f.a)) return false; }
+        else if (fn == "grayscale") { f.kind = K::Grayscale; if (!amount(1, f.a)) return false; f.a = std::min(f.a, 1.f); }
+        else if (fn == "sepia") { f.kind = K::Sepia; if (!amount(1, f.a)) return false; f.a = std::min(f.a, 1.f); }
+        else if (fn == "saturate") { f.kind = K::Saturate; if (!amount(1, f.a)) return false; }
+        else if (fn == "invert") { f.kind = K::Invert; if (!amount(1, f.a)) return false; f.a = std::min(f.a, 1.f); }
+        else if (fn == "opacity") { f.kind = K::Opacity; if (!amount(1, f.a)) return false; f.a = std::min(f.a, 1.f); }
+        else if (fn == "hue-rotate") {
+            f.kind = K::HueRotate;
+            if (!arg.empty() && !parse_angle(arg, f.a)) { float n; if (!parse_number(arg, n) || n != 0) return false; f.a = 0; }
+        } else if (fn == "drop-shadow") {
+            std::vector<Shadow> sh;
+            if (!parse_shadow_list(arg, env, current, sh) || sh.size() != 1 || sh[0].inset || sh[0].spread != 0) return false;
+            f.kind = K::DropShadow; f.dx = sh[0].x; f.dy = sh[0].y; f.blur = sh[0].blur; f.color = sh[0].color;
+        } else return false;
+        out.push_back(f);
+    }
+    return !out.empty();
+}
+
 } // namespace luxium::style

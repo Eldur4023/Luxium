@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+.g { display: grid; grid-template-columns: repeat(5, 200px); gap: 16px; }
+.b { height: 90px; background: linear-gradient(90deg, #e50914, #2a7fff 50%, #38c172); color: #fff; font-weight: bold; padding: 8px; box-sizing: border-box; border-radius: 10px; }
+</style>
+<div class="g">
+<div class="b" style="filter: blur(3px)" data-t="f1">blur</div>
+<div class="b" style="filter: grayscale(1)" data-t="f2">grayscale</div>
+<div class="b" style="filter: sepia(0.8)" data-t="f3">sepia</div>
+<div class="b" style="filter: brightness(0.5)" data-t="f4">brightness</div>
+<div class="b" style="filter: contrast(200%)" data-t="f5">contrast</div>
+<div class="b" style="filter: saturate(3)" data-t="f6">saturate</div>
+<div class="b" style="filter: hue-rotate(90deg)" data-t="f7">hue-rotate</div>
+<div class="b" style="filter: invert(1)" data-t="f8">invert</div>
+<div class="b" style="filter: opacity(0.4)" data-t="f9">opacity</div>
+<div class="b" style="filter: drop-shadow(6px 6px 4px rgba(0,0,0,0.6))" data-t="f10">drop-shadow</div>
+<div class="b" style="filter: grayscale(1) brightness(1.4)" data-t="f11">chain</div>
+<div class="b" style="filter: blur(1px) drop-shadow(0 0 6px #e50914)" data-t="f12">glow</div>
+</div>

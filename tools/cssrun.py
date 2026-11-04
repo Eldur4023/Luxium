@@ -168,6 +168,51 @@ def _same_value(a: str, b: str) -> bool:
     return False
 
 
+def _gam(c):
+    import math
+    return 12.92 * c if abs(c) <= 0.0031308 else math.copysign(1.055 * abs(c) ** (1 / 2.4) - 0.055, c)
+
+
+def _to_srgb(space, n):
+    """Chromium serialises colours in their own space (oklab(), lab(), color(srgb-linear ...)): to sRGB 0..1, clamped."""
+    import math
+    if len(n) != 3:
+        return None
+    if space == "srgb":
+        lin = None
+        rgb = n
+    else:
+        if space in ("oklch", "lch"):
+            L, C, H = n
+            n = [L, C * math.cos(math.radians(H)), C * math.sin(math.radians(H))]
+            space = space.replace("ch", "ab")
+        if space == "srgb-linear":
+            lin = n
+        elif space == "oklab":
+            L, A, B = n
+            l_, m_, s_ = L + 0.3963377774 * A + 0.2158037573 * B, L - 0.1055613458 * A - 0.0638541728 * B, L - 0.0894841775 * A - 1.2914855480 * B
+            l, m, s = l_ ** 3, m_ ** 3, s_ ** 3
+            lin = [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                   -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s]
+        elif space == "lab":
+            L, A, B = n
+            e, k = 216 / 24389, 24389 / 27
+            fy = (L + 16) / 116; fx = fy + A / 500; fz = fy - B / 200
+            x = fx ** 3 if fx ** 3 > e else (116 * fx - 16) / k
+            y = fy ** 3 if L > k * e else L / k
+            z = fz ** 3 if fz ** 3 > e else (116 * fz - 16) / k
+            w = (0.3457 / 0.3585, 1.0, (1 - 0.3457 - 0.3585) / 0.3585)
+            X, Y, Z = x * w[0], y * w[1], z * w[2]
+            X, Y, Z = (0.9554735 * X - 0.0230985 * Y + 0.0632593 * Z, -0.0283697 * X + 1.0099955 * Y + 0.0210414 * Z,
+                       0.0123140 * X - 0.0205077 * Y + 1.3303659 * Z)
+            lin = [3.2409699 * X - 1.5373832 * Y - 0.4986108 * Z, -0.9692436 * X + 1.8759675 * Y + 0.0415551 * Z,
+                   0.0556301 * X - 0.2039770 * Y + 1.0569715 * Z]
+        else:
+            return None
+        rgb = [_gam(c) for c in lin]
+    return [min(1.0, max(0.0, c)) for c in rgb]
+
+
 def _rgba(v: str):
     """rgb()/rgba()/color(srgb r g b / a) -> [r, g, b, a] (0-255, alpha 0-1); None otherwise.
     Chromium serialises color-mix() results as color(srgb ...)."""
@@ -175,10 +220,18 @@ def _rgba(v: str):
         if v.startswith("rgba(") or v.startswith("rgb("):
             p = [float(x) for x in v[v.index("(") + 1:-1].split(",")]
             return p + [1.0] if len(p) == 3 else p
-        if v.startswith("color(srgb "):
-            body = v[len("color(srgb "):-1]
-            rgb, _, a = body.partition("/")
-            return [float(x) * 255 for x in rgb.split()] + [float(a) if a.strip() else 1.0]
+        fn, _, body = v.partition("(")
+        body = body[:-1]
+        if fn == "color":
+            space, _, body = body.partition(" ")
+        else:
+            space = fn
+        vals, _, a = body.partition("/")
+        nums = [float(x) for x in vals.split()]
+        alpha = float(a) if a.strip() else 1.0
+        rgb = _to_srgb(space, nums)
+        if rgb is not None:
+            return [c * 255 for c in rgb] + [alpha]
     except ValueError:
         pass
     return None

@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; }
+.c { container-type: inline-size; border: 1px solid #999; margin: 8px 0; }
+.card { container: card / inline-size; border: 1px solid #333; margin: 8px 0; }
+.t { font-size: clamp(12px, 6cqw, 40px); background: #eef2f7; }
+.x { background: #fdd; }
+@container (min-width: 500px) { .x { background: #dfd; padding-left: 40px; } }
+@container card (width < 300px) { .x { background: #ddf; } }
+</style>
+<div class="c" style="width: 700px"><div class="t" data-t="a1">6cqw de 700</div><div class="x" data-t="a2">ancho</div></div>
+<div class="c" style="width: 360px"><div class="t" data-t="b1">6cqw de 360</div><div class="x" data-t="b2">estrecho</div></div>
+<div class="card" style="width: 260px"><div class="x" data-t="c2">card estrecha</div></div>
+<div class="t" data-t="d1">sin contenedor: viewport</div>

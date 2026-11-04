@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
@@ -400,11 +401,27 @@ bool property_inherits(const std::string& n) {
         "color", "font-size", "font-weight", "font-style", "font-family", "font", "line-height",
         "text-align", "text-transform", "letter-spacing", "word-spacing", "text-indent", "white-space",
         "visibility", "cursor", "list-style", "list-style-type", "list-style-position", "border-collapse",
-        "border-spacing", "overflow-wrap", "word-wrap", "word-break", "pointer-events", "text-decoration-color", "accent-color"};
+        "border-spacing", "overflow-wrap", "word-wrap", "word-break", "pointer-events", "text-decoration-color", "accent-color", "text-shadow"};
     return inh.count(n) > 0;
 }
 
-bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, const std::string& raw) {
+bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, const std::string& raw0) {
+    // color-mix(... currentColor ...): the mix needs the value, so it is spelled out (for `color` itself this is
+    // still the inherited colour, as the spec wants)
+    std::string mixed;
+    if (raw0.find("color-mix(") != std::string::npos) {
+        const std::string l = lower_ascii(raw0);
+        if (l.find("currentcolor") != std::string::npos) {
+            char rgba[64];
+            std::snprintf(rgba, sizeof rgba, "rgba(%u, %u, %u, %.4f)", (s.color >> 16) & 255, (s.color >> 8) & 255, s.color & 255, float(s.color >> 24) / 255.f);
+            mixed = raw0;
+            for (size_t p = l.find("currentcolor"), shift = 0; p != std::string::npos; p = l.find("currentcolor", p + 12)) {
+                mixed.replace(p + shift, 12, rgba);
+                shift += std::strlen(rgba) - 12;
+            }
+        }
+    }
+    const std::string& raw = mixed.empty() ? raw0 : mixed;
     const std::string v = lower_ascii(trim_ws(raw));
     const Tokens t = tokens(v);
     if (v.empty()) return false;
@@ -704,6 +721,61 @@ bool apply_property(ComputedStyle& s, const Env& env, const std::string& name, c
         std::vector<Shadow> out;
         if (!parse_shadow_list(raw, env, s.color, out)) return false;
         s.box_shadow = out;
+        return true;
+    }
+    if (name == "text-shadow") {
+        std::vector<Shadow> out;
+        if (v != "none" && !parse_shadow_list(raw, env, s.color, out)) return false;
+        for (const auto& sh : out) if (sh.inset || sh.spread != 0) return false;   // text-shadow has neither
+        s.text_shadow = out;
+        return true;
+    }
+    if (name == "filter" || name == "backdrop-filter") {   // -webkit-backdrop-filter is Safari-only: Chromium ignores it
+        std::vector<FilterFn> out;
+        if (v != "none" && !parse_filter_list(raw, env, s.color, out)) return false;
+        (name == "filter" ? s.filter : s.backdrop_filter) = out;
+        return true;
+    }
+    if (name == "mask-image" || name == "-webkit-mask-image" || name == "mask" || name == "-webkit-mask") {
+        std::vector<BgLayer> layers;
+        bool any = false;
+        for (const auto& item : split_commas(raw)) {
+            BgLayer L;
+            L.repeat_x = L.repeat_y = BgRepeat::Repeat;
+            if (lower_ascii(trim_ws(item)) == "none") { layers.push_back(L); continue; }
+            Tokens tk = name.ends_with("mask") ? tokens(item) : Tokens{trim_ws(item)};
+            if (!parse_bg_layer(tk, env, s.color, L, nullptr)) return false;
+            any = any || L.kind != BgLayer::Kind::None;
+            layers.push_back(L);
+        }
+        s.mask = any ? layers : std::vector<BgLayer>{};
+        return true;
+    }
+    if (name == "mask-size" || name == "-webkit-mask-size" || name == "mask-position" || name == "-webkit-mask-position" ||
+        name == "mask-repeat" || name == "-webkit-mask-repeat") {
+        const auto items = split_commas(v);
+        for (size_t i = 0; i < s.mask.size(); ++i) {
+            const Tokens it = tokens(items[i % items.size()]);
+            BgLayer& L = s.mask[i];
+            if (name.ends_with("repeat")) {
+                BgLayer tmp;
+                Tokens x = it;
+                if (!parse_bg_layer(x, env, s.color, tmp, nullptr)) return false;
+                L.repeat_x = tmp.repeat_x; L.repeat_y = tmp.repeat_y;
+            } else if (name.ends_with("position")) {
+                if (!parse_position_pair(it, env, L.pos_x, L.pos_y)) return false;
+            } else {
+                if (it.empty()) return false;
+                if (it[0] == "cover") L.size_mode = BgSizeMode::Cover;
+                else if (it[0] == "contain") L.size_mode = BgSizeMode::Contain;
+                else {
+                    L.size_mode = BgSizeMode::Explicit;
+                    if (!parse_length(it[0], env, L.size_w, true)) return false;
+                    L.size_h = Len::Auto();
+                    if (it.size() > 1 && !parse_length(it[1], env, L.size_h, true)) return false;
+                }
+            }
+        }
         return true;
     }
     if (name == "object-fit") {
@@ -1453,7 +1525,7 @@ bool copy_property(ComputedStyle& d, const ComputedStyle& src, const std::string
     if (n == "border-left-color") { d.border_color[3] = src.border_color[3]; d.bc_current[3] = src.bc_current[3]; return true; }
     CP("border-top-left-radius", radius[0]) CP("border-top-right-radius", radius[1]) CP("border-bottom-right-radius", radius[2]) CP("border-bottom-left-radius", radius[3])
     CP("background-color", bg_color) CP("background-image", bg) CP("background-repeat", bg) CP("background-position", bg) CP("background-size", bg)
-    CP("box-shadow", box_shadow) CP("object-fit", object_fit)
+    CP("box-shadow", box_shadow) CP("text-shadow", text_shadow) CP("filter", filter) CP("backdrop-filter", backdrop_filter) CP("mask-image", mask) CP("-webkit-mask-image", mask) CP("object-fit", object_fit)
     CP("color", color) CP("font-size", font_size) CP("font-weight", font_weight) CP("font-style", italic)
     if (n == "font-family") { d.family = src.family; d.family_name = src.family_name; return true; }
     if (n == "line-height") { d.lh_mode = src.lh_mode; d.lh_val = src.lh_val; return true; }

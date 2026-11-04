@@ -1,5 +1,6 @@
 box/t-box-auto-centering
 box/t-box-border-content
+box/t-box-container-queries
 box/t-box-height-auto
 box/t-box-margin-collapse-negative
 box/t-box-margin-collapse-parent
@@ -13,6 +14,10 @@ box/t-box-width-percent
 dyn/t-dyn-append
 dyn/t-dyn-remove
 dyn/t-dyn-restyle
+effects/t-fx-backdrop
+effects/t-fx-filter
+effects/t-fx-mask
+effects/t-fx-text-shadow
 flex/t-flex-align
 flex/t-flex-basis
 flex/t-flex-center-perfect
@@ -30,6 +35,7 @@ homeflix/t-hf-catalog
 homeflix/t-hf-catalog-search
 homeflix/t-hf-new-series
 homeflix/t-hf-picker
+homeflix/t-hf-series
 integration/t-int-blog
 integration/t-int-cards
 integration/t-int-dashboard
@@ -111,6 +117,7 @@ text/t-text-white-space
 text/t-text-wrap-identical
 values/t-values-calc
 values/t-values-color-forms
+values/t-values-color-mix
 values/t-values-important
 values/t-values-keywords
 values/t-values-shorthand-background

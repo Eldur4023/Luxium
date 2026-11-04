@@ -8,6 +8,7 @@
 #   python3 tools/cssgolden.py                  # everything missing
 #   python3 tools/cssgolden.py --force box flex # regenerate those
 import argparse
+import os
 import subprocess
 import sys
 
@@ -50,6 +51,7 @@ def main():
                     [str(REPO / "build" / "luxium"), str(oracle_source(html)), "--size", size,
                      "--cefshot", str(PPM), "--cefprobe", str(PROBE)],
                     cwd=REPO, check=True, timeout=60,
+                    env={**os.environ, "LUXIUM_SCALE": "1"},   # the oracle at 1x even on a HiDPI desktop
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 img = Image.open(PPM).convert("RGB")
                 w, h = img.size

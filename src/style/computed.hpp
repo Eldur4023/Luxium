@@ -97,6 +97,14 @@ struct Shadow {
     bool inset = false;
 };
 
+// One filter function of `filter` / `backdrop-filter`.  `a`: the amount (blur: radius in px, hue-rotate: degrees,
+// the rest: a factor where 1 = unchanged / 100 %).  drop-shadow: dx, dy, blur (radius), color.
+struct FilterFn {
+    enum class Kind : uint8_t { Blur, Brightness, Contrast, Grayscale, Sepia, Saturate, HueRotate, Invert, Opacity, DropShadow } kind = Kind::Blur;
+    float a = 0, dx = 0, dy = 0, blur = 0;
+    uint32_t color = 0xFF000000;
+};
+
 // grid track size: fr, px/%, auto, min-content, max-content, minmax(a, b)
 struct Track {
     enum class Kind { Len, Fr, Auto, MinContent, MaxContent, MinMax } kind = Kind::Auto;
@@ -173,6 +181,9 @@ struct ComputedStyle {
     uint32_t bg_color = kTransparent;
     std::vector<BgLayer> bg;
     std::vector<Shadow>  box_shadow;
+    std::vector<Shadow>  text_shadow;   // inherited
+    std::vector<FilterFn> filter, backdrop_filter;
+    std::vector<BgLayer> mask;          // mask-image layers (+ mask-size/-position/-repeat), alpha multiplies the element
     ObjectFit object_fit = ObjectFit::Fill;
 
     // ── text ────────────────────────────────────────────────────────────────

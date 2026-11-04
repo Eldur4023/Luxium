@@ -27,7 +27,7 @@ struct State {
     std::vector<Target> targets;
     std::vector<std::pair<float, float>> shifts;
     std::vector<std::vector<uint32_t>> layer_bufs;
-    struct LayerInfo { IRect bounds; float alpha; };
+    struct LayerInfo { IRect bounds; float alpha; const Item* push = nullptr; };
     std::vector<LayerInfo> layers;
     // transform layers: content is drawn untransformed into a buffer, then resampled through `m` on pop
     struct TfLayer { IRect src; float m[6]; float ox, oy; };
@@ -451,6 +451,171 @@ IRect intersect(const IRect& a, const IRect& b) {
 
 } // namespace
 
+// ── filter effects (filter, backdrop-filter, text-shadow blur, mask) ──────────
+
+namespace {
+
+// A region of a target as premultiplied float RGBA (0..1).
+struct FBuf {
+    IRect r;
+    int w = 0, h = 0;
+    std::vector<float> p;
+};
+
+FBuf read_region(const Target& t, const IRect& r) {
+    FBuf b;
+    b.r = r; b.w = std::max(0, r.x1 - r.x0); b.h = std::max(0, r.y1 - r.y0);
+    b.p.resize(size_t(b.w) * b.h * 4);
+    for (int y = 0; y < b.h; ++y)
+        for (int x = 0; x < b.w; ++x) {
+            const uint32_t q = t.px[size_t(y + r.y0) * t.w + (x + r.x0)];
+            const float a = float(q >> 24) / 255.f;
+            float* o = &b.p[(size_t(y) * b.w + x) * 4];
+            o[0] = float((q >> 16) & 255) / 255.f * a; o[1] = float((q >> 8) & 255) / 255.f * a; o[2] = float(q & 255) / 255.f * a; o[3] = a;
+        }
+    return b;
+}
+
+uint32_t pack_premul(const float* v) {
+    const float a = std::clamp(v[3], 0.f, 1.f);
+    if (a <= 0.f) return 0;
+    auto c = [&](float x) { return uint32_t(std::clamp(x / a, 0.f, 1.f) * 255.f + 0.5f); };
+    return (uint32_t(a * 255.f + 0.5f) << 24) | (c(v[0]) << 16) | (c(v[1]) << 8) | c(v[2]);
+}
+
+// Running-sum box blur of radius r along one axis (premultiplied, all 4 channels); edges clamp.
+void box_pass(std::vector<float>& p, int w, int h, int r, bool horiz) {
+    if (r <= 0) return;
+    const int n = horiz ? w : h, lines = horiz ? h : w;
+    std::vector<float> line(size_t(n) * 4), out(size_t(n) * 4);
+    const float inv = 1.f / float(2 * r + 1);
+    for (int l = 0; l < lines; ++l) {
+        auto at = [&](int i) -> float* { return horiz ? &p[(size_t(l) * w + i) * 4] : &p[(size_t(i) * w + l) * 4]; };
+        for (int i = 0; i < n; ++i) std::copy(at(i), at(i) + 4, &line[size_t(i) * 4]);
+        float acc[4] = {0, 0, 0, 0};
+        for (int i = -r; i <= r; ++i) { const float* q = &line[size_t(std::clamp(i, 0, n - 1)) * 4]; for (int c = 0; c < 4; ++c) acc[c] += q[c]; }
+        for (int i = 0; i < n; ++i) {
+            for (int c = 0; c < 4; ++c) out[size_t(i) * 4 + c] = acc[c] * inv;
+            const float* add = &line[size_t(std::min(i + r + 1, n - 1)) * 4];
+            const float* sub = &line[size_t(std::max(i - r, 0)) * 4];
+            for (int c = 0; c < 4; ++c) acc[c] += add[c] - sub[c];
+        }
+        for (int i = 0; i < n; ++i) std::copy(&out[size_t(i) * 4], &out[size_t(i) * 4] + 4, at(i));
+    }
+}
+
+// Gaussian of standard deviation sigma as three box blurs per axis (W3C filter-effects approximation).
+void gaussian(FBuf& b, float sigma) {
+    if (sigma < 0.3f || b.w == 0 || b.h == 0) return;
+    const float wi = std::sqrt(12.f * sigma * sigma / 3.f + 1.f);
+    int wl = int(std::floor(wi));
+    if (wl % 2 == 0) --wl;
+    const int wu = wl + 2;
+    const float mi = (12.f * sigma * sigma - 3.f * wl * wl - 12.f * wl - 9.f) / (-4.f * wl - 4.f);
+    const int m = int(std::round(mi));
+    for (int i = 0; i < 3; ++i) {
+        const int r = ((i < m ? wl : wu) - 1) / 2;
+        box_pass(b.p, b.w, b.h, r, true);
+        box_pass(b.p, b.w, b.h, r, false);
+    }
+}
+
+void color_matrix(FBuf& b, const float m[9]) {
+    for (size_t i = 0; i < b.p.size(); i += 4) {
+        float* v = &b.p[i];
+        const float a = v[3];
+        if (a <= 0) continue;
+        const float r = v[0] / a, g = v[1] / a, bl = v[2] / a;
+        v[0] = std::clamp(m[0] * r + m[1] * g + m[2] * bl, 0.f, 1.f) * a;
+        v[1] = std::clamp(m[3] * r + m[4] * g + m[5] * bl, 0.f, 1.f) * a;
+        v[2] = std::clamp(m[6] * r + m[7] * g + m[8] * bl, 0.f, 1.f) * a;
+    }
+}
+
+template <class F> void per_channel(FBuf& b, F f) {   // f(unpremultiplied channel) -> channel
+    for (size_t i = 0; i < b.p.size(); i += 4) {
+        float* v = &b.p[i];
+        const float a = v[3];
+        if (a <= 0) continue;
+        for (int c = 0; c < 3; ++c) v[c] = std::clamp(f(v[c] / a), 0.f, 1.f) * a;
+    }
+}
+
+void apply_filter(FBuf& b, const style::FilterFn& f) {
+    using K = style::FilterFn::Kind;
+    const float a = f.a;
+    switch (f.kind) {
+    case K::Blur: gaussian(b, a); break;
+    case K::Brightness: per_channel(b, [a](float c) { return c * a; }); break;
+    case K::Contrast: per_channel(b, [a](float c) { return (c - 0.5f) * a + 0.5f; }); break;
+    case K::Invert: per_channel(b, [a](float c) { return a * (1 - c) + (1 - a) * c; }); break;
+    case K::Opacity: for (float& v : b.p) v *= a; break;
+    case K::Grayscale: {
+        const float k = 1 - a;
+        const float m[9] = {0.2126f + 0.7874f * k, 0.7152f - 0.7152f * k, 0.0722f - 0.0722f * k,
+                            0.2126f - 0.2126f * k, 0.7152f + 0.2848f * k, 0.0722f - 0.0722f * k,
+                            0.2126f - 0.2126f * k, 0.7152f - 0.7152f * k, 0.0722f + 0.9278f * k};
+        color_matrix(b, m); break;
+    }
+    case K::Sepia: {
+        const float k = 1 - a;
+        const float m[9] = {0.393f + 0.607f * k, 0.769f - 0.769f * k, 0.189f - 0.189f * k,
+                            0.349f - 0.349f * k, 0.686f + 0.314f * k, 0.168f - 0.168f * k,
+                            0.272f - 0.272f * k, 0.534f - 0.534f * k, 0.131f + 0.869f * k};
+        color_matrix(b, m); break;
+    }
+    case K::Saturate: {
+        const float m[9] = {0.213f + 0.787f * a, 0.715f - 0.715f * a, 0.072f - 0.072f * a,
+                            0.213f - 0.213f * a, 0.715f + 0.285f * a, 0.072f - 0.072f * a,
+                            0.213f - 0.213f * a, 0.715f - 0.715f * a, 0.072f + 0.928f * a};
+        color_matrix(b, m); break;
+    }
+    case K::HueRotate: {
+        const float r = a * 3.14159265f / 180.f, c = std::cos(r), sn = std::sin(r);
+        const float m[9] = {0.213f + c * 0.787f - sn * 0.213f, 0.715f - c * 0.715f - sn * 0.715f, 0.072f - c * 0.072f + sn * 0.928f,
+                            0.213f - c * 0.213f + sn * 0.143f, 0.715f + c * 0.285f + sn * 0.140f, 0.072f - c * 0.072f - sn * 0.283f,
+                            0.213f - c * 0.213f - sn * 0.787f, 0.715f - c * 0.715f + sn * 0.715f, 0.072f + c * 0.928f + sn * 0.072f};
+        color_matrix(b, m); break;
+    }
+    case K::DropShadow: {
+        // the alpha, blurred, offset and coloured, under the content
+        FBuf sh = b;
+        const float ca = float(f.color >> 24) / 255.f;
+        const float cr = float((f.color >> 16) & 255) / 255.f, cg = float((f.color >> 8) & 255) / 255.f, cb = float(f.color & 255) / 255.f;
+        const int dx = int(std::lround(f.dx)), dy = int(std::lround(f.dy));
+        for (int y = 0; y < b.h; ++y)
+            for (int x = 0; x < b.w; ++x) {
+                const int sx = x - dx, sy = y - dy;
+                const float al = (sx >= 0 && sy >= 0 && sx < b.w && sy < b.h) ? b.p[(size_t(sy) * b.w + sx) * 4 + 3] * ca : 0.f;
+                float* o = &sh.p[(size_t(y) * b.w + x) * 4];
+                o[0] = cr * al; o[1] = cg * al; o[2] = cb * al; o[3] = al;
+            }
+        gaussian(sh, f.blur);   // drop-shadow()'s length is the standard deviation (unlike box-shadow's 2-sigma radius)
+        for (size_t i = 0; i < b.p.size(); i += 4) {
+            const float k = 1 - b.p[i + 3];
+            for (int c = 0; c < 4; ++c) b.p[i + c] += sh.p[i + c] * k;
+        }
+        break;
+    }
+    }
+}
+
+// How far the filters can move paint outside the content (blur tails, drop-shadow offsets).
+int filter_reach(const std::vector<style::FilterFn>& fs) {
+    float r = 0;
+    for (const auto& f : fs) {
+        if (f.kind == style::FilterFn::Kind::Blur) r += 3.f * f.a;
+        else if (f.kind == style::FilterFn::Kind::DropShadow) r += std::max(std::fabs(f.dx), std::fabs(f.dy)) + 3.f * f.blur;
+    }
+    return int(std::ceil(r)) + 1;
+}
+
+IRect grow(const IRect& r, int d, const IRect& lim) {
+    return {std::max(lim.x0, r.x0 - d), std::max(lim.y0, r.y0 - d), std::min(lim.x1, r.x1 + d), std::min(lim.y1, r.y1 + d)};
+}
+
+} // namespace
+
 void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) {
     State s(font, canvas.ox, canvas.oy);
     s.targets.push_back({canvas.px.data(), canvas.w, canvas.h});
@@ -557,11 +722,31 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
             break;
         }
         case Item::Kind::LayerPush: {
-            const IRect b = bounds_of(s, it.x, it.y, it.w, it.h, 0);
+            IRect b = bounds_of(s, it.x, it.y, it.w, it.h, 0);
             Target& cur = s.tgt();
+            if (!it.backdrop.empty() && it.cw > 0 && it.ch > 0) {
+                // backdrop-filter: what is already painted behind the border box, filtered in place (clipped to the
+                // rounded box); the element's own paint then goes over it.  The blur samples around the box too.
+                const IRect box = bounds_of(s, it.cx, it.cy, it.cw, it.ch, 0);
+                const IRect lim{0, 0, cur.w, cur.h};
+                FBuf fb = read_region(cur, grow(box, filter_reach(it.backdrop), lim));
+                for (const auto& f : it.backdrop) apply_filter(fb, f);
+                const bool rcl = !s.rc().empty();
+                for (int y = box.y0; y < box.y1; ++y)
+                    for (int x = box.x0; x < box.x1; ++x) {
+                        float cov = cov_from_sdf(sdf_rrect(x + 0.5f - s.ox, y + 0.5f - s.oy, it.cx, it.cy, it.cw, it.ch, it.radii));
+                        if (rcl) cov *= clip_cov(s, x + 0.5f, y + 0.5f);
+                        if (cov <= 0) continue;
+                        const uint32_t q = pack_premul(&fb.p[(size_t(y - fb.r.y0) * fb.w + (x - fb.r.x0)) * 4]);
+                        uint32_t& d = cur.px[size_t(y) * cur.w + x];
+                        if (cov >= 1.f) d = (d & 0xFF000000u) == 0xFF000000u ? (q | 0xFF000000u) : q;
+                        else blend(d, q | 0xFF000000u, cov);
+                    }
+            }
+            if (!it.filters.empty()) b = grow(b, filter_reach(it.filters), s.clip());
             s.layer_bufs.emplace_back(static_cast<size_t>(cur.w) * cur.h, 0u);
             s.targets.push_back({s.layer_bufs.back().data(), cur.w, cur.h});
-            s.layers.push_back({b, it.alpha});
+            s.layers.push_back({b, it.alpha, &it});
             break;
         }
         case Item::Kind::LayerPop: {
@@ -571,6 +756,26 @@ void rasterize(const DisplayList& dl, Canvas& canvas, const render::Font& font) 
             Target layer = s.targets.back();
             s.targets.pop_back();
             Target& dst = s.tgt();
+            const Item* push = info.push;
+            if (push && (!push->filters.empty() || push->mask) && info.bounds.x1 > info.bounds.x0 && info.bounds.y1 > info.bounds.y0) {
+                FBuf fb = read_region(layer, info.bounds);
+                for (const auto& f : push->filters) apply_filter(fb, f);
+                if (push->mask) {   // the mask's alpha (painted in doc coords over a transparent buffer) scales the group
+                    std::vector<uint32_t> mbuf(static_cast<size_t>(layer.w) * layer.h, 0u);
+                    Canvas mc;
+                    mc.px = mbuf; mc.w = layer.w; mc.h = layer.h; mc.ox = s.ox; mc.oy = s.oy; mc.clip = info.bounds;
+                    rasterize(*push->mask, mc, s.font);
+                    for (int y = 0; y < fb.h; ++y)
+                        for (int x = 0; x < fb.w; ++x) {
+                            const float k = float(mbuf[size_t(y + fb.r.y0) * layer.w + (x + fb.r.x0)] >> 24) / 255.f;
+                            float* v = &fb.p[(size_t(y) * fb.w + x) * 4];
+                            for (int c = 0; c < 4; ++c) v[c] *= k;
+                        }
+                }
+                for (int y = 0; y < fb.h; ++y)
+                    for (int x = 0; x < fb.w; ++x)
+                        layer.px[size_t(y + fb.r.y0) * layer.w + (x + fb.r.x0)] = pack_premul(&fb.p[(size_t(y) * fb.w + x) * 4]);
+            }
             for (int y = info.bounds.y0; y < info.bounds.y1; ++y)
                 for (int x = info.bounds.x0; x < info.bounds.x1; ++x) {
                     const uint32_t p = layer.px[static_cast<size_t>(y) * layer.w + x];

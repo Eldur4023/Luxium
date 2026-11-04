@@ -36,5 +36,7 @@ bool parse_color(const std::string& tok, uint32_t& out, bool* is_current = nullp
 bool parse_gradient(const std::string& value, const Env& env, uint32_t current, Gradient& out);
 bool parse_shadow_list(const std::string& value, const Env& env, uint32_t current,
                        std::vector<Shadow>& out);
+// `filter` / `backdrop-filter` function list (url() references are not supported: false).
+bool parse_filter_list(const std::string& value, const Env& env, uint32_t current, std::vector<FilterFn>& out);
 
 } // namespace luxium::style

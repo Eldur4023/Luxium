@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 0; background: #ffffff; color: #222222; }
+.bg { position: relative; height: 400px; background: repeating-linear-gradient(90deg, #111 0 20px, #f5c518 20px 40px); }
+.glass { position: absolute; padding: 16px; color: #fff; font-weight: bold; border-radius: 14px; }
+</style>
+<div class="bg">
+  <div class="glass" style="left: 30px; top: 30px; width: 260px; height: 120px; background: rgba(0,0,0,0.35); backdrop-filter: blur(8px)" data-t="g1">blur(8px)</div>
+  <div class="glass" style="left: 340px; top: 30px; width: 260px; height: 120px; background: rgba(255,255,255,0.1); -webkit-backdrop-filter: blur(4px) brightness(0.6)" data-t="g2">blur + brightness</div>
+  <div class="glass" style="left: 30px; top: 210px; width: 260px; height: 120px; backdrop-filter: grayscale(1)" data-t="g3">grayscale</div>
+  <div class="glass" style="left: 340px; top: 210px; width: 260px; height: 120px; backdrop-filter: invert(1); border-radius: 60px" data-t="g4">invert, redondo</div>
+</div>

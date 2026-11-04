@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body { font-family: 'DejaVu Sans'; margin: 10px; background: #ffffff; color: #222222; --accent: #e50914; }
+div { height: 30px; margin: 6px 0; padding: 4px; }
+</style>
+<div style="background: color-mix(in srgb, var(--accent) 45%, transparent)" data-t="c1">srgb 45% transparent</div>
+<div style="background: color-mix(in srgb, red, blue)" data-t="c2">srgb red blue</div>
+<div style="background: color-mix(in oklab, white 25%, black)" data-t="c3">oklab</div>
+<div style="background: color-mix(in srgb-linear, #2a7fff 30%, #38c172)" data-t="c4">srgb-linear</div>
+<div style="background: oklch(70% 0.15 145)" data-t="c5">oklch()</div>
+<div style="background: oklab(0.6 0.1 -0.1)" data-t="c6">oklab()</div>
+<div style="background: lab(60 40 -30)" data-t="c7">lab()</div>
+<div style="background: lch(55 60 200)" data-t="c8">lch()</div>
+<div style="background: hwb(200 10% 20%)" data-t="c9">hwb()</div>
+<div style="background: color(srgb 0.2 0.6 0.4 / 0.8)" data-t="c10">color(srgb)</div>
+<div style="border: 4px solid color-mix(in srgb, var(--accent) 60%, white); color: color-mix(in srgb, currentColor 50%, red)" data-t="c11">border mix</div>

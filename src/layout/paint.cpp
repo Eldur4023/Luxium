@@ -184,6 +184,7 @@ struct Painter {
         if (s.position == Position::Fixed) return true;
         if (b.is_positioned() && !s.z_auto) return true;
         if (s.opacity < 1.f) return true;
+        if (!s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty()) return true;
         if (s.translate_x.px != 0 || s.translate_y.px != 0 || s.translate_x.pct != 0 || s.translate_y.pct != 0 || s.tf_linear()) return true;
         if (is_item_of_flex(b) && !s.z_auto) return true;
         return false;
@@ -318,9 +319,10 @@ struct Painter {
         dl->push_back(std::move(it));
     }
 
-    void bg_layers(const ComputedStyle& s, const Rect& area, const Rect& clip, const Radii& cr) {
-        for (size_t li = s.bg.size(); li-- > 0;) {
-            const style::BgLayer& L = s.bg[li];
+    void bg_layers(const ComputedStyle& s, const Rect& area, const Rect& clip, const Radii& cr) { bg_list(s.bg, area, clip, cr); }
+    void bg_list(const std::vector<style::BgLayer>& layers, const Rect& area, const Rect& clip, const Radii& cr) {
+        for (size_t li = layers.size(); li-- > 0;) {
+            const style::BgLayer& L = layers[li];
             if (L.kind == style::BgLayer::Kind::None) continue;
             std::shared_ptr<const render::ImageBitmap> img;
             float nw = 0, nh = 0;
@@ -600,6 +602,23 @@ struct Painter {
     }
 
     // ── form controls ───────────────────────────────────────────────────────
+    // text-shadow: each shadow is the run again, offset and in its colour; blurred ones go through a blur layer.
+    // The first shadow is on top, so they are painted last to first, all below the text.
+    void text_shadows(const Item& text, const ComputedStyle& s) {
+        for (size_t i = s.text_shadow.size(); i-- > 0;) {
+            const style::Shadow& sh = s.text_shadow[i];
+            if (!has_alpha(sh.color)) continue;
+            Item t = text;
+            t.x += sh.x; t.baseline += sh.y; t.color = sh.color;
+            if (sh.blur <= 0) { dl->push_back(std::move(t)); continue; }
+            const size_t at = layer_push(1.f);
+            style::FilterFn f; f.kind = style::FilterFn::Kind::Blur; f.a = sh.blur / 2.f;   // shadow blur radius = 2 sigma
+            (*dl)[at].filters.push_back(f);
+            dl->push_back(std::move(t));
+            layer_pop(at);
+        }
+    }
+
     void text_item(const std::string& txt, const ComputedStyle& s, float x, float baseline, uint32_t color) {
         if (txt.empty()) return;
         auto run = std::make_shared<render::ShapedRun>(env.font.shape_at(txt, face_of(env, s), s.font_size));
@@ -797,7 +816,7 @@ struct Painter {
                     Item it; it.kind = Item::Kind::Text;
                     it.x = cx + f.x; it.baseline = cy + line.y + f.baseline;
                     it.run = f.run; it.face = f.face; it.px = f.px; it.color = ts.color;
-                    if (!f.run->positions.empty()) dl->push_back(std::move(it));
+                    if (!f.run->positions.empty()) { text_shadows(it, ts); dl->push_back(std::move(it)); }
                     for (const auto& ws : f.words)
                         out.words.push_back({ws.text, cx + f.x + ws.x, cy + line.y, ws.w, line.h});
                     deco_lines(f, cx + f.x, cy + line.y + f.baseline, f.w);
@@ -993,8 +1012,26 @@ struct Painter {
             }
         } unshift{this, moved, general, tf_at, saved_cur};
         size_t layer = 0;
-        const bool lay = s.opacity < 1.f;
-        if (lay) layer = layer_push(s.opacity);
+        const bool lay = s.opacity < 1.f || !s.filter.empty() || !s.backdrop_filter.empty() || !s.mask.empty();
+        if (lay) {
+            layer = layer_push(s.opacity);
+            const float x0 = sn(sc.ax), y0 = sn(sc.ay), x1 = sn(sc.ax + sc.w), y1 = sn(sc.ay + sc.h);
+            {
+                Item& L = (*dl)[layer];
+                L.filters = s.filter; L.backdrop = s.backdrop_filter;
+                L.cx = x0; L.cy = y0; L.cw = x1 - x0; L.ch = y1 - y0;
+                L.radii = radii_of(s, x1 - x0, y1 - y0);
+            }
+            if (!s.mask.empty()) {   // mask-origin/-clip: border-box
+                auto m = std::make_shared<paint::DisplayList>();
+                paint::DisplayList* saved = dl;
+                dl = m.get();
+                const Rect area{x0, y0, x1 - x0, y1 - y0};
+                bg_list(s.mask, area, area, {});
+                dl = saved;
+                (*dl)[layer].mask = std::move(m);
+            }
+        }
         self(sc, bg);
         const bool cl = clips(sc);
         if (cl) {
